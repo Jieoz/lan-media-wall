@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+*.spec.bak
+
+# PyInstaller output
+windows_player/build/
+windows_player/dist/
+
+# Flutter / Dart
+remote_flutter/.dart_tool/
+remote_flutter/.flutter-plugins
+remote_flutter/.flutter-plugins-dependencies
+remote_flutter/build/
+remote_flutter/.pub-cache/
+remote_flutter/.pub/
+*.iml
+
+# Android
+android_apps/**/build/
+android_apps/**/.gradle/
+android_apps/**/local.properties
+android_apps/**/.idea/
+*.apk
+*.keystore
+*.jks
+
+# Secrets / runtime
+*.psk
+secrets.*
+config.local.*
+*.log
+media-cache/
+thumbnails/
+
+# OS
+.DS_Store
+Thumbs.db
