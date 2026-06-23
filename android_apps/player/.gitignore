@@ -1,0 +1,12 @@
+# Build outputs
+build/
+app/build/
+.gradle/
+# Local SDK location (machine-specific; CI provides its own)
+local.properties
+# Misc
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/

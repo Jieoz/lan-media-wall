@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">LAN Media Wall</string>
+    <string name="settings_title">Player Setup</string>
+
+    <string name="label_device_name">Device name</string>
+    <string name="hint_device_name">e.g. Lobby Left Screen</string>
+    <string name="label_broker_host">Broker host / IP</string>
+    <string name="hint_broker_host">192.168.1.10</string>
+    <string name="label_broker_port">Broker port</string>
+    <string name="hint_broker_port">8770</string>
+    <string name="label_use_wss">Use secure WebSocket (WSS)</string>
+    <string name="label_group_id">Group ID</string>
+    <string name="hint_group_id">default</string>
+    <string name="label_psk">Preshared key (PSK)</string>
+    <string name="hint_psk">32+ byte shared secret</string>
+    <string name="label_always_thumbs">Always send thumbnails</string>
+    <string name="action_save">Save and start</string>
+    <string name="action_settings">Settings</string>
+
+    <string name="notif_channel_name">Media Wall Player</string>
+    <string name="notif_title">LAN Media Wall</string>
+    <string name="notif_text">Player running</string>
+
+    <string name="idle_text">LAN Media Wall</string>
+</resources>

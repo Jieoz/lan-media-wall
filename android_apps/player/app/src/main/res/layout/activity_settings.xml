@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:background="@color/black">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_title"
+            android:textColor="@color/white"
+            android:textSize="22sp"
+            android:paddingBottom="16dp" />
+
+        <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
+        <EditText
+            android:id="@+id/input_device_name"
+            style="@style/SettingInput"
+            android:hint="@string/hint_device_name"
+            android:inputType="text" />
+
+        <TextView style="@style/SettingLabel" android:text="@string/label_broker_host" />
+        <EditText
+            android:id="@+id/input_broker_host"
+            style="@style/SettingInput"
+            android:hint="@string/hint_broker_host"
+            android:inputType="text" />
+
+        <TextView style="@style/SettingLabel" android:text="@string/label_broker_port" />
+        <EditText
+            android:id="@+id/input_broker_port"
+            style="@style/SettingInput"
+            android:hint="@string/hint_broker_port"
+            android:inputType="number" />
+
+        <CheckBox
+            android:id="@+id/input_use_wss"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:text="@string/label_use_wss" />
+
+        <TextView style="@style/SettingLabel" android:text="@string/label_group_id" />
+        <EditText
+            android:id="@+id/input_group_id"
+            style="@style/SettingInput"
+            android:hint="@string/hint_group_id"
+            android:inputType="text" />
+
+        <TextView style="@style/SettingLabel" android:text="@string/label_psk" />
+        <EditText
+            android:id="@+id/input_psk"
+            style="@style/SettingInput"
+            android:hint="@string/hint_psk"
+            android:inputType="textPassword" />
+
+        <CheckBox
+            android:id="@+id/input_always_thumbs"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:text="@string/label_always_thumbs" />
+
+        <Button
+            android:id="@+id/btn_save"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/action_save" />
+
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The media wall runs on a trusted LAN: the broker WS is ws:// (HMAC-signed,
+  §3) and media is fetched over plain HTTP/WebDAV (§6.1, SMB deliberately
+  avoided). targetSdk 34 blocks cleartext by default, so we opt back in. WSS +
+  HTTPS still work when configured; this only permits the cleartext LAN case.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

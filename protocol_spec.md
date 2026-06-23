@@ -1,7 +1,9 @@
-# LAN Media Wall — 通信协议规范 (Protocol Spec) v1
+# LAN Media Wall — 通信协议规范 (Protocol Spec) v1.1
 
 > 这是 broker / Windows 被控端 / Android 被控端 / Flutter 遥控端 **共同遵守的合同**。
 > 任何一端都不得擅自更改字段名或语义；如需扩展，只能新增 `type` 或在 `payload` 里加可选字段，并升 `v`。
+>
+> **v1.1 变更(全部向后兼容的加法，`v` 仍声明为 `1`，实现可声明 minor=1)**：根据三端实现反馈，补齐了同步会话关联、wall 字段集、welcome 字段、time_sync 关联与 controller 在线信号等歧义点。详见各节 `[v1.1]` 标注。
 
 ---
 
@@ -104,6 +106,19 @@
 }}
 ```
 
+**[v1.1] `welcome` 补充字段：**
+- `v`(int)：broker 实现的协议版本，端侧据此判断兼容。
+- `group_id`(string，仅发给 player)：broker 注册表**权威**分配的分组(§4.1 说 broker 可覆盖 player 上报的 group_id)。player 收到后以此为准。
+- `controllers_online`(int，仅发给 player)：当前在线 controller 数。player 据此决定是否采集/上报缩略图(§6.4 的门控信号)。broker 在该数值变化时应主动补发一帧 `welcome` 或 `controller_presence`(见下)。
+- `assigned`(bool)语义明确：对 player 表示"broker 是否已接纳并完成注册";`assigned:false` 仅作软错误，player 继续播放但应稍后重发 hello。对 controller 无强制语义。
+
+### 4.3 `controller_presence` (broker→player) **[v1.1 新增]**
+broker 在 controller 上线/全部离线导致 `controllers_online` 变化时，主动推给各 player：
+```json
+{"type":"controller_presence","payload":{"controllers_online":1,"present":true}}
+```
+player 据此精确门控缩略图采集(§6.4)，无需轮询。`thumbnail.always_collect=true` 的设备忽略此门控、始终采集。
+
 ---
 
 ## 5. 状态上报与汇总
@@ -126,6 +141,8 @@
 }}
 ```
 > broker 把各 player 的 `status` 合并进设备墙快照，按 §5.2 推给所有 controller(聚合后 ~1s 一次，避免风暴)。
+
+**[v1.1] `wall.devices[]` 字段集明确**：每个 device 条目 = §5.1 `status` 的**完整最后一帧** + 以下身份/存活字段:`device_name`、`group_id`、`last_ip`、`online`(bool)、`last_seen`(epoch ms)。controller 对未知/缺失字段必须**防御式**处理(忽略而非崩溃)，以兼容未来新增字段。
 
 ### 5.2 `wall` (broker→controller，设备墙快照)
 ```json
@@ -201,8 +218,9 @@
 // player→broker
 {"type":"time_sync","payload":{"t1": <player_send_ms>}}
 // broker→player (回包带 broker 收发时刻)
-{"type":"time_sync_ack","payload":{"t1":<echo>,"t2":<broker_recv_ms>,"t3":<broker_send_ms>}}
+{"type":"time_sync_ack","payload":{"t1":<echo>,"t2":<broker_recv_ms>,"t3":<broker_send_ms>,"req_msg_id":"<echo player msg_id>"}}
 ```
+- **[v1.1]** broker 在 `time_sync_ack.payload` 里回 `req_msg_id`(原 time_sync 的 `msg_id`)，player 优先用它关联请求，避免同毫秒 `t1` 撞车;无 `req_msg_id` 时回退用 `t1`(向后兼容)。
 - player 收到时记 `t4`。按 NTP 公式：
   - `offset = ((t2 - t1) + (t3 - t4)) / 2`
   - `rtt = (t4 - t1) - (t3 - t2)`
@@ -224,10 +242,12 @@
   "playlist_id":"pl-lobby-1","group_id":"lobby",
   "start_index":0,"seek_ms":0}}
 ```
-- player 收到后：确认目标 item 已 `cache=ready`，预加载/seek 到位，**回 `ready`**。
+- **[v1.1]** broker 给本次同步会话分配 `prepare_id`(= 该 prepare 的 `msg_id`)，扇出给 group 的 prepare 帧 payload 里带上 `prepare_id` 与 `group_id`。
+- player 收到后：确认目标 item 已 `cache=ready`，预加载/seek 到位，**回 `ready`**(原样带回 `prepare_id` + `group_id`)。
 ```json
-{"type":"ready","payload":{"device_id":"win-lobby-01","playlist_id":"pl-lobby-1","ready":true}}
+{"type":"ready","payload":{"device_id":"win-lobby-01","playlist_id":"pl-lobby-1","group_id":"lobby","prepare_id":"<echo>","ready":true}}
 ```
+- broker 按 `prepare_id` 精确匹配会话(不再靠"每组至多一个在途 prepare"的假设)，支持同组并发会话。`prepare_id` 缺失时回退按 `group_id`+`playlist_id` 匹配(向后兼容)。
 
 ### 9.2 `play_at` (broker→group，收齐 ready 后)
 - broker 收齐组内所有(在线)成员的 `ready`(或超时 2s 后对已就绪者)广播：

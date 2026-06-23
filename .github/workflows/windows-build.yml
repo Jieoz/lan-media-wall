@@ -1,0 +1,129 @@
+# Windows player — cloud build (PyInstaller, bundles mpv.exe runtime).
+#
+# Produces a standalone Windows .exe of windows_player/ that NEEDS NO Python and
+# NO separately-installed mpv on the target box: the mpv.exe runtime is bundled
+# inside the package and made discoverable at runtime by a PyInstaller runtime
+# hook (.github/pyinstaller/rthook_mpv.py).
+#
+# Why mpv.exe (and not libmpv-2.dll): the player spawns a real mpv process over
+# JSON IPC (windows_player/mpv_controller.py + watchdog.py). python-mpv/libmpv
+# is explicitly optional and unused at runtime, so the thing we must ship is the
+# mpv.exe binary, not the libmpv DLL.
+name: windows-build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "windows_player/**"
+      - ".github/workflows/windows-build.yml"
+      - ".github/pyinstaller/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed for the tag -> Release upload step
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # --- Download a standalone mpv.exe Windows runtime --------------------
+      # Source: shinchiro's mpv-player-windows builds on SourceForge — the
+      # de-facto stable Windows mpv distribution (self-contained mpv.exe with
+      # all codecs). The /latest/download redirect always grabs the newest
+      # mpv-x86_64 archive, so no version is pinned here.
+      #
+      # IF THIS URL EVER FAILS (project moved / renamed): replace the URL below
+      # with a current archive from https://mpv.io/installation/ ->
+      # "Windows" builds, or https://sourceforge.net/projects/mpv-player-windows/files/
+      # The only hard requirement is that the archive contains an mpv.exe.
+      - name: Download mpv.exe runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir = "mpv_runtime"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $archive = Join-Path $dir "mpv.7z"
+          $url = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-20240414-git-e0aa6ca.7z/download"
+          Write-Host "Downloading mpv from $url"
+          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10 -UseBasicParsing
+          # 7z ships with the windows-latest runner image (7z.exe on PATH).
+          & 7z x $archive "-o$dir" -y | Out-Null
+          $mpv = Get-ChildItem -Path $dir -Recurse -Filter "mpv.exe" | Select-Object -First 1
+          if (-not $mpv) { throw "mpv.exe not found inside the downloaded archive" }
+          Copy-Item $mpv.FullName -Destination (Join-Path $dir "mpv.exe") -Force
+          Write-Host "mpv.exe ready at $dir\mpv.exe"
+
+      - name: Install Python deps + PyInstaller
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          # Windows runner installs pywin32/python-mpv fine (sys_platform markers).
+          pip install -r windows_player/requirements.txt
+          pip install pyinstaller
+
+      # --- Package into a single exe with mpv.exe bundled inside ------------
+      # --paths windows_player   : main.py uses flat sibling imports
+      #                            (import config / from clock import ...).
+      # --add-binary mpv.exe;.   : co-bundle the mpv runtime at the bundle root;
+      #                            rthook_mpv.py puts that root on PATH so the
+      #                            player's subprocess.Popen(["mpv", ...]) finds it.
+      # --hidden-import ...       : deps reached only via guarded/dynamic imports.
+      - name: Build exe with PyInstaller
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pyinstaller `
+            --onefile `
+            --noconsole `
+            --name lan-media-wall-player `
+            --paths windows_player `
+            --runtime-hook .github/pyinstaller/rthook_mpv.py `
+            --add-binary "mpv_runtime/mpv.exe;." `
+            --add-data "windows_player/config.example.yaml;." `
+            --hidden-import websockets `
+            --hidden-import websockets.legacy `
+            --hidden-import websockets.legacy.client `
+            --hidden-import requests `
+            --hidden-import yaml `
+            --hidden-import PIL `
+            --hidden-import PIL.Image `
+            --hidden-import psutil `
+            --hidden-import win32gui `
+            --hidden-import win32con `
+            windows_player/main.py
+
+      - name: Sanity-check the build output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "dist/lan-media-wall-player.exe")) {
+            throw "expected dist/lan-media-wall-player.exe was not produced"
+          }
+          Get-Item "dist/lan-media-wall-player.exe" | Format-List Name,Length
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-player-windows
+          path: dist/lan-media-wall-player.exe
+          if-no-files-found: error
+
+      # --- Attach to a GitHub Release on tag pushes (v*) --------------------
+      - name: Attach exe to Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/lan-media-wall-player.exe
+          fail_on_unmatched_files: true

@@ -1,0 +1,53 @@
+# Lint/test — broker + windows_player pure logic on Linux.
+#
+# The windows_player code is import-guarded for OS-coupled bits (mpv, pywin32,
+# discovery), so its pure logic (clock, envelope, downloader, thumbnail state)
+# imports and tests fine on Linux without the Windows-only deps. Both test
+# suites already live under tests/.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "broker/**"
+      - "windows_player/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [broker, windows_player]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Install only the non-Windows deps: requirements.txt uses
+      # sys_platform == "win32" markers for pywin32/python-mpv, so pip skips
+      # them on Linux automatically.
+      - name: Install deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ${{ matrix.component }}/requirements.txt
+
+      - name: Run pytest
+        working-directory: ${{ matrix.component }}
+        shell: bash
+        run: |
+          if [ -d tests ]; then
+            python -m pytest -q
+          else
+            echo "no tests/ in ${{ matrix.component }} — skipping"
+          fi
