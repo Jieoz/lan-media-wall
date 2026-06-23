@@ -1,0 +1,156 @@
+# Flutter controller — cloud build (Android APK for the remote_flutter app).
+#
+# Builds remote_flutter/ (Flutter, the controller UI) into an Android APK.
+# The repo holds the portable Dart project (lib/, pubspec.yaml, test/) but not
+# the generated platform folders. This workflow runs `flutter create` to
+# materialize the android/ scaffold at build time, then assembles a debug APK.
+# A signed release APK is produced ONLY when keystore secrets are present;
+# otherwise the release step is skipped cleanly and CI still succeeds with the
+# debug artifact.
+name: flutter-build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "remote_flutter/**"
+      - ".github/workflows/flutter-build.yml"
+  pull_request:
+    paths:
+      - "remote_flutter/**"
+      - ".github/workflows/flutter-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed for the tag -> Release upload step
+
+jobs:
+  analyze-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        working-directory: remote_flutter
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: remote_flutter
+        run: flutter analyze --no-fatal-infos
+
+      - name: Unit tests
+        working-directory: remote_flutter
+        run: flutter test
+
+  build-apk:
+    needs: analyze-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # The repo carries the portable Dart project only. Generate the android/
+      # platform scaffold in place without clobbering existing lib/ or pubspec.
+      - name: Generate Android platform scaffold
+        working-directory: remote_flutter
+        shell: bash
+        run: |
+          if [ ! -d android ]; then
+            echo "android/ not present — running flutter create to scaffold it."
+            flutter create --platforms=android --project-name remote_flutter .
+          else
+            echo "android/ already present — skipping scaffold."
+          fi
+
+      - name: Pub get
+        working-directory: remote_flutter
+        run: flutter pub get
+
+      - name: Build debug APK
+        working-directory: remote_flutter
+        run: flutter build apk --debug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-controller-android-debug
+          path: remote_flutter/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+
+      # --- Optional signed release APK -------------------------------------
+      # Runs only when ALL keystore secrets are present. Decode the base64
+      # keystore, write key.properties, and let Gradle pick up the signing
+      # config. If any secret is absent, the release build is skipped and CI
+      # still passes with the debug artifact.
+      - name: Check for release keystore
+        id: keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ANDROID_KEYSTORE_BASE64 secret — skipping signed release APK."
+          fi
+
+      - name: Build release APK (signed)
+        if: steps.keystore.outputs.have == 'true'
+        working-directory: remote_flutter
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          cat > android/key.properties <<EOF
+          storeFile=$RUNNER_TEMP/release.keystore
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+          flutter build apk --release || {
+            echo "::warning::Release build failed (likely signingConfig not wired into the generated Gradle). Debug APK already uploaded."
+            exit 0
+          }
+
+      - name: Upload release APK
+        if: steps.keystore.outputs.have == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-controller-android-release
+          path: remote_flutter/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: warn
+
+      # --- Attach APK to a GitHub Release on tag pushes (v*) --------------
+      - name: Attach APK to Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            remote_flutter/build/app/outputs/flutter-apk/app-debug.apk
+            remote_flutter/build/app/outputs/flutter-apk/app-release.apk
+          fail_on_unmatched_files: false

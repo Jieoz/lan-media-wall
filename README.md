@@ -37,7 +37,7 @@
 ### 目录结构
 
 ```
-.github/workflows/   # windows-build.yml(PyInstaller exe) / android-build.yml(APK)
+.github/workflows/   # windows-build.yml(exe) / android-build.yml(被控端APK) / flutter-build.yml(遥控端APK) / ci.yml
 broker/              # Python broker
 windows_player/      # Windows10 被控端 (Python + mpv IPC + 看门狗 + 缓存)
 android_apps/        # Android 原生 Kotlin 被控端 (Media3, kiosk)
