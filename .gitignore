@@ -42,3 +42,8 @@ thumbnails/
 # OS
 .DS_Store
 Thumbs.db
+
+# test / cache artifacts
+.pytest_cache/
+**/__pycache__/
+*.pyc
