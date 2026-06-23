@@ -115,8 +115,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "7z extraction failed with exit code $LASTEXITCODE" }
           $mpv = Get-ChildItem -Path $dir -Recurse -Filter "mpv.exe" | Select-Object -First 1
           if (-not $mpv) { throw "mpv.exe not found inside the downloaded archive" }
-          Copy-Item $mpv.FullName -Destination (Join-Path $dir "mpv.exe") -Force
-          Write-Host "mpv.exe ready at $dir\mpv.exe"
+          $dest = Join-Path $dir "mpv.exe"
+          # Some archives (e.g. the zhongfly mirror) extract mpv.exe straight
+          # into $dir, so the discovered file may already be the destination —
+          # Copy-Item -Force errors on "overwrite the item with itself".
+          if ($mpv.FullName -ne (Resolve-Path -LiteralPath $dest -ErrorAction SilentlyContinue).Path) {
+            Copy-Item $mpv.FullName -Destination $dest -Force
+          }
+          if (-not (Test-Path $dest)) { throw "mpv.exe missing at $dest after extraction" }
+          Write-Host "mpv.exe ready at $dest"
 
       - name: Install Python deps + PyInstaller
         shell: pwsh
