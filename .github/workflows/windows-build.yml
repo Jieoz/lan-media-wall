@@ -44,12 +44,16 @@ jobs:
       # breaks this job. Instead we discover the newest build at run time, with
       # two independent sources so a single outage can't block the pipeline:
       #
-      #   1. PRIMARY  — SourceForge RSS for the /64bit folder. The first
-      #      <link> matching mpv-x86_64-*.7z is the latest self-contained
-      #      mpv.exe build. The .../download suffix 302s to a CDN mirror.
-      #   2. FALLBACK — zhongfly/mpv-winbuild GitHub releases (a well-known
-      #      mirror of the same shinchiro builds). releases/latest exposes a
-      #      mpv-x86_64-*.7z asset with a direct browser_download_url.
+      #   1. PRIMARY  — zhongfly/mpv-winbuild GitHub releases (a well-known
+      #      mirror of the shinchiro mpv-x86_64 builds). releases/latest exposes
+      #      a mpv-x86_64-*.7z asset whose browser_download_url is a direct,
+      #      UA-agnostic file download. This is the most robust source on a CI
+      #      runner: no interstitial HTML pages, no per-version GC.
+      #   2. FALLBACK — SourceForge RSS for the /64bit folder; the first <link>
+      #      matching mpv-x86_64-*.7z is the latest build. NOTE: SourceForge
+      #      serves a browser interstitial (HTML, ~140 KB) to browser-like User-
+      #      Agents and only returns the real .7z to a Wget-style UA, so the
+      #      download below forces a Wget User-Agent.
       #
       # The only hard requirement is that the archive contains an mpv.exe.
       - name: Download mpv.exe runtime
@@ -62,15 +66,9 @@ jobs:
           $dir = "mpv_runtime"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $archive = Join-Path $dir "mpv.7z"
-
-          function Resolve-FromSourceForge {
-            $rss = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/64bit"
-            Write-Host "Querying SourceForge RSS: $rss"
-            $resp = Invoke-WebRequest -Uri $rss -UseBasicParsing -MaximumRedirection 10
-            $m = [regex]::Match($resp.Content, '<link>(https://sourceforge\.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-[^<]*?\.7z/download)</link>')
-            if (-not $m.Success) { throw "no mpv-x86_64-*.7z link found in SourceForge RSS" }
-            return $m.Groups[1].Value
-          }
+          # Wget UA: SourceForge hands a Wget-style client the real binary
+          # instead of the JavaScript "your download will start shortly" page.
+          $ua = "Wget/1.21.4"
 
           function Resolve-FromGitHubMirror {
             $api = "https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest"
@@ -83,22 +81,31 @@ jobs:
             return $asset.browser_download_url
           }
 
+          function Resolve-FromSourceForge {
+            $rss = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/64bit"
+            Write-Host "Querying SourceForge RSS: $rss"
+            $resp = Invoke-WebRequest -Uri $rss -UseBasicParsing -MaximumRedirection 10 -UserAgent $ua
+            $m = [regex]::Match($resp.Content, '<link>(https://sourceforge\.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-[^<]*?\.7z/download)</link>')
+            if (-not $m.Success) { throw "no mpv-x86_64-*.7z link found in SourceForge RSS" }
+            return $m.Groups[1].Value
+          }
+
           $url = $null
           try {
-            $url = Resolve-FromSourceForge
-            Write-Host "PRIMARY (SourceForge) resolved: $url"
+            $url = Resolve-FromGitHubMirror
+            Write-Host "PRIMARY (GitHub mirror) resolved: $url"
           } catch {
-            Write-Warning "PRIMARY source (SourceForge RSS) failed: $($_.Exception.Message)"
+            Write-Warning "PRIMARY source (GitHub mirror) failed: $($_.Exception.Message)"
             try {
-              $url = Resolve-FromGitHubMirror
-              Write-Host "FALLBACK (GitHub mirror) resolved: $url"
+              $url = Resolve-FromSourceForge
+              Write-Host "FALLBACK (SourceForge) resolved: $url"
             } catch {
-              throw "Both mpv download sources failed. SourceForge + GitHub mirror unreachable: $($_.Exception.Message)"
+              throw "Both mpv download sources failed. GitHub mirror + SourceForge unreachable: $($_.Exception.Message)"
             }
           }
 
           Write-Host "Downloading mpv archive from $url"
-          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10 -UseBasicParsing
+          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10 -UseBasicParsing -UserAgent $ua
           $size = (Get-Item $archive).Length
           if ($size -lt 1MB) { throw "downloaded archive is implausibly small ($size bytes) — likely an error page, not a 7z" }
           Write-Host "Downloaded $size bytes to $archive"
