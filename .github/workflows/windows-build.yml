@@ -38,27 +38,74 @@ jobs:
           python-version: "3.11"
 
       # --- Download a standalone mpv.exe Windows runtime --------------------
-      # Source: shinchiro's mpv-player-windows builds on SourceForge — the
-      # de-facto stable Windows mpv distribution (self-contained mpv.exe with
-      # all codecs). The /latest/download redirect always grabs the newest
-      # mpv-x86_64 archive, so no version is pinned here.
+      # We DO NOT pin a single archive URL: the mpv-player-windows project on
+      # SourceForge regularly garbage-collects old builds, so any hard-coded
+      # version (e.g. an old mpv-x86_64-YYYYMMDD-git-*.7z) eventually 404s and
+      # breaks this job. Instead we discover the newest build at run time, with
+      # two independent sources so a single outage can't block the pipeline:
       #
-      # IF THIS URL EVER FAILS (project moved / renamed): replace the URL below
-      # with a current archive from https://mpv.io/installation/ ->
-      # "Windows" builds, or https://sourceforge.net/projects/mpv-player-windows/files/
+      #   1. PRIMARY  — SourceForge RSS for the /64bit folder. The first
+      #      <link> matching mpv-x86_64-*.7z is the latest self-contained
+      #      mpv.exe build. The .../download suffix 302s to a CDN mirror.
+      #   2. FALLBACK — zhongfly/mpv-winbuild GitHub releases (a well-known
+      #      mirror of the same shinchiro builds). releases/latest exposes a
+      #      mpv-x86_64-*.7z asset with a direct browser_download_url.
+      #
       # The only hard requirement is that the archive contains an mpv.exe.
       - name: Download mpv.exe runtime
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
           $dir = "mpv_runtime"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $archive = Join-Path $dir "mpv.7z"
-          $url = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-20240414-git-e0aa6ca.7z/download"
-          Write-Host "Downloading mpv from $url"
+
+          function Resolve-FromSourceForge {
+            $rss = "https://sourceforge.net/projects/mpv-player-windows/rss?path=/64bit"
+            Write-Host "Querying SourceForge RSS: $rss"
+            $resp = Invoke-WebRequest -Uri $rss -UseBasicParsing -MaximumRedirection 10
+            $m = [regex]::Match($resp.Content, '<link>(https://sourceforge\.net/projects/mpv-player-windows/files/64bit/mpv-x86_64-[^<]*?\.7z/download)</link>')
+            if (-not $m.Success) { throw "no mpv-x86_64-*.7z link found in SourceForge RSS" }
+            return $m.Groups[1].Value
+          }
+
+          function Resolve-FromGitHubMirror {
+            $api = "https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest"
+            Write-Host "Querying GitHub mirror API: $api"
+            $headers = @{ "User-Agent" = "lan-media-wall-ci"; "Accept" = "application/vnd.github+json" }
+            if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $($env:GITHUB_TOKEN)" }
+            $rel = Invoke-RestMethod -Uri $api -Headers $headers -MaximumRedirection 10
+            $asset = $rel.assets | Where-Object { $_.name -match '^mpv-x86_64-\d.*\.7z$' } | Select-Object -First 1
+            if (-not $asset) { throw "no mpv-x86_64-*.7z asset in zhongfly/mpv-winbuild latest release" }
+            return $asset.browser_download_url
+          }
+
+          $url = $null
+          try {
+            $url = Resolve-FromSourceForge
+            Write-Host "PRIMARY (SourceForge) resolved: $url"
+          } catch {
+            Write-Warning "PRIMARY source (SourceForge RSS) failed: $($_.Exception.Message)"
+            try {
+              $url = Resolve-FromGitHubMirror
+              Write-Host "FALLBACK (GitHub mirror) resolved: $url"
+            } catch {
+              throw "Both mpv download sources failed. SourceForge + GitHub mirror unreachable: $($_.Exception.Message)"
+            }
+          }
+
+          Write-Host "Downloading mpv archive from $url"
           Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10 -UseBasicParsing
+          $size = (Get-Item $archive).Length
+          if ($size -lt 1MB) { throw "downloaded archive is implausibly small ($size bytes) — likely an error page, not a 7z" }
+          Write-Host "Downloaded $size bytes to $archive"
+
           # 7z ships with the windows-latest runner image (7z.exe on PATH).
           & 7z x $archive "-o$dir" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "7z extraction failed with exit code $LASTEXITCODE" }
           $mpv = Get-ChildItem -Path $dir -Recurse -Filter "mpv.exe" | Select-Object -First 1
           if (-not $mpv) { throw "mpv.exe not found inside the downloaded archive" }
           Copy-Item $mpv.FullName -Destination (Join-Path $dir "mpv.exe") -Force
