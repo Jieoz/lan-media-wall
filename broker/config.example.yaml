@@ -1,0 +1,33 @@
+# LAN Media Wall broker — example config.
+# Copy to config.yaml and edit. The PSK may also come from the LMW_PSK env var
+# (env wins over this file). PSK must be the SAME 32+ byte random string on
+# every player and controller (protocol_spec.md §3).
+
+# Pre-shared key for HMAC signing. Generate with:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+psk: "CHANGE_ME_to_a_32plus_byte_random_hex_string"
+
+# WebSocket ports.
+ws_port: 8770
+wss_port: 8771          # used only when certs/cert.pem + certs/key.pem exist
+discovery_port: 8772    # UDP discover/announce
+
+# Where the device registry is persisted.
+state_path: "state.json"
+certs_dir: "certs"
+
+# Synchronized-start tuning (protocol_spec.md §8.2 / §9).
+buffer_ms: 1500         # play_at = server_now + buffer_ms after ready collected
+ready_timeout_ms: 2000  # collect ready up to this long, then fire for ready set
+
+# Throttling / housekeeping.
+wall_interval_ms: 1000      # max wall-snapshot push rate to controllers
+time_sync_interval_ms: 30000
+
+# Auth abuse protection (§3).
+auth_fail_limit: 5
+auth_cooldown_s: 60
+
+# UDP discovery: broker can also broadcast discover packets. Off by default;
+# controllers normally drive discovery.
+enable_discovery: false

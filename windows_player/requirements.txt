@@ -1,0 +1,16 @@
+# Core
+websockets>=12.0      # asyncio WS client (§1)
+requests>=2.31        # HTTP Range downloads (§6)
+PyYAML>=6.0           # config.yaml
+Pillow>=10.0          # thumbnail scale/encode (§6.4)
+
+# Windows-only (no-op import-guarded elsewhere)
+pywin32>=306 ; sys_platform == "win32"   # taskbar hide / window topmost (§11)
+python-mpv>=1.0 ; sys_platform == "win32" # optional; we drive mpv via JSON IPC,
+                                           # python-mpv not strictly required
+
+# Optional niceties
+psutil>=5.9           # cpu% in status (§5); degrades to 0 if absent
+
+# Dev/test
+pytest>=7.0

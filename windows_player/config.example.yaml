@@ -1,0 +1,45 @@
+# LAN Media Wall — Windows player config (copy to config.yaml).
+# Secrets: prefer the env var LMW_PSK over putting the PSK here. LMW_PSK wins.
+
+broker:
+  host: "192.168.1.10"     # broker (Synology Docker) LAN IP
+  port: 8770               # WS  (protocol §1)
+  use_wss: false           # set true if the broker has a cert
+  wss_port: 8771
+
+# Pre-shared key, 32+ random bytes, IDENTICAL on broker + every player (§3).
+# Strongly prefer setting env LMW_PSK instead of committing this.
+psk: "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY"
+
+device:
+  name: "大厅左屏"          # first-boot display name; persisted to state.json after
+  group_id: "lobby"        # initial group; broker registry can reassign (§4/§9.3)
+
+cache_dir: "C:/lmw/cache"   # where prefetched media lands (§6)
+state_dir: "C:/lmw/state"   # device_id / device_name / last_task persistence
+
+mpv:
+  path: "mpv.exe"                    # ship mpv.exe next to the app (see README)
+  ipc_pipe: "\\\\.\\pipe\\lmw-mpv"   # Windows named pipe for JSON IPC
+  ipc_socket: "/tmp/lmw-mpv.sock"    # POSIX dev/CI fallback
+  extra_args: []                     # any extra mpv flags
+
+idle_image: null            # path to a placeholder image; null = pure black (§11)
+
+thumbnail:
+  enabled: true
+  interval_s: 5             # ~5s per §6.4
+  max_width: 320            # ≤320px wide JPEG
+  jpeg_quality: 70
+  always_collect: false     # true = ignore controller-presence gate (see NOTES)
+
+discovery:
+  enabled: true
+  udp_port: 8772            # §7
+
+status_interval_s: 1.5      # §5: every 1–2s
+time_sync_interval_s: 30    # §8.1: re-handshake cadence
+
+watchdog:
+  check_interval_s: 1.0
+  restart_grace_s: 5.0      # §11: restart within 5s on crash/hang
