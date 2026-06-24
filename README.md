@@ -50,13 +50,13 @@
 
 | 端 | 产物文件名 | 说明 |
 |---|---|---|
-| 中枢 Broker(Linux) | `LANMediaWall-<版本>-Broker-中枢-Linux` | PyInstaller onefile，独立可执行，无需 Python |
-| 中枢 Broker(Windows) | `LANMediaWall-<版本>-Broker-中枢-Windows.exe` | 同上，Windows 版 |
-| Windows 被控端 | `LANMediaWall-<版本>-Windows-Player-被控端-安装包.exe` | Inno Setup 安装包，已内置 mpv 运行时 |
-| Android 被控端 | `LANMediaWall-<版本>-Android-Player-被控端.apk` | 原生 Kotlin 播放器，装在每块屏上 |
-| 遥控端(新手机) | `LANMediaWall-<版本>-遥控端-Controller-ARM64-v8a-新手机.apk` | 手机/平板遥控,近几年的机型选这个 |
-| 遥控端(旧手机) | `LANMediaWall-<版本>-遥控端-Controller-ARMv7-旧手机.apk` | 老旧 32 位机型 |
-| 遥控端(模拟器) | `LANMediaWall-<版本>-遥控端-Controller-x86_64-模拟器.apk` | x86 模拟器/极少数 x86 平板 |
+| 中枢 Broker(Linux) | `LANMediaWall-<版本>-Broker-Linux` | PyInstaller onefile，独立可执行，无需 Python |
+| 中枢 Broker(Windows) | `LANMediaWall-<版本>-Broker-Windows.exe` | 同上，Windows 版 |
+| Windows 被控端 | `LANMediaWall-<版本>-Player-Windows-Setup.exe` | Inno Setup 安装包，已内置 mpv 运行时 |
+| Android 被控端 | `LANMediaWall-<版本>-Player-Android.apk` | 原生 Kotlin 播放器，装在每块屏上 |
+| 遥控端(新手机) | `LANMediaWall-<版本>-Controller-ARM64-v8a.apk` | 手机/平板遥控,近几年的机型选这个 |
+| 遥控端(旧手机) | `LANMediaWall-<版本>-Controller-ARMv7.apk` | 老旧 32 位机型 |
+| 遥控端(模拟器) | `LANMediaWall-<版本>-Controller-x86_64.apk` | x86 模拟器/极少数 x86 平板 |
 
 > 文件名一眼区分**端(被控/遥控/中枢)+ 平台/架构 + 版本号**;遥控端按手机架构选一个装即可,绝大多数人选「新手机 ARM64」。
 
@@ -64,10 +64,10 @@
 
 1. **起 broker**(群晖 / 任意 Linux):
    ```bash
-   # 下载到的中枢文件名是 LANMediaWall-<版本>-Broker-中枢-Linux，赋可执行权后直接跑
-   chmod +x LANMediaWall-*-Broker-中枢-Linux
-   ./LANMediaWall-*-Broker-中枢-Linux          # 默认 open 模式零配置;或 docker 跑,见 broker/README.md
-   # 需要鉴权时:LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-中枢-Linux
+   # 下载到的中枢文件名是 LANMediaWall-<版本>-Broker-Linux，赋可执行权后直接跑
+   chmod +x LANMediaWall-*-Broker-Linux
+   ./LANMediaWall-*-Broker-Linux          # 默认 open 模式零配置;或 docker 跑,见 broker/README.md
+   # 需要鉴权时:LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-Linux
    ```
    记下 broker 的局域网 IP(如 `192.168.1.10`)和这把 `PSK`,全系统共用。
 2. **装被控端**(每块屏):装 Windows 安装包或 Android 被控端 APK。**默认 `open` 模式零配置**——同一局域网自动发现 broker 即可上线,无需手填密钥。需要鉴权时再切 `required` 并填同一把 PSK。
@@ -126,13 +126,13 @@ Each `v*` tag triggers CI to cloud-build all four ends and attach the binaries t
 
 | End | Artifact filename | Notes |
 |---|---|---|
-| Broker hub (Linux) | `LANMediaWall-<ver>-Broker-中枢-Linux` | PyInstaller onefile, standalone, no Python required |
-| Broker hub (Windows) | `LANMediaWall-<ver>-Broker-中枢-Windows.exe` | same, Windows build |
-| Windows player | `LANMediaWall-<ver>-Windows-Player-被控端-安装包.exe` | Inno Setup installer, mpv runtime bundled |
-| Android player | `LANMediaWall-<ver>-Android-Player-被控端.apk` | native Kotlin player; install on each screen |
-| Controller (modern phone) | `LANMediaWall-<ver>-遥控端-Controller-ARM64-v8a-新手机.apk` | phone/tablet remote; pick this for recent devices |
-| Controller (old phone) | `LANMediaWall-<ver>-遥控端-Controller-ARMv7-旧手机.apk` | legacy 32-bit devices |
-| Controller (emulator) | `LANMediaWall-<ver>-遥控端-Controller-x86_64-模拟器.apk` | x86 emulators / rare x86 tablets |
+| Broker hub (Linux) | `LANMediaWall-<ver>-Broker-Linux` | PyInstaller onefile, standalone, no Python required |
+| Broker hub (Windows) | `LANMediaWall-<ver>-Broker-Windows.exe` | same, Windows build |
+| Windows player | `LANMediaWall-<ver>-Player-Windows-Setup.exe` | Inno Setup installer, mpv runtime bundled |
+| Android player | `LANMediaWall-<ver>-Player-Android.apk` | native Kotlin player; install on each screen |
+| Controller (modern phone) | `LANMediaWall-<ver>-Controller-ARM64-v8a.apk` | phone/tablet remote; pick this for recent devices |
+| Controller (old phone) | `LANMediaWall-<ver>-Controller-ARMv7.apk` | legacy 32-bit devices |
+| Controller (emulator) | `LANMediaWall-<ver>-Controller-x86_64.apk` | x86 emulators / rare x86 tablets |
 
 > Each filename states **role (player/controller/broker) + platform/arch + version** at a glance. For the controller, install one matching your phone — most people want the modern ARM64 build.
 
@@ -140,10 +140,10 @@ Each `v*` tag triggers CI to cloud-build all four ends and attach the binaries t
 
 1. **Run the broker** (Synology / any Linux):
    ```bash
-   # the downloaded hub is named LANMediaWall-<ver>-Broker-中枢-Linux; mark it executable and run
-   chmod +x LANMediaWall-*-Broker-中枢-Linux
-   ./LANMediaWall-*-Broker-中枢-Linux          # default open mode, zero-config; or via Docker, see broker/README.md
-   # with auth: LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-中枢-Linux
+   # the downloaded hub is named LANMediaWall-<ver>-Broker-Linux; mark it executable and run
+   chmod +x LANMediaWall-*-Broker-Linux
+   ./LANMediaWall-*-Broker-Linux          # default open mode, zero-config; or via Docker, see broker/README.md
+   # with auth: LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-Linux
    ```
    Note the broker LAN IP (e.g. `192.168.1.10`) and this `PSK` — shared system-wide.
 2. **Install players** (each screen): run the Windows installer or the Android player APK. **Default `open` mode is zero-config** — players auto-discover the broker on the same LAN and come online with no key to type. Switch to `required` and set a shared PSK when you need auth.

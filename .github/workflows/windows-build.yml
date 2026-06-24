@@ -255,7 +255,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           mkdir -p dist_release
-          DST="dist_release/LANMediaWall-${TAG}-Windows-Player-被控端-安装包.exe"
+          DST="dist_release/LANMediaWall-${TAG}-Player-Windows-Setup.exe"
           cp installer_out/lan-media-wall-player-setup.exe "$DST"
           echo "asset=$DST" >> "$GITHUB_OUTPUT"
           ls -la "$DST"

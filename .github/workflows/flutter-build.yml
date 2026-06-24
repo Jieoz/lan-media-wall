@@ -165,12 +165,12 @@ jobs:
           for f in remote_flutter/build/app/outputs/flutter-apk/*-release.apk; do
             base="$(basename "$f")"
             case "$base" in
-              *arm64-v8a*)   arch="ARM64-v8a-新手机" ;;
-              *armeabi-v7a*) arch="ARMv7-旧手机" ;;
-              *x86_64*)      arch="x86_64-模拟器" ;;
-              *)             arch="universal" ;;
+              *arm64-v8a*)   arch="Controller-ARM64-v8a" ;;
+              *armeabi-v7a*) arch="Controller-ARMv7" ;;
+              *x86_64*)      arch="Controller-x86_64" ;;
+              *)             arch="Controller-universal" ;;
             esac
-            cp "$f" "dist_release/LANMediaWall-${TAG}-遥控端-Controller-${arch}.apk"
+            cp "$f" "dist_release/LANMediaWall-${TAG}-${arch}.apk"
           done
           ls -la dist_release/
 

@@ -93,7 +93,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           SRC="$(ls android_apps/player/app/build/outputs/apk/release/*.apk | head -1)"
           mkdir -p dist_release
-          DST="dist_release/LANMediaWall-${TAG}-Android-Player-被控端.apk"
+          DST="dist_release/LANMediaWall-${TAG}-Player-Android.apk"
           cp "$SRC" "$DST"
           echo "asset=$DST" >> "$GITHUB_OUTPUT"
           ls -la "$DST"
