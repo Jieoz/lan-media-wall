@@ -34,10 +34,10 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: lmw-broker
-            out: dist/lmw-broker
+            out: broker/dist/lmw-broker
           - os: windows-latest
             artifact: lmw-broker.exe
-            out: dist/lmw-broker.exe
+            out: broker/dist/lmw-broker.exe
     runs-on: ${{ matrix.os }}
 
     steps:
