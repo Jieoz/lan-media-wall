@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../protocol/auth_mode.dart';
-import '../protocol/pair_uri.dart';
 import '../state/wall_state.dart';
 
 /// 邀请设备 / 添加页（protocol_spec.md §15）：由当前连接信息**生成** `lmw://pair?...`

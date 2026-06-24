@@ -2,6 +2,7 @@
 ///
 /// 出站命令的 payload 由各 build* 静态方法产出（纯 Map，交给 EnvelopeCodec 签名）；
 /// 入站数据（wall / status / thumb_meta）由对应 model 的 fromMap 解析。
+library;
 
 int _asInt(Object? v, [int def = 0]) =>
     v is num ? v.toInt() : (v is String ? int.tryParse(v) ?? def : def);
