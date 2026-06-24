@@ -49,6 +49,9 @@ async def main():
     cfg = dict(broker_mod.DEFAULTS)
     cfg.update({
         "psk": PSK,
+        # Pin the strict path so this stays a backward-compat regression of the
+        # dedicated+required flow (v1.2 default auth_mode is `open`, §13).
+        "auth_mode": "required",
         "ws_port": PORT,
         "state_path": os.path.join(tmp, "state.json"),
         "certs_dir": os.path.join(tmp, "certs"),

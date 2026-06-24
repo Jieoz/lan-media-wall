@@ -19,6 +19,7 @@ import websockets
 import clock
 import discovery as discovery_mod
 import envelope
+import pairing
 import registry as registry_mod
 import router
 import sync as sync_mod
@@ -43,13 +44,36 @@ DEFAULTS = {
     "time_sync_interval_ms": 30000,
     "auth_fail_limit": 5,
     "auth_cooldown_s": 60,
-    "enable_discovery": False,
+    # §13 auth_mode: open (default, zero-config) | optional | required.
+    "auth_mode": envelope.AUTH_OPEN,
+    # §14 topology this broker advertises: dedicated (default) | cohosted.
+    "topology": "dedicated",
+    # §14.5: discovery on by default so endpoints can auto-find the broker.
+    "enable_discovery": True,
+    # How often (ms) the broker self-announces over UDP (§14.5). 0 disables.
+    "announce_interval_ms": 5000,
+    # LAN IP advertised in announce/pairing. Empty -> auto-detect.
+    "advertise_host": "",
 }
+
+TOPOLOGIES = ("dedicated", "cohosted")
+
+
+def normalize_topology(mode) -> str:
+    m = str(mode).strip().lower() if mode is not None else "dedicated"
+    return m if m in TOPOLOGIES else "dedicated"
 
 
 def load_config(path: Optional[str] = None) -> dict:
-    """Merge defaults <- config.yaml <- env. PSK comes from LMW_PSK or the
-    config file (env wins)."""
+    """Merge defaults <- config.yaml <- env.
+
+    PSK comes from LMW_PSK or config.yaml (env wins). auth_mode comes from
+    LMW_AUTH_MODE or config.yaml (env wins). topology from LMW_TOPOLOGY.
+
+    A PSK is **only required in `required` mode** (§13). In `open`/`optional`
+    the broker runs with no key (zero-config) — `open` never verifies and
+    `optional` simply lets unsigned frames through.
+    """
     cfg = dict(DEFAULTS)
     cfg_path = path or os.environ.get("LMW_CONFIG", "config.yaml")
     if yaml is not None and os.path.exists(cfg_path):
@@ -63,9 +87,20 @@ def load_config(path: Optional[str] = None) -> dict:
     env_psk = os.environ.get("LMW_PSK")
     if env_psk:
         cfg["psk"] = env_psk
+    env_mode = os.environ.get("LMW_AUTH_MODE")
+    if env_mode:
+        cfg["auth_mode"] = env_mode
+    env_topo = os.environ.get("LMW_TOPOLOGY")
+    if env_topo:
+        cfg["topology"] = env_topo
+    cfg["auth_mode"] = envelope.normalize_auth_mode(cfg.get("auth_mode"))
+    cfg["topology"] = normalize_topology(cfg.get("topology"))
     if not cfg.get("psk"):
-        raise SystemExit(
-            "No PSK configured. Set LMW_PSK env var or 'psk:' in config.yaml.")
+        cfg["psk"] = ""
+        if cfg["auth_mode"] == envelope.AUTH_REQUIRED:
+            raise SystemExit(
+                "auth_mode=required but no PSK configured. Set LMW_PSK or "
+                "'psk:' in config.yaml, or use auth_mode=open/optional.")
     return cfg
 
 
@@ -102,7 +137,9 @@ class Hub:
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self.psk = cfg["psk"]
+        self.psk = cfg.get("psk", "")
+        self.auth_mode = envelope.normalize_auth_mode(cfg.get("auth_mode"))
+        self.topology = cfg.get("topology", "dedicated")
         self.reg = registry_mod.Registry(cfg["state_path"])
         self.sync = sync_mod.SyncManager(
             buffer_ms=cfg["buffer_ms"],
@@ -150,7 +187,30 @@ class Hub:
         }
 
     def make_env(self, type_: str, payload: dict, to: str) -> dict:
-        return envelope.build_envelope(type_, payload, "broker", to, self.psk)
+        # §13: sign only when the active auth_mode calls for it; otherwise the
+        # frame goes out with sig:"" (structure unchanged, parse still works).
+        sign = envelope.should_sign(self.auth_mode, self.psk)
+        return envelope.build_envelope(
+            type_, payload, "broker", to, self.psk, sign=sign)
+
+    def auth_meta(self) -> dict:
+        """Fields advertised in welcome + announce so endpoints self-adapt
+        (§13 auth_mode authority, §14 topology declaration)."""
+        return {"auth_mode": self.auth_mode, "topology": self.topology}
+
+    def broker_hint(self) -> str:
+        host = self.cfg.get("advertise_host") or pairing.local_ip()
+        return f"{host}:{self.cfg['ws_port']}"
+
+    def build_announce_payload(self) -> dict:
+        """UDP announce payload (§7 + §13/§14.5): carries topology, auth_mode,
+        broker_hint so endpoints can auto-find and self-adapt to this broker."""
+        p = {
+            "broker_hint": self.broker_hint(),
+            "ws_port": self.cfg["ws_port"],
+        }
+        p.update(self.auth_meta())
+        return p
 
     # ---- connection lifecycle -------------------------------------------
     def _client_ip(self, ws) -> str:
@@ -196,10 +256,13 @@ class Hub:
         except envelope.MalformedEnvelope as exc:
             log.debug("malformed envelope from %s: %s", conn.addr or conn.ip, exc)
             return
-        # §3 verification pipeline: sig -> ts -> dedup.
-        if not envelope.verify_sig(env, self.psk):
-            if self._register_auth_fail(conn):
-                await conn.ws.close(code=1008, reason="auth")
+        # §13 verification pipeline. The sig gate depends on auth_mode; the
+        # ts-window + msg_id dedup checks run in EVERY mode (replay hygiene).
+        if not envelope.verify_inbound(env, self.psk, self.auth_mode):
+            # Auth-fail counter + cooldown apply ONLY in `required` (§13).
+            if self.auth_mode == envelope.AUTH_REQUIRED:
+                if self._register_auth_fail(conn):
+                    await conn.ws.close(code=1008, reason="auth")
             return
         if not envelope.check_ts(env["ts"], first=conn.first_msg):
             return
@@ -285,7 +348,10 @@ class Hub:
                 "assigned": True,
                 "server_time": clock.server_time_ms(),
                 "v": envelope.PROTOCOL_VERSION,
+                "minor": envelope.PROTOCOL_MINOR,
                 "group_id": dev.group_id,
+                "controllers_online": len(self.controllers),
+                **self.auth_meta(),
             }, conn.addr)
             await conn.send_env(welcome)
             self.mark_wall_dirty()
@@ -301,7 +367,9 @@ class Hub:
                 "assigned": True,
                 "server_time": clock.server_time_ms(),
                 "v": envelope.PROTOCOL_VERSION,
+                "minor": envelope.PROTOCOL_MINOR,
                 "snapshot": self.build_wall_payload(),
+                **self.auth_meta(),
             }, conn.addr)
             await conn.send_env(welcome)
         # unknown role: ignore.
@@ -510,6 +578,35 @@ class Hub:
             except Exception as exc:
                 log.warning("sync timeout loop error: %s", exc)
 
+    async def announce_loop(self) -> None:
+        """Periodically self-announce over UDP so endpoints auto-find this
+        broker (§14.5). Disabled when announce_interval_ms <= 0."""
+        interval_ms = self.cfg.get("announce_interval_ms", 0)
+        if not interval_ms or interval_ms <= 0:
+            return
+        interval = interval_ms / 1000.0
+        while True:
+            await asyncio.sleep(interval)
+            if self.discovery is None:
+                continue
+            try:
+                env = self.make_env("announce", self.build_announce_payload(),
+                                     "all")
+                self.discovery.broadcast(env)
+            except Exception as exc:
+                log.debug("announce broadcast failed: %s", exc)
+
+    def on_discover(self, env: dict, addr) -> None:
+        """A discover packet arrived -> unicast our announce back (§7/§14.5)."""
+        if self.discovery is None:
+            return
+        try:
+            reply = self.make_env("announce", self.build_announce_payload(),
+                                   "all")
+            self.discovery.send_to(reply, addr)
+        except Exception as exc:
+            log.debug("discover reply failed: %s", exc)
+
     def on_announce(self, env: dict, addr) -> None:
         """UDP announce -> refresh last_ip in the registry (§7)."""
         p = env.get("payload", {})
@@ -533,8 +630,16 @@ def build_ssl_context(certs_dir: str) -> Optional[ssl.SSLContext]:
     return None
 
 
-async def run(cfg: dict) -> None:
-    hub = Hub(cfg)
+async def run(cfg: dict, *, hub: Optional["Hub"] = None,
+              ready_event: Optional[asyncio.Event] = None) -> "Hub":
+    """Start the broker servers + background loops and run until cancelled.
+
+    Returns the live `Hub` (useful when embedded). When `hub` is provided it is
+    used as-is (the caller may inspect it); otherwise one is built from `cfg`.
+    `ready_event`, if given, is set once all servers are listening — a cohost
+    player process can await it before connecting its local client (§14.2).
+    """
+    hub = hub or Hub(cfg)
     servers = []
 
     ws_server = await websockets.serve(
@@ -542,10 +647,12 @@ async def run(cfg: dict) -> None:
         ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024,
     )
     servers.append(ws_server)
-    log.info("broker WS listening on :%d", cfg["ws_port"])
+    log.info("broker WS listening on :%d (auth_mode=%s topology=%s)",
+             cfg["ws_port"], hub.auth_mode, hub.topology)
 
     ssl_ctx = build_ssl_context(cfg["certs_dir"])
-    if ssl_ctx is not None:
+    wss_enabled = ssl_ctx is not None
+    if wss_enabled:
         wss_server = await websockets.serve(
             hub.handle_connection, "0.0.0.0", cfg["wss_port"],
             ssl=ssl_ctx, ping_interval=20, ping_timeout=20,
@@ -558,17 +665,31 @@ async def run(cfg: dict) -> None:
 
     if cfg.get("enable_discovery"):
         hub.discovery = discovery_mod.Discovery(
-            hub.psk, hub.on_announce, cfg["discovery_port"])
+            hub.psk, hub.on_announce, cfg["discovery_port"],
+            auth_mode=hub.auth_mode, on_discover=hub.on_discover)
         try:
             await hub.discovery.start()
             log.info("UDP discovery on :%d", cfg["discovery_port"])
         except OSError as exc:
+            hub.discovery = None
             log.warning("discovery disabled: %s", exc)
 
     tasks = [
         asyncio.create_task(hub.wall_loop()),
         asyncio.create_task(hub.sync_timeout_loop()),
     ]
+    if hub.discovery is not None:
+        tasks.append(asyncio.create_task(hub.announce_loop()))
+
+    # Emit the pairing block so an operator can scan to onboard endpoints (§15).
+    try:
+        pairing.print_pairing(cfg, wss=wss_enabled)
+    except Exception as exc:  # never let cosmetics break startup
+        log.debug("pairing print skipped: %s", exc)
+
+    if ready_event is not None:
+        ready_event.set()
+
     try:
         await asyncio.Future()  # run forever
     finally:
@@ -579,6 +700,22 @@ async def run(cfg: dict) -> None:
             await s.wait_closed()
         if hub.discovery:
             hub.discovery.stop()
+    return hub
+
+
+async def run_broker(cfg: Optional[dict] = None, *,
+                     ready_event: Optional[asyncio.Event] = None) -> "Hub":
+    """Embeddable entry point (§14.2 cohosted).
+
+    A player process can `import broker` and `await broker.run_broker(cfg)` to
+    launch the broker in-process — no separate machine or CLI needed. When
+    `cfg` is None the standard config (defaults <- config.yaml <- env) is used.
+    From the wire side this is identical to a dedicated broker; only `topology`
+    advertised in welcome/announce differs.
+    """
+    if cfg is None:
+        cfg = load_config()
+    return await run(cfg, ready_event=ready_event)
 
 
 def main(argv=None) -> int:

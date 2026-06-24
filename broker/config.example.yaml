@@ -1,9 +1,25 @@
 # LAN Media Wall broker — example config.
 # Copy to config.yaml and edit. The PSK may also come from the LMW_PSK env var
 # (env wins over this file). PSK must be the SAME 32+ byte random string on
-# every player and controller (protocol_spec.md §3).
+# every player and controller (protocol_spec.md §3) — but is only REQUIRED when
+# auth_mode is `required` (see below).
 
-# Pre-shared key for HMAC signing. Generate with:
+# §13 auth_mode: open (default) | optional | required.
+#   open     — zero-config; broker does NOT verify sigs and sends sig:"".
+#              No PSK needed. Trusted home/exhibition LANs.
+#   optional — verify only when a frame carries a non-empty sig; migration mode.
+#   required — strict HMAC verify + auth-fail cooldown; a PSK is mandatory.
+# Override with the LMW_AUTH_MODE env var (env wins over this file).
+auth_mode: open
+
+# §14 topology this broker advertises (diagnostic only): dedicated | cohosted.
+#   dedicated — standalone broker process/container (default, 30-screen deploy).
+#   cohosted  — broker embedded in a player process (run via broker.run_broker).
+# Override with LMW_TOPOLOGY. p2p is NOT a broker mode (it has no broker).
+topology: dedicated
+
+# Pre-shared key for HMAC signing. Required only in auth_mode=required.
+# Generate with:
 #   python3 -c "import secrets; print(secrets.token_hex(32))"
 psk: "CHANGE_ME_to_a_32plus_byte_random_hex_string"
 
@@ -28,6 +44,10 @@ time_sync_interval_ms: 30000
 auth_fail_limit: 5
 auth_cooldown_s: 60
 
-# UDP discovery: broker can also broadcast discover packets. Off by default;
-# controllers normally drive discovery.
-enable_discovery: false
+# UDP discovery: the broker self-announces (topology/auth_mode/broker_hint) so
+# endpoints auto-find it (§7/§14.5), and answers discover packets. On by default.
+enable_discovery: true
+announce_interval_ms: 5000   # how often to self-announce (0 disables)
+
+# LAN IP advertised in announce + the pairing QR. Empty -> auto-detect.
+advertise_host: ""

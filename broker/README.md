@@ -6,32 +6,77 @@ owns the device registry, group assignments, the master clock, status
 aggregation, and command fan-out.
 
 This implements the broker-side responsibilities of
-[`../protocol_spec.md`](../protocol_spec.md) (§2–§10). That spec is the
-contract — field names and semantics here follow it exactly.
+[`../protocol_spec.md`](../protocol_spec.md) (§2–§10, plus the v1.2 additions
+§13–§15). That spec is the contract — field names and semantics here follow it
+exactly.
 
 ## Modules
 
 | File | Responsibility |
 |---|---|
-| `broker.py` | asyncio entry point + WS/WSS server, connection lifecycle, dispatch |
-| `envelope.py` | envelope build/parse, HMAC sign/verify, msg_id dedup, ts window (§2/§3) |
+| `broker.py` | asyncio entry point + WS/WSS server, connection lifecycle, dispatch, auth-mode gating |
+| `envelope.py` | envelope build/parse, HMAC sign/verify, auth-mode helpers, msg_id dedup, ts window (§2/§3/§13) |
 | `registry.py` | device table, grouping, `state.json` persistence (§4/§5) |
 | `router.py` | fan-out resolution by the `to` field (§2/§9.3) |
 | `clock.py` | master clock + time-sync ack + NTP offset/rtt math (§8) |
 | `sync.py` | three-phase prepare→ready→play_at state machine (§9) |
-| `discovery.py` | optional UDP 8772 discover/announce (§7) |
+| `discovery.py` | UDP 8772 discover/announce, self-announce + discover replies (§7/§14.5) |
+| `pairing.py` | `lmw://pair?...` URI builder + terminal QR (§15) |
 
 ## Ports
 
 - `8770` WS (always on)
 - `8771` WSS (enabled automatically when `certs/cert.pem` + `certs/key.pem` exist)
-- `8772` UDP discovery (opt-in via `enable_discovery: true`)
+- `8772` UDP discovery (on by default; `enable_discovery: false` to disable)
+
+## v1.2 — auth modes, topology, pairing (§13–§15)
+
+### Auth modes (§13)
+
+`auth_mode` (config / `LMW_AUTH_MODE` env / `config.yaml`) picks how strictly
+the HMAC from §3 is enforced:
+
+| mode | broker verifies inbound | broker signs outbound | PSK needed | cooldown |
+|---|---|---|---|---|
+| `open` (**default**) | never | no (`sig:""`) | no | no |
+| `optional` | only when `sig` non-empty | when a PSK is set | no | no |
+| `required` | always (strict) | always | **yes** | yes |
+
+The ts-window (±30s/±120s) and msg_id dedup run in **every** mode — replay
+hygiene needs no key. The auth-fail counter + 60s cooldown apply **only** in
+`required`. The active mode is advertised in `welcome.payload.auth_mode` and the
+UDP `announce.payload.auth_mode`, so endpoints self-adapt. `open` is fully
+zero-config: no PSK, no flags.
+
+### Topology (§14)
+
+`topology` (config / `LMW_TOPOLOGY`) is advertised in `welcome` + `announce`:
+
+- `dedicated` (default) — standalone broker process/container.
+- `cohosted` — the same broker embedded in a player process. Import and launch
+  it in-process with `await broker.run_broker(cfg)` (or pass a `ready_event` to
+  wait until it is listening, then connect the local player to `127.0.0.1:8770`).
+  Wire behavior is identical to dedicated; only the advertised `topology`
+  differs. `p2p` is not a broker mode — it has no broker.
+
+The broker self-announces over UDP (`announce_interval_ms`, default 5s) carrying
+`topology`, `auth_mode`, and `broker_hint` (`host:port`), and unicasts an
+`announce` in reply to any `discover` packet, so endpoints auto-find it (§14.5).
+
+### Pairing (§15)
+
+On startup the broker prints an `lmw://pair?...` URI (and a scannable terminal
+QR when the optional `qrcode` package is installed; otherwise the URI plus a
+note). Scan it to onboard an endpoint with no hand-typing. In `open` mode the
+URI carries **no** PSK; in `optional`/`required` it embeds the PSK as the entry
+ticket. See `pairing.py` (`build_pairing_uri` / `pairing_uri_from_config`).
 
 ## Configuration
 
-The PSK (HMAC pre-shared key, §3) is required. It must be identical on every
-player and controller. Provide it via the `LMW_PSK` env var (preferred) or in
-`config.yaml`:
+The PSK (HMAC pre-shared key, §3) is required **only in `auth_mode=required`**;
+`open` (the default) and `optional` run with no key. When set, it must be
+identical on every player and controller. Provide it via the `LMW_PSK` env var
+(preferred) or in `config.yaml`:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"   # generate one
@@ -43,10 +88,23 @@ Copy `config.example.yaml` to `config.yaml` to tune ports, the sync buffer
 
 ## Run locally
 
+Zero-config (default `auth_mode=open`, no PSK):
+
 ```bash
 pip install -r requirements.txt
-LMW_PSK=$(python3 -c "import secrets; print(secrets.token_hex(32))") python3 broker.py
+python3 broker.py
 ```
+
+Strict mode (HMAC enforced):
+
+```bash
+LMW_AUTH_MODE=required \
+LMW_PSK=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
+python3 broker.py
+```
+
+Install the optional `qrcode` package to render a scannable pairing QR on
+startup (otherwise the `lmw://pair?...` URI is printed as text).
 
 ## Run on Synology (Docker)
 
@@ -70,16 +128,21 @@ mount a shared folder to `/data`.
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q        # unit tests (envelope/clock/sync/router/registry)
-python3 tests/smoke_local.py       # end-to-end: hello/welcome, status/wall,
-                                    # time_sync, prepare→ready→play_at
+python3 -m pytest tests/ -q        # unit tests (envelope/clock/sync/router/
+                                    # registry/auth_modes/pairing/announce/gating)
+python3 tests/smoke_local.py       # end-to-end (auth_mode=required): hello/
+                                    # welcome, status/wall, time_sync,
+                                    # prepare→ready→play_at
 ```
 
 ## Behavior notes
 
-- **Auth pipeline** (every frame): HMAC verify → ts window (±30s, ±120s on the
-  first frame) → msg_id dedup (5-min LRU). 5 signature failures on a connection
-  trip a 60s cooldown for that IP.
+- **Auth pipeline** (every frame): the signature check is gated by `auth_mode`
+  (§13 — `open` skips it, `optional` checks only non-empty sigs, `required`
+  verifies strictly) → ts window (±30s, ±120s on the first frame) → msg_id
+  dedup (5-min LRU). The ts + dedup checks run in **all** modes. In `required`,
+  5 signature failures on a connection trip a 60s cooldown for that IP; other
+  modes never count failures.
 - **Clock** (§8): the broker's wall clock is the single master timeline.
   `time_sync_ack` echoes `t1`, stamps `t2` at receive (as early as possible) and
   `t3` at send (as late as possible). Players do the offset/rtt math.
@@ -99,8 +162,11 @@ python3 tests/smoke_local.py       # end-to-end: hello/welcome, status/wall,
 
 ## Security
 
-Without WSS, traffic is plaintext on the LAN but every control message is still
-HMAC-signed and replay-protected, so commands cannot be forged or replayed.
-Enable WSS (drop certs in `certs/`) for confidentiality. The broker has **no
-per-device authorization beyond the shared PSK** — anyone with the PSK on the
-LAN is fully trusted. Keep the PSK secret and the broker off untrusted networks.
+`auth_mode` decides the posture (§13). In `open` (default) traffic is neither
+signed nor verified — fine for a trusted home/exhibition LAN, zero-config. For
+untrusted networks set `auth_mode=required`: every control message is then
+HMAC-signed and replay-protected, so commands cannot be forged or replayed, and
+you can layer WSS (drop certs in `certs/`) for confidentiality. Even in
+`required` the broker has **no per-device authorization beyond the shared PSK** —
+anyone with the PSK on the LAN is fully trusted. Keep the PSK secret and, in
+`open` mode especially, keep the broker off untrusted networks.
