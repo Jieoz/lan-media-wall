@@ -75,7 +75,7 @@ class BrokerClient(
     private var syncFuture: java.util.concurrent.ScheduledFuture<*>? = null
     private var backoffS = 1.0
 
-    val isConnected: Boolean get() = connected
+    override val isConnected: Boolean get() = connected
 
     override fun start() {
         connect()
@@ -133,7 +133,7 @@ class BrokerClient(
     // --- outbound -----------------------------------------------------
     /** Build, sign, and send an envelope. Returns msg_id, or null if not
      *  connected (caller may retry after reconnect). */
-    fun send(type: String, payload: Json, to: String = "broker"): String? {
+    override fun send(type: String, payload: Json, to: String): String? {
         val socket = ws ?: return null
         if (!connected) return null
         val env = Envelope.build(psk, type, from, to, payload)
@@ -145,7 +145,7 @@ class BrokerClient(
 
     /** Send a raw binary frame (thumbnail JPEG, §6.4). Must follow a
      *  thumb_meta text frame sent by the caller. */
-    fun sendBinary(data: ByteArray): Boolean {
+    override fun sendBinary(data: ByteArray): Boolean {
         val socket = ws ?: return false
         if (!connected) return false
         return socket.send(data.toByteString())
@@ -205,7 +205,7 @@ class BrokerClient(
         clock.addSample(t1, t2, t3, t4)
     }
 
-    fun stop() {
+    override fun stop() {
         stopped.set(true)
         stopSyncLoop()
         try { ws?.close(1000, "shutdown") } catch (_: Exception) {}
