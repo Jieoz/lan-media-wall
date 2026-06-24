@@ -393,3 +393,21 @@ lmw://pair?host=<ip>&port=<8770>&group=<gid>&mode=<open|optional|required>&psk=<
 - 出厂默认 `auth_mode=open` + 自动发现 → **理想情况零输入零扫码即可联通**。
 - 想要安全 → 协调端切 `required`,把带 PSK 的二维码发给各端扫一下即可。
 - 安全是**可选叠加项**,不是上手前置门槛。
+
+## 16. 关联 id 澄清(v1.2 — 三端实现反馈固化)
+
+实现 broker / windows_player / android player 时,三端独立反馈了同一组「同步会话关联」歧义。本节把**当前已验证的 fallback 行为固化为正式契约**,并把**显式 id 列为可选推荐**。全部向后兼容,旧端无需改动。
+
+### 16.1 `prepare` ↔ `ready` ↔ `play_at` 会话关联
+- **正式契约(fallback,各端已实现并通过测试)**:一个同步会话由 `group_id` + `playlist_id` 唯一标识;broker 以「每组同一时刻至多一个在途 `prepare`」为前提,用 `group_id` 匹配 `ready`,用 `group_id`+`playlist_id` 关联 `play_at`。设备在 `prepare`→`ready` 之间不得切组。
+- **可选推荐(未来收紧并发能力时启用)**:broker 在 fanout `prepare` 前注入 `prepare_id`(= 该 prepare 的 `msg_id`):`p = {**p, "prepare_id": env["msg_id"]}`;players 收到后在 `ready` 中回显 `prepare_id`。携带时 broker 优先按 `prepare_id` 精确匹配,缺失时回落到 `group_id` 匹配。启用后可支持「每组多个并发 prepare」。
+
+### 16.2 `time_sync_ack` 关联(同毫秒 `t1` 碰撞)
+- **正式契约(fallback)**:`time_sync_ack.payload = {t1(echo), t2, t3}`,客户端按回显的 `t1` 关联请求。
+- **可选推荐**:broker 在 `time_sync_ack.payload` 附带 `req_msg_id`(原 `time_sync` 的 `msg_id`)。客户端携带时优先按 `req_msg_id` 关联,消除同毫秒 `t1` 碰撞的歧义;缺失时回落到 `t1`。
+
+### 16.3 `wall.devices[]` 状态子集字段
+§5.2 的「§5.1 状态子集 + last_seen」**正式约定**为:至少含 `device_name`、`group_id`、`last_ip`、`online`、`last_seen`,外加最近一次 `status` 的全部字段。controllers 必须对未知/缺失字段做防御式处理(向前兼容)。
+
+### 16.4 `controller_present` 缩略图门控(§6.4)
+§6.4 的「仅当 ≥1 controller 在线时采集缩略图」**正式约定**:在 broker 提供 presence 信号前,players 用本地配置 `thumbnail.always_collect`(默认 `false`)门控;需常态供墙的设备置 `true`。**可选推荐**:broker 在 `welcome` 加 `controllers_online:int`,或周期性推 `controller_presence{present:bool}`,使 players 精确门控。
