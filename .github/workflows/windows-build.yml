@@ -1,9 +1,15 @@
-# Windows player — cloud build (PyInstaller, bundles mpv.exe runtime).
+# Windows player — cloud build (PyInstaller --onedir + UPX, wrapped by Inno
+# Setup into an install wizard; bundles the mpv.exe runtime).
 #
-# Produces a standalone Windows .exe of windows_player/ that NEEDS NO Python and
-# NO separately-installed mpv on the target box: the mpv.exe runtime is bundled
-# inside the package and made discoverable at runtime by a PyInstaller runtime
-# hook (.github/pyinstaller/rthook_mpv.py).
+# Produces lan-media-wall-player-setup.exe: a self-contained install wizard that
+# needs NO Python and NO separately-installed mpv on the target box. The mpv.exe
+# runtime is bundled inside and made discoverable at runtime by a PyInstaller
+# runtime hook (.github/pyinstaller/rthook_mpv.py).
+#
+# Slimming vs the old 60.6 MB --onefile build: UPX-compressed DLLs, dropped
+# unused stdlib (tkinter/unittest/test/pydoc/lib2to3/...), and LZMA2/ultra
+# installer compression. mpv.exe is a hard size floor and is explicitly NOT
+# UPX-packed (that breaks it).
 #
 # Why mpv.exe (and not libmpv-2.dll): the player spawns a real mpv process over
 # JSON IPC (windows_player/mpv_controller.py + watchdog.py). python-mpv/libmpv
@@ -134,25 +140,51 @@ jobs:
           pip install -r windows_player/requirements.txt
           pip install pyinstaller
 
-      # --- Package into a single exe with mpv.exe bundled inside ------------
-      # --paths windows_player   : main.py uses flat sibling imports
-      #                            (import config / from clock import ...).
-      # --add-binary mpv.exe;.   : co-bundle the mpv runtime at the bundle root;
-      #                            rthook_mpv.py puts that root on PATH so the
-      #                            player's subprocess.Popen(["mpv", ...]) finds it.
-      # --hidden-import ...       : deps reached only via guarded/dynamic imports.
-      - name: Build exe with PyInstaller
+      # UPX shrinks the PyInstaller-bundled DLLs (Python runtime, deps) by a good
+      # margin. Installed via the runner's bundled Chocolatey.
+      - name: Install UPX
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          choco install upx -y --no-progress
+          upx --version | Select-Object -First 1
+
+      # --- Package into a --onedir bundle, slimmed ------------------------------
+      # Changes vs the old 60.6 MB --onefile build:
+      #   --onedir              : a folder bundle (exe + _internal\). We hand this
+      #                           to Inno Setup, which LZMA-compresses it into one
+      #                           install wizard exe — far smaller on disk than a
+      #                           self-extracting onefile.
+      #   --upx-dir             : UPX-compress the bundled DLLs.
+      #   --upx-exclude mpv.exe : NEVER UPX the mpv runtime — UPX-packing mpv.exe
+      #                           is known to break it / trip AV; it stays as-is.
+      #   --exclude-module ...  : drop heavy stdlib the player never imports
+      #                           (verified: no tkinter/unittest/test/pydoc/
+      #                           lib2to3 references anywhere in windows_player/).
+      # rthook + --add-binary mpv.exe;. unchanged: in onedir, _MEIPASS is the
+      # _internal\ dir, the hook prepends it to PATH, mpv.exe is found there.
+      - name: Build onedir bundle with PyInstaller (UPX + excludes)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $upxDir = Split-Path (Get-Command upx).Source
           pyinstaller `
-            --onefile `
+            --onedir `
             --noconsole `
             --name lan-media-wall-player `
             --paths windows_player `
             --runtime-hook .github/pyinstaller/rthook_mpv.py `
             --add-binary "mpv_runtime/mpv.exe;." `
             --add-data "windows_player/config.example.yaml;." `
+            --upx-dir "$upxDir" `
+            --upx-exclude "mpv.exe" `
+            --exclude-module tkinter `
+            --exclude-module unittest `
+            --exclude-module test `
+            --exclude-module pydoc `
+            --exclude-module lib2to3 `
+            --exclude-module pdb `
+            --exclude-module doctest `
             --hidden-import websockets `
             --hidden-import websockets.legacy `
             --hidden-import websockets.legacy.client `
@@ -165,26 +197,60 @@ jobs:
             --hidden-import win32con `
             windows_player/main.py
 
-      - name: Sanity-check the build output
+      - name: Sanity-check the onedir output
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (-not (Test-Path "dist/lan-media-wall-player.exe")) {
-            throw "expected dist/lan-media-wall-player.exe was not produced"
+          if (-not (Test-Path "dist/lan-media-wall-player/lan-media-wall-player.exe")) {
+            throw "expected dist/lan-media-wall-player/lan-media-wall-player.exe was not produced"
           }
-          Get-Item "dist/lan-media-wall-player.exe" | Format-List Name,Length
+          if (-not (Test-Path "dist/lan-media-wall-player/_internal/mpv.exe")) {
+            throw "mpv.exe not co-bundled into _internal/ — runtime hook would fail to find it"
+          }
+          $bundleBytes = (Get-ChildItem "dist/lan-media-wall-player" -Recurse |
+                          Measure-Object -Property Length -Sum).Sum
+          Write-Host ("onedir bundle total: {0:N1} MB" -f ($bundleBytes / 1MB))
 
-      - name: Upload exe artifact
+      # --- Wrap the onedir bundle into an install wizard ------------------------
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install innosetup -y --no-progress
+
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = (Resolve-Path "dist/lan-media-wall-player").Path
+          New-Item -ItemType Directory -Force -Path "installer_out" | Out-Null
+          $out = (Resolve-Path "installer_out").Path
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc "/DMySourceDir=$src" "/DMyOutputDir=$out" ".github/pyinstaller/installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
+      - name: Measure + verify installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = "installer_out/lan-media-wall-player-setup.exe"
+          if (-not (Test-Path $setup)) { throw "installer not produced at $setup" }
+          $mb = (Get-Item $setup).Length / 1MB
+          Write-Host ("installer size: {0:N1} MB (was 60.6 MB onefile)" -f $mb)
+          Get-Item $setup | Format-List Name,Length
+
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lan-media-wall-player-windows
-          path: dist/lan-media-wall-player.exe
+          name: lan-media-wall-player-windows-setup
+          path: installer_out/lan-media-wall-player-setup.exe
           if-no-files-found: error
 
-      # --- Attach to a GitHub Release on tag pushes (v*) --------------------
-      - name: Attach exe to Release (tags only)
+      # --- Attach installer to a GitHub Release on tag pushes (v*) --------------
+      - name: Attach installer to Release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/lan-media-wall-player.exe
+          files: installer_out/lan-media-wall-player-setup.exe
           fail_on_unmatched_files: true

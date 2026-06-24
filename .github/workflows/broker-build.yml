@@ -1,0 +1,137 @@
+# Broker — cloud build (PyInstaller single-file, NO Docker, Linux + Windows).
+#
+# Produces standalone, dependency-free broker binaries that need NO Python and
+# NO pip install on the target box:
+#   - Linux  (ubuntu-latest)  -> lmw-broker       (~8 MB, ELF)
+#   - Windows (windows-latest) -> lmw-broker.exe
+#
+# broker/broker.py imports its siblings by flat name (import clock / registry /
+# router / sync / envelope / discovery), so we build with working-directory:
+# broker AND pass --paths . plus explicit --hidden-import for each sibling so
+# PyInstaller's static analysis cannot miss them. Verified locally: the frozen
+# Linux binary binds :8770 and resolves every sibling import.
+#
+# The existing broker/Dockerfile is left untouched — this lane is additive.
+name: broker-build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "broker/**"
+      - ".github/workflows/broker-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed for the tag -> Release upload step
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: lmw-broker
+            out: dist/lmw-broker
+          - os: windows-latest
+            artifact: lmw-broker.exe
+            out: dist/lmw-broker.exe
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime deps + PyInstaller
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # Only the broker's true runtime deps (skip pytest/pytest-asyncio).
+          pip install "websockets>=12.0" "PyYAML>=6.0" pyinstaller
+
+      # Build from inside broker/ so flat sibling imports resolve, and name the
+      # hidden imports explicitly so PyInstaller bundles every module that
+      # broker.py reaches via `import <name>`.
+      - name: Build single-file broker
+        working-directory: broker
+        shell: bash
+        run: |
+          pyinstaller --onefile --name lmw-broker \
+            --paths . \
+            --hidden-import clock \
+            --hidden-import discovery \
+            --hidden-import envelope \
+            --hidden-import registry \
+            --hidden-import router \
+            --hidden-import sync \
+            --hidden-import websockets \
+            --hidden-import yaml \
+            broker.py
+
+      # Prove the frozen binary actually starts and binds :8770 before we ship
+      # it. PSK is required (broker exits cleanly without one), so inject a
+      # throwaway one, confirm the port, then kill.
+      - name: Smoke-test the Linux binary (binds :8770)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: broker
+        shell: bash
+        run: |
+          export LMW_PSK="$(python -c 'import secrets;print(secrets.token_hex(32))')"
+          ./dist/lmw-broker > broker_smoke.log 2>&1 &
+          BPID=$!
+          sleep 5
+          cat broker_smoke.log
+          python - <<'PY'
+          import socket, sys
+          rc = socket.socket().connect_ex(("127.0.0.1", 8770))
+          print(f"connect_ex(:8770) -> {rc} (0 = listening)")
+          sys.exit(0 if rc == 0 else 1)
+          PY
+          RC=$?
+          kill $BPID 2>/dev/null || true
+          exit $RC
+
+      - name: Smoke-test the Windows binary (process starts)
+        if: matrix.os == 'windows-latest'
+        working-directory: broker
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:LMW_PSK = python -c "import secrets;print(secrets.token_hex(32))"
+          $p = Start-Process -FilePath "dist/lmw-broker.exe" -PassThru -RedirectStandardOutput broker_smoke.log -RedirectStandardError broker_smoke.err
+          Start-Sleep -Seconds 6
+          if (Test-Path broker_smoke.log) { Get-Content broker_smoke.log }
+          if (Test-Path broker_smoke.err) { Get-Content broker_smoke.err }
+          $client = New-Object System.Net.Sockets.TcpClient
+          try { $client.Connect("127.0.0.1", 8770); $ok = $client.Connected }
+          catch { $ok = $false }
+          finally { $client.Close() }
+          if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if (-not $ok) { throw "broker did not bind :8770" }
+          Write-Host "broker.exe bound :8770 OK"
+
+      - name: Report binary size
+        shell: bash
+        run: ls -la ${{ matrix.out }}
+
+      - name: Upload broker artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.out }}
+          if-no-files-found: error
+
+      # --- Attach broker binaries to a GitHub Release on tag pushes (v*) -----
+      - name: Attach broker to Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.out }}
+          fail_on_unmatched_files: true

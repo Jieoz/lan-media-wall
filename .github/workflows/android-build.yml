@@ -1,13 +1,15 @@
-# Android player — cloud build (Gradle wrapper, debug APK + optional signed release).
+# Android player — cloud build (Gradle wrapper, installable release APK).
 #
-# Builds android_apps/player/ (Kotlin, Gradle wrapper) into an APK.
-# Defaults to an unsigned debug APK. A signed release APK is produced ONLY when
-# a keystore is provided via secrets; otherwise the release step is skipped
-# cleanly and CI still succeeds with the debug artifact.
+# Builds android_apps/player/ (Kotlin, Gradle wrapper) into a RELEASE APK.
+# With no production keystore the release buildType is debug-signed (see
+# app/build.gradle.kts) so the APK is still installable for sideload. A real
+# keystore can later be wired via the project's signingConfig.
 #
 # NOTE: android_apps/player/ is produced by another track. If the Gradle wrapper
 # is not present yet, the build steps no-op gracefully (guarded below) so this
-# workflow does not fail before the project lands.
+# workflow does not fail before the project lands. (This guard is exactly why
+# the v1.0.0 release shipped without a player APK — gradlew was not committed at
+# that tag. It is now, so the release APK builds and attaches.)
 name: android-build
 
 on:
@@ -61,79 +63,30 @@ jobs:
         shell: bash
         run: chmod +x android_apps/player/gradlew
 
-      - name: Build debug APK
+      - name: Build release APK (debug-signed, installable)
         if: steps.detect.outputs.present == 'true'
         working-directory: android_apps/player
         shell: bash
-        run: ./gradlew --no-daemon assembleDebug
-
-      - name: Upload debug APK
-        if: steps.detect.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lan-media-wall-player-android-debug
-          path: android_apps/player/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-      # --- Optional signed release APK -------------------------------------
-      # Runs only when ALL keystore secrets are present. Decode the base64
-      # keystore to a file and hand signing config to Gradle via -P properties.
-      # The Gradle project's signingConfig is expected to read these properties
-      # (RELEASE_STORE_FILE / RELEASE_STORE_PASSWORD / RELEASE_KEY_ALIAS /
-      # RELEASE_KEY_PASSWORD). If it does not, release signing is a no-op and
-      # only the debug APK ships — CI still passes.
-      - name: Check for release keystore
-        if: steps.detect.outputs.present == 'true'
-        id: keystore
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "have=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "have=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No ANDROID_KEYSTORE_BASE64 secret — skipping signed release APK."
-          fi
-
-      - name: Decode keystore
-        if: steps.detect.outputs.present == 'true' && steps.keystore.outputs.have == 'true'
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          echo "Keystore decoded to $RUNNER_TEMP/release.keystore"
-
-      - name: Build release APK (signed)
-        if: steps.detect.outputs.present == 'true' && steps.keystore.outputs.have == 'true'
-        working-directory: android_apps/player
-        shell: bash
-        env:
-          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          ./gradlew --no-daemon assembleRelease \
-            -PRELEASE_STORE_FILE="$RUNNER_TEMP/release.keystore" \
-            -PRELEASE_STORE_PASSWORD="$RELEASE_STORE_PASSWORD" \
-            -PRELEASE_KEY_ALIAS="$RELEASE_KEY_ALIAS" \
-            -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+        run: ./gradlew --no-daemon assembleRelease
 
       - name: Upload release APK
-        if: steps.detect.outputs.present == 'true' && steps.keystore.outputs.have == 'true'
+        if: steps.detect.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: lan-media-wall-player-android-release
           path: android_apps/player/app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
 
-      # --- Attach APKs to a GitHub Release on tag pushes (v*) --------------
-      - name: Attach APKs to Release (tags only)
+      # --- Attach release APK to a GitHub Release on tag pushes (v*) --------
+      # assembleRelease above is debug-signed (installable) by default; a real
+      # keystore can be wired later via the project's signingConfig. The glob
+      # matches the single app-release.apk Gradle emits. fail_on_unmatched_files
+      # is true so a path regression fails the lane loudly instead of silently
+      # shipping a release with no player APK (the v1.0.0 miss).
+      - name: Attach release APK to Release (tags only)
         if: steps.detect.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            android_apps/player/app/build/outputs/apk/debug/*.apk
             android_apps/player/app/build/outputs/apk/release/*.apk
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true

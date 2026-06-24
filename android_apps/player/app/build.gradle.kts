@@ -22,6 +22,11 @@ android {
         release {
             // No shrinking: the player is a kiosk app, keep it simple + debuggable.
             isMinifyEnabled = false
+            // CI has no production keystore. Sign release with the standard debug
+            // key so the shipped release APK is actually installable (an unsigned
+            // release APK cannot be sideloaded). A real keystore, when wired via
+            // -P props, can override this.
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
