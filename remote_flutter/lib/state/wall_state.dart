@@ -5,8 +5,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../net/broker_client.dart';
 import '../net/discovery.dart';
+import '../p2p/p2p_coordinator.dart';
+import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
+import '../protocol/pair_uri.dart';
 
 /// 持久化键。
 class _Keys {
@@ -17,10 +20,21 @@ class _Keys {
   static const controllerId = 'settings.controller_id';
 }
 
+/// 当前拓扑（§14）。
+enum Topology { dedicated, cohosted, p2p }
+
+extension TopologyLabel on Topology {
+  String get label => switch (this) {
+        Topology.dedicated => '专用 broker',
+        Topology.cohosted => '寄生 broker',
+        Topology.p2p => '无 broker (p2p)',
+      };
+}
+
 /// 遥控端中枢状态(ChangeNotifier)：
 ///  - 持有设置(broker 地址/PSK/controller_id)与 [EnvelopeCodec]。
-///  - 持有 [BrokerClient] 与 [Discovery]，把入站快照/缩略图/连接态归并进本状态。
-///  - 对 UI 暴露设备墙快照、缩略图字节、连接态、出站控制命令。
+///  - 持有 [BrokerClient] / [Discovery] / [P2pCoordinator]，按发现结果自动选拓扑(§14.5)。
+///  - 对 UI 暴露设备墙快照、缩略图字节、连接态、auth_mode、topology、出站控制命令。
 class WallState extends ChangeNotifier {
   WallState();
 
@@ -35,13 +49,24 @@ class WallState extends ChangeNotifier {
   late final EnvelopeCodec _codec;
   late final BrokerClient _broker;
   late final Discovery _discovery;
+  late final P2pCoordinator _p2p;
   bool _inited = false;
+
+  /// 当前拓扑（§14）。默认 p2p，发现到 broker 后切 dedicated。
+  Topology _topology = Topology.p2p;
+
+  /// 当前鉴权模式（§13）。默认 open。
+  AuthMode _authMode = AuthMode.open;
 
   WallSnapshot _wall = const WallSnapshot();
   final Map<String, Uint8List> _thumbs = {};
   final List<AnnounceInfo> _discovered = [];
   final List<String> _log = [];
   ConnState _conn = ConnState.disconnected;
+  int _p2pPeers = 0;
+
+  /// 当前 broker 接入目标（用于避免发现重复触发时反复重连）。
+  String _brokerTarget = '';
 
   // ---- getters ----
   WallSnapshot get wall => _wall;
@@ -49,8 +74,33 @@ class WallState extends ChangeNotifier {
   List<DeviceStatus> get devices => _wall.devices;
   List<AnnounceInfo> get discovered => List.unmodifiable(_discovered);
   ConnState get conn => _conn;
-  bool get connected => _conn == ConnState.connected;
+  AuthMode get authMode => _authMode;
+  Topology get topology => _topology;
+  bool get isP2p => _topology == Topology.p2p;
+  int get p2pPeers => _p2pPeers;
+
+  /// p2p 下“已连 N 台”，broker 下沿用连接态。
+  bool get connected =>
+      isP2p ? _p2pPeers > 0 : _conn == ConnState.connected;
   List<String> get logLines => List.unmodifiable(_log);
+
+  /// 由当前连接信息生成一张配对 URI（§15）。
+  ///  - broker 模式：用当前 broker host/port。
+  ///  - p2p 模式：无单一 broker；用本机作为协调端，host 留空交由 UI 提示手填本机 IP。
+  /// [group] 为要邀请加入的目标组（默认 "lobby"）。
+  PairUri buildPairUri({String group = 'lobby', String? overrideHost}) {
+    final host = overrideHost?.trim().isNotEmpty == true
+        ? overrideHost!.trim()
+        : (isP2p ? '' : brokerHost);
+    return PairUri(
+      connHost: host,
+      port: isP2p ? 8770 : brokerPort,
+      group: group,
+      mode: _authMode,
+      psk: _authMode == AuthMode.open ? null : psk,
+      wss: brokerSecure,
+    );
+  }
 
   Uint8List? thumbOf(String deviceId) => _thumbs[deviceId];
 
@@ -84,18 +134,31 @@ class WallState extends ChangeNotifier {
     _inited = true;
     await _loadSettings();
 
-    _codec = EnvelopeCodec(psk: psk, fromAddress: _fromAddress());
+    // 引导期 auth_mode：有 PSK → required(签)，无 PSK → open(空 sig)。
+    // 连上协调端后据 welcome.auth_mode 再校正(§13)。
+    _authMode = psk.isEmpty ? AuthMode.open : AuthMode.required;
+    _codec = EnvelopeCodec(
+      psk: psk,
+      fromAddress: _fromAddress(),
+      authMode: _authMode,
+    );
     _broker = BrokerClient(codec: _codec, controllerId: controllerId)
       ..onWall = _onWall
       ..onThumb = _onThumb
       ..onState = _onConn
+      ..onAuthMode = _onAuthMode
+      ..onTopology = _onTopologyHint
       ..onLog = _pushLog;
     _discovery = Discovery(codec: _codec, controllerId: controllerId)
       ..onDevices = _onDiscovered
       ..onLog = _pushLog;
+    _p2p = P2pCoordinator(codec: _codec, controllerId: controllerId)
+      ..onWall = _onWall
+      ..onPeers = _onP2pPeers
+      ..onLog = _pushLog;
 
     await _discovery.start();
-    _connectBroker();
+    _evaluateTopology();
   }
 
   String _fromAddress() => 'controller:$controllerId';
@@ -144,30 +207,92 @@ class WallState extends ChangeNotifier {
       _codec.fromAddress = _fromAddress();
       _broker.controllerId = controllerId;
       _discovery.controllerId = controllerId;
+      _p2p.controllerId = controllerId;
       await prefs.setString(_Keys.controllerId, controllerId);
     }
     notifyListeners();
-    _connectBroker();
+    _evaluateTopology();
   }
 
-  void _connectBroker() {
-    if (brokerHost.isEmpty) {
-      _pushLog('未配置 broker 地址，跳过连接');
+  /// 选择拓扑并接入（§14.5 零配置默认）：
+  ///  - 用户手填了 broker 地址 → 直接连 broker（模式 A/B）。
+  ///  - 否则看发现结果：有 broker_hint → 连 broker；只有一堆 p2p 被控端 → p2p 直连。
+  void _evaluateTopology() {
+    // 手填 broker 优先。
+    if (brokerHost.isNotEmpty) {
+      _enterBroker(brokerHost, brokerPort, brokerSecure);
       return;
     }
-    _broker.connect(
-      host: brokerHost,
-      port: brokerPort,
-      secure: brokerSecure,
-    );
+    // 发现结果里找 broker_hint。
+    for (final a in _discovered) {
+      final ep = a.brokerEndpoint;
+      if (ep != null) {
+        _enterBroker(ep.host, ep.port, brokerSecure);
+        return;
+      }
+    }
+    // 无 broker → p2p：对每台发现到的被控端各开一条 WS（§14.3）。
+    if (_discovered.isNotEmpty) {
+      _enterP2p();
+    } else {
+      _pushLog('暂未发现协调端/被控端，等待发现…');
+    }
+  }
+
+  void _enterBroker(String host, int port, bool secure) {
+    if (_topology == Topology.p2p) {
+      _p2p.setPeers(const []); // 退出 p2p，断开直连
+      _p2pPeers = 0;
+    }
+    final target = '$host:$port:$secure';
+    // welcome 未到前，dedicated 是合理默认；cohosted 对端侧透明，无法区分。
+    final wasP2p = _topology == Topology.p2p;
+    _topology = Topology.dedicated;
+    // 同一目标且已在连接/已连，避免重复 connect 触发退避重置。
+    if (target == _brokerTarget && !wasP2p) {
+      notifyListeners();
+      return;
+    }
+    _brokerTarget = target;
+    notifyListeners();
+    _broker.connect(host: host, port: port, secure: secure);
+  }
+
+  void _enterP2p() {
+    final wasBroker = _topology != Topology.p2p;
+    _topology = Topology.p2p;
+    if (wasBroker) {
+      _broker.disconnect();
+      _brokerTarget = '';
+    }
+    // p2p 下遥控端是协调端：auth_mode 由本端 PSK 决定（有则 required，无则 open，§13/§14.3）。
+    _authMode = psk.isEmpty ? AuthMode.open : AuthMode.required;
+    _codec.authMode = _authMode;
+    _p2p.setPeers([
+      for (final a in _discovered)
+        if (a.ip.isNotEmpty)
+          P2pPeer(
+            deviceId: a.deviceId,
+            host: a.ip,
+            port: 8770,
+            deviceName: a.deviceName,
+            secure: brokerSecure,
+          ),
+    ]);
+    notifyListeners();
   }
 
   /// 手动触发一次设备发现广播。
   void refreshDiscovery() => _discovery.discover();
 
   void reconnect() {
-    _broker.disconnect();
-    _connectBroker();
+    if (isP2p) {
+      _p2p.setPeers(const []);
+      _evaluateTopology();
+    } else {
+      _broker.disconnect();
+      _evaluateTopology();
+    }
   }
 
   // ---- 入站回调 ----
@@ -186,10 +311,35 @@ class WallState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onAuthMode(AuthMode mode) {
+    _authMode = mode;
+    notifyListeners();
+  }
+
+  void _onTopologyHint(String topo) {
+    final t = switch (topo) {
+      'cohosted' => Topology.cohosted,
+      'p2p' => Topology.p2p,
+      _ => Topology.dedicated,
+    };
+    if (t != _topology && !isP2p) {
+      // broker 声明 cohosted/dedicated：仅更新展示（连接方式无差别）。
+      _topology = t == Topology.p2p ? Topology.dedicated : t;
+      notifyListeners();
+    }
+  }
+
+  void _onP2pPeers(int count) {
+    _p2pPeers = count;
+    notifyListeners();
+  }
+
   void _onDiscovered(List<AnnounceInfo> list) {
     _discovered
       ..clear()
       ..addAll(list);
+    // 发现结果变化 → 重新评估拓扑（新被控端加入 p2p、broker 出现等）。
+    _evaluateTopology();
     notifyListeners();
   }
 
@@ -210,8 +360,12 @@ class WallState extends ChangeNotifier {
 
   void _send(String type, Map<String, dynamic> payload,
       {String? groupId, String? deviceId}) {
-    _broker.send(type, to: _to(groupId: groupId, deviceId: deviceId),
-        payload: payload);
+    final to = _to(groupId: groupId, deviceId: deviceId);
+    if (isP2p) {
+      _p2p.send(type, to: to, payload: payload);
+    } else {
+      _broker.send(type, to: to, payload: payload);
+    }
   }
 
   // ---- 出站命令(供 UI 调用) ----
@@ -240,13 +394,24 @@ class WallState extends ChangeNotifier {
     );
   }
 
-  /// 一键同步播放(§9.1)：下发 prepare，broker 收齐 ready 后广播 play_at。
+  /// 一键同步播放(§9.1)：
+  ///  - broker 模式：下发 prepare，broker 收齐 ready 后广播 play_at。
+  ///  - p2p 模式：遥控端本地编排三段握手（fan prepare → 收齐 ready/超时 → play_at）。
   void prepare({
     required String playlistId,
     required String groupId,
     int startIndex = 0,
     int seekMs = 0,
   }) {
+    if (isP2p) {
+      _p2p.startSync(
+        playlistId: playlistId,
+        groupId: groupId,
+        startIndex: startIndex,
+        seekMs: seekMs,
+      );
+      return;
+    }
     _send(
       'prepare',
       Commands.prepare(
@@ -310,6 +475,7 @@ class WallState extends ChangeNotifier {
   void dispose() {
     _broker.dispose();
     _discovery.dispose();
+    _p2p.dispose();
     super.dispose();
   }
 }

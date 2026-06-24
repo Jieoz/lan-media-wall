@@ -143,6 +143,34 @@ class DeviceStatus {
       lastSeen: m['last_seen'] == null ? null : _asInt(m['last_seen']),
     );
   }
+
+  /// 浅拷贝并覆盖部分字段（p2p 状态墙聚合用：补 last_seen、置 online=false）。
+  DeviceStatus copyWith({
+    bool? online,
+    String? groupId,
+    String? state,
+    int? volume,
+    bool? muted,
+    bool? audioMaster,
+    int? lastSeen,
+  }) =>
+      DeviceStatus(
+        deviceId: deviceId,
+        deviceName: deviceName,
+        online: online ?? this.online,
+        groupId: groupId ?? this.groupId,
+        state: state ?? this.state,
+        current: current,
+        playlistId: playlistId,
+        volume: volume ?? this.volume,
+        muted: muted ?? this.muted,
+        audioMaster: audioMaster ?? this.audioMaster,
+        cache: cache,
+        clockOffsetMs: clockOffsetMs,
+        cpu: cpu,
+        errors: errors,
+        lastSeen: lastSeen ?? this.lastSeen,
+      );
 }
 
 /// 分组（§5.2 groups）。
@@ -217,25 +245,49 @@ class ThumbMeta {
       );
 }
 
-/// UDP announce（§7）。
+/// UDP announce（§7 + §13/§14：可带 auth_mode / topology）。
 class AnnounceInfo {
   final String deviceId;
   final String deviceName;
   final String ip;
   final String? brokerHint;
 
+  /// 协调端声明的鉴权模式（§13）。缺失时为 null（端侧按默认 open 处理）。
+  final String? authMode;
+
+  /// 协调端声明的拓扑（§14）：dedicated|cohosted|p2p。缺失为 null。
+  final String? topology;
+
   const AnnounceInfo({
     required this.deviceId,
     required this.deviceName,
     required this.ip,
     this.brokerHint,
+    this.authMode,
+    this.topology,
   });
+
+  /// 是否给出了 broker 接入点（有 → 走 A/B；无 → 候选 p2p 直连目标，§14.5）。
+  bool get hasBroker => brokerHint != null && brokerHint!.isNotEmpty;
+
+  /// 解析 broker_hint "ip:port" → (host, port)；无 hint 返回 null。
+  ({String host, int port})? get brokerEndpoint {
+    final h = brokerHint;
+    if (h == null || h.isEmpty) return null;
+    final idx = h.lastIndexOf(':');
+    if (idx <= 0) return (host: h, port: 8770);
+    final host = h.substring(0, idx);
+    final port = int.tryParse(h.substring(idx + 1)) ?? 8770;
+    return (host: host, port: port);
+  }
 
   static AnnounceInfo fromMap(Map<String, dynamic> m) => AnnounceInfo(
         deviceId: _asStr(m['device_id']),
         deviceName: _asStr(m['device_name']),
         ip: _asStr(m['ip']),
         brokerHint: m['broker_hint'] as String?,
+        authMode: m['auth_mode'] as String?,
+        topology: m['topology'] as String?,
       );
 
   Map<String, dynamic> toMap() => {
@@ -243,6 +295,8 @@ class AnnounceInfo {
         'device_name': deviceName,
         'ip': ip,
         if (brokerHint != null) 'broker_hint': brokerHint,
+        if (authMode != null) 'auth_mode': authMode,
+        if (topology != null) 'topology': topology,
       };
 }
 
@@ -292,10 +346,29 @@ class Commands {
         'items': items.map((e) => e.toMap()).toList(),
       };
 
-  /// prepare（§9.1）。
+  /// prepare（§9.1）。p2p 模式下遥控端自分配 [prepareId]（= prepare 的 msg_id），
+  /// 随帧带上以便按会话精确匹配 ready（§9.1 v1.1）。broker 模式下 broker 负责分配，
+  /// 此处 [prepareId] 留空即可。
   static Map<String, dynamic> prepare({
     required String playlistId,
     required String groupId,
+    int startIndex = 0,
+    int seekMs = 0,
+    String? prepareId,
+  }) =>
+      {
+        'playlist_id': playlistId,
+        'group_id': groupId,
+        'start_index': startIndex,
+        'seek_ms': seekMs,
+        if (prepareId != null && prepareId.isNotEmpty) 'prepare_id': prepareId,
+      };
+
+  /// play_at（§9.2）。p2p 模式下遥控端收齐 ready 后直接下发给各成员。
+  static Map<String, dynamic> playAt({
+    required String playlistId,
+    required String groupId,
+    required int playAtMs,
     int startIndex = 0,
     int seekMs = 0,
   }) =>
@@ -304,6 +377,21 @@ class Commands {
         'group_id': groupId,
         'start_index': startIndex,
         'seek_ms': seekMs,
+        'play_at': playAtMs,
+      };
+
+  /// time_sync_ack（§8.1）。p2p 模式下遥控端兼任主时钟，回应 player 的 time_sync。
+  static Map<String, dynamic> timeSyncAck({
+    required int t1,
+    required int t2,
+    required int t3,
+    String? reqMsgId,
+  }) =>
+      {
+        't1': t1,
+        't2': t2,
+        't3': t3,
+        if (reqMsgId != null) 'req_msg_id': reqMsgId,
       };
 
   static Map<String, dynamic> pause({String? groupId, String? deviceId}) =>

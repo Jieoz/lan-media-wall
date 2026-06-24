@@ -78,6 +78,14 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
 
+    // §15 QR pairing: ZXing core (Apache-2.0) for decode/encode — pure Java,
+    // unit-testable on the JVM. CameraX drives the live preview/analysis on
+    // device (behind the PairingScanner interface; not exercised in CI).
+    implementation(libs.zxing.core)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }

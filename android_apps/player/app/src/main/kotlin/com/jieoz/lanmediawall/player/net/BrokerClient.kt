@@ -36,11 +36,23 @@ class BrokerClient(
     private val clock: ClockSync,
     private val onConnect: () -> Unit,
     private val onMessage: (type: String, payload: Json.Obj, env: Envelope.Parsed) -> Unit,
+    /** Auth mode to start with before the broker's `welcome` declares one
+     *  (§13). OPTIONAL bootstrap = "verify a sig if present, accept if absent",
+     *  which interoperates with open / optional / required brokers alike until
+     *  we lock to the declared mode. */
+    initialAuthMode: AuthMode = AuthMode.OPTIONAL,
     private val timeSyncIntervalS: Long = 30,
     private val pingIntervalS: Long = 20,
-) {
+) : CoordinatorLink {
     private val from = "player:$deviceId"
     private val replay = ReplayCache()
+
+    @Volatile override var authMode: AuthMode = initialAuthMode
+        private set
+
+    /** Adopt the auth mode the coordinator declared in `welcome`/`announce`
+     *  (§13). Called by the owner once the mode is known. */
+    fun setAuthMode(mode: AuthMode) { authMode = mode }
 
     private val client = OkHttpClient.Builder()
         .pingInterval(pingIntervalS, TimeUnit.SECONDS)
@@ -65,7 +77,7 @@ class BrokerClient(
 
     val isConnected: Boolean get() = connected
 
-    fun start() {
+    override fun start() {
         connect()
     }
 

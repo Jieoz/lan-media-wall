@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:web_socket_channel/io.dart';
 
+import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 
@@ -31,6 +32,12 @@ class BrokerClient {
 
   /// 连接态变化。
   void Function(ConnState state)? onState;
+
+  /// 协调端在 welcome 中声明的 auth_mode（§13）变化（端侧据此自适应签名/验签）。
+  void Function(AuthMode mode)? onAuthMode;
+
+  /// 协调端在 welcome 中声明的 topology（§14）字符串变化（仅诊断展示）。
+  void Function(String topology)? onTopology;
 
   /// 诊断日志。
   void Function(String line)? onLog;
@@ -166,6 +173,18 @@ class BrokerClient {
     }
     switch (env.type) {
       case 'welcome':
+        // §13：先据 welcome.auth_mode 调整本端签名/验签策略，再处理快照。
+        if (env.payload.containsKey('auth_mode')) {
+          final mode = AuthMode.parse(env.payload['auth_mode']);
+          codec.authMode = mode;
+          onAuthMode?.call(mode);
+          _log('auth_mode=${mode.wire}');
+        }
+        if (env.payload.containsKey('topology')) {
+          final topo = env.payload['topology'].toString();
+          onTopology?.call(topo);
+          _log('topology=$topo');
+        }
         final snap = (env.payload['snapshot'] as Map?)?.cast<String, dynamic>();
         if (snap != null) onWall?.call(WallSnapshot.fromMap(snap));
         _log('已接入(welcome)');

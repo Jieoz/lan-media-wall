@@ -18,6 +18,12 @@ import javax.crypto.spec.SecretKeySpec
 object Envelope {
     const val PROTOCOL_VERSION = 1
 
+    /** The placeholder PSK shipped by default (see Settings.DEFAULT_PSK). Treated
+     *  as "no real key" by [hasUsableKey] so `optional` mode degrades to `sig=""`
+     *  rather than emitting a signature derived from a well-known string. */
+    const val PLACEHOLDER_PSK = "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY"
+
+
     // §3 thresholds (mirror envelope.py)
     const val FRESH_WINDOW_MS = 30_000L
     const val FIRST_CONNECT_WINDOW_MS = 120_000L
@@ -76,6 +82,47 @@ object Envelope {
      *  the wire — the receiver re-canonicalizes the payload for verification. */
     fun toWire(env: Json.Obj): String = CanonicalJson.encode(env)
 
+    /**
+     * Auth-mode-aware build (§13). The `sig` field is **always present** so the
+     * §2 envelope shape never changes; only its value depends on the mode:
+     *   - [AuthMode.OPEN]      → `sig=""` (no key needed, zero-config);
+     *   - [AuthMode.OPTIONAL]  → sign iff [psk] is a real key, else `sig=""`;
+     *   - [AuthMode.REQUIRED]  → always sign.
+     *
+     * [hasUsableKey] decides "is there a real PSK" — an empty or the shipped
+     * placeholder key counts as absent so an unconfigured device under
+     * `optional` sends `sig=""` rather than a signature nobody can verify.
+     */
+    fun buildWithMode(
+        psk: String, authMode: AuthMode, type: String, from: String, to: String,
+        payload: Json,
+        msgId: String = UUID.randomUUID().toString(),
+        ts: Long = nowMs(),
+    ): Json.Obj {
+        val v = PROTOCOL_VERSION
+        val sig = when (authMode) {
+            AuthMode.OPEN -> ""
+            AuthMode.OPTIONAL -> if (hasUsableKey(psk)) sign(psk, v, type, msgId, ts, from, to, payload) else ""
+            AuthMode.REQUIRED -> sign(psk, v, type, msgId, ts, from, to, payload)
+        }
+        return jsonObj {
+            put("v", v)
+            put("type", type)
+            put("msg_id", msgId)
+            put("ts", ts)
+            put("from", from)
+            put("to", to)
+            put("sig", sig)
+            put("payload", payload)
+        }
+    }
+
+    /** True when [psk] is a real preshared key (non-blank and not the shipped
+     *  placeholder). Used by [buildWithMode] / verify gating under `optional`. */
+    fun hasUsableKey(psk: String): Boolean =
+        psk.isNotBlank() && psk != PLACEHOLDER_PSK
+
+
     data class Parsed(
         val v: Int,
         val type: String,
@@ -93,11 +140,17 @@ object Envelope {
     data class VerifyResult(val ok: Boolean, val reason: Reason, val parsed: Parsed?)
 
     /**
-     * Validate an inbound envelope per §3:
+     * Validate an inbound envelope per §3, gated by [authMode] per §13:
      *   1. shape check (all fields present, payload is object),
-     *   2. recompute sig and constant-time compare,
-     *   3. freshness window (120s on first connect, else 30s),
-     *   4. replay dedup via [replay] (5-minute LRU).
+     *   2. signature check — **mode-dependent**:
+     *        - [AuthMode.REQUIRED]: recompute + constant-time compare (drop on fail),
+     *        - [AuthMode.OPTIONAL]: verify only when `sig` is non-empty,
+     *        - [AuthMode.OPEN]: skip (accept any/empty `sig`),
+     *   3. freshness window (120s on first connect, else 30s) — **always**,
+     *   4. replay dedup via [replay] (5-minute LRU) — **always**.
+     *
+     * Default [authMode] is [AuthMode.REQUIRED] so this stays a strict verifier
+     * for callers that don't opt into the relaxed modes.
      */
     fun verify(
         psk: String,
@@ -105,6 +158,7 @@ object Envelope {
         replay: ReplayCache? = null,
         firstConnect: Boolean = false,
         now: Long = nowMs(),
+        authMode: AuthMode = AuthMode.REQUIRED,
     ): VerifyResult {
         val root = try {
             Json.parse(raw)
@@ -128,7 +182,14 @@ object Envelope {
         val sig = (e["sig"]).asString() ?: return VerifyResult(false, Reason.SHAPE, null)
 
         val expected = sign(psk, v, type, msgId, ts, from, to, payloadObj)
-        if (!constantTimeEquals(expected, sig)) {
+        // §13 signature gating by auth mode. `open` skips entirely; `optional`
+        // verifies only a non-empty sig; `required` always verifies.
+        val mustVerify = when (authMode) {
+            AuthMode.OPEN -> false
+            AuthMode.OPTIONAL -> sig.isNotEmpty()
+            AuthMode.REQUIRED -> true
+        }
+        if (mustVerify && !constantTimeEquals(expected, sig)) {
             return VerifyResult(false, Reason.SIG, null)
         }
 

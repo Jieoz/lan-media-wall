@@ -86,7 +86,8 @@ class Discovery {
       return;
     }
     if (env.type != 'announce') return;
-    if (!codec.checkSig(env)) {
+    // §13：按当前 auth_mode 接受签名（open 放行空 sig；required 强制验签）。
+    if (!codec.acceptSig(env)) {
       _log('announce 验签失败，丢弃');
       return;
     }

@@ -17,12 +17,14 @@ import threading
 from typing import Any, Callable, Dict, Optional
 
 import envelope
+import auth as auth_mod
 
 
 class DiscoveryResponder:
     def __init__(self, *, psk: str, device_id: str, device_name: str,
                  ip: str, broker_hint: str, port: int = 8772,
-                 replay: Optional[envelope.ReplayCache] = None):
+                 replay: Optional[envelope.ReplayCache] = None,
+                 auth_mode: str = "open", topology: str = "dedicated"):
         self.psk = psk
         self.device_id = device_id
         self.device_name = device_name
@@ -30,6 +32,10 @@ class DiscoveryResponder:
         self.broker_hint = broker_hint
         self.port = port
         self.replay = replay or envelope.ReplayCache()
+        # §13/§14: declare the coordinator's auth_mode + topology so probing
+        # endpoints adapt (signing) and diagnose (role) without connecting.
+        self.auth_mode = auth_mod.normalize_mode(auth_mode)
+        self.topology = topology
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -40,14 +46,20 @@ class DiscoveryResponder:
         self._thread.start()
 
     def _make_announce(self) -> bytes:
+        # §13: sign the announce only when our mode calls for it (open → "").
+        sign = auth_mod.should_sign(self.auth_mode,
+                                    auth_mod.has_usable_psk(self.psk))
+        payload = {
+            "device_id": self.device_id,
+            "device_name": self.device_name,
+            "ip": self.ip,
+            "broker_hint": self.broker_hint,
+            "auth_mode": self.auth_mode,
+            "topology": self.topology,
+        }
         env = envelope.build_envelope(
-            self.psk, "announce", f"player:{self.device_id}", "all",
-            {
-                "device_id": self.device_id,
-                "device_name": self.device_name,
-                "ip": self.ip,
-                "broker_hint": self.broker_hint,
-            })
+            self.psk, "announce", f"player:{self.device_id}", "all", payload,
+            sign_frame=sign)
         return json.dumps(env, ensure_ascii=False).encode("utf-8")
 
     def _run(self) -> None:
@@ -80,7 +92,7 @@ class DiscoveryResponder:
         if env.get("type") != "discover":
             return
         ok, _ = envelope.verify(self.psk, env, replay=self.replay,
-                                first_connect=True)
+                                first_connect=True, auth_mode=self.auth_mode)
         if not ok:
             return
         try:

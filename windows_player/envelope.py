@@ -57,12 +57,18 @@ def sign(psk: str, v: int, type_: str, msg_id: str, ts: int, frm: str,
 
 def build_envelope(psk: str, type_: str, frm: str, to: str,
                    payload: Dict[str, Any], *, msg_id: Optional[str] = None,
-                   ts: Optional[int] = None) -> Dict[str, Any]:
-    """Construct a fully-signed outbound envelope."""
+                   ts: Optional[int] = None, sign_frame: bool = True) -> Dict[str, Any]:
+    """Construct an outbound envelope.
+
+    `sign_frame` controls §13 auth adaptivity: when True (default, the
+    `required`/signing case) the `sig` field carries a real HMAC; when False
+    (the `open` case, or `optional` with no PSK) it is the empty string. The
+    envelope shape (§2) is identical either way — only `sig` differs — so a
+    parser never trips on an unsigned frame (§13)."""
     v = PROTOCOL_VERSION
     msg_id = msg_id or str(uuid.uuid4())
     ts = now_ms() if ts is None else ts
-    sig = sign(psk, v, type_, msg_id, ts, frm, to, payload)
+    sig = sign(psk, v, type_, msg_id, ts, frm, to, payload) if sign_frame else ""
     return {
         "v": v,
         "type": type_,
@@ -110,12 +116,19 @@ class ReplayCache:
 def verify(psk: str, env: Dict[str, Any], *,
            replay: Optional[ReplayCache] = None,
            first_connect: bool = False,
-           now: Optional[int] = None) -> Tuple[bool, str]:
-    """Validate an inbound envelope per §3.
+           now: Optional[int] = None,
+           auth_mode: str = "required") -> Tuple[bool, str]:
+    """Validate an inbound envelope per §3, gated by §13 `auth_mode`.
 
     Returns (ok, reason). reason is "" on success, else a short code:
     "shape", "sig", "stale", "dup".
-    """
+
+    §13 controls only the signature check:
+      - "required" (default): always verify `sig` — preserves v1 behavior.
+      - "open":               never verify `sig` (it may be "").
+      - "optional":           verify only when `sig` is non-empty.
+    The ts-freshness and msg_id-dedup checks run in **all** modes — they are
+    replay hygiene and need no key (§13)."""
     now = now_ms() if now is None else now
     required = ("v", "type", "msg_id", "ts", "from", "to", "sig", "payload")
     if not isinstance(env, dict) or any(k not in env for k in required):
@@ -123,11 +136,13 @@ def verify(psk: str, env: Dict[str, Any], *,
     if not isinstance(env["payload"], dict):
         return False, "shape"
 
-    expected = sign(psk, env["v"], env["type"], env["msg_id"], env["ts"],
-                    env["from"], env["to"], env["payload"])
-    # constant-time compare
-    if not hmac.compare_digest(expected, str(env.get("sig", ""))):
-        return False, "sig"
+    sig = str(env.get("sig", ""))
+    if _verify_needed(auth_mode, sig):
+        expected = sign(psk, env["v"], env["type"], env["msg_id"], env["ts"],
+                        env["from"], env["to"], env["payload"])
+        # constant-time compare
+        if not hmac.compare_digest(expected, sig):
+            return False, "sig"
 
     window = FIRST_CONNECT_WINDOW_MS if first_connect else FRESH_WINDOW_MS
     try:
@@ -141,3 +156,15 @@ def verify(psk: str, env: Dict[str, Any], *,
         return False, "dup"
 
     return True, ""
+
+
+def _verify_needed(auth_mode: str, sig: str) -> bool:
+    """§13 signature-check gate. Kept here (not importing `auth`) so envelope
+    stays dependency-free; `auth.should_verify` is the canonical mirror."""
+    mode = auth_mode if isinstance(auth_mode, str) else "required"
+    mode = mode.strip().lower()
+    if mode == "open":
+        return False
+    if mode == "optional":
+        return bool(sig)
+    return True  # required / unknown → strict (safe default)

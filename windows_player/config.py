@@ -28,6 +28,11 @@ except Exception:  # pragma: no cover - yaml is a hard dep, guard for import-tim
 DEFAULTS: Dict[str, Any] = {
     "broker": {"host": "127.0.0.1", "port": 8770, "use_wss": False, "wss_port": 8771},
     "psk": "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY",
+    "auth_mode": "open",                      # §13: open|optional|required (open=default)
+    "topology": {"cohost": False,             # §14.2: True → also run broker in-process
+                 "discover_timeout_s": 3.0,   # §14.5: wait this long for a broker before p2p
+                 "p2p_listen_port": 8770,      # §14.3: p2p server port
+                 "auto": True},                # §14.5: auto-pick role from discovery
     "device": {"name": None, "group_id": "default"},
     "cache_dir": "./cache",
     "state_dir": "./state",
@@ -76,6 +81,12 @@ class Config:
         return f"ws://{b['host']}:{b.get('port', 8770)}"
 
     @property
+    def auth_mode(self) -> str:
+        """§13 auth mode. env LMW_AUTH_MODE wins over file/default, mirroring
+        the PSK override so a deployment can flip modes without editing yaml."""
+        return os.environ.get("LMW_AUTH_MODE", self.raw.get("auth_mode", "open"))
+
+    @property
     def cache_dir(self) -> Path:
         return Path(self.raw["cache_dir"]).expanduser()
 
@@ -108,6 +119,16 @@ def load_config(path: Optional[str] = None) -> Config:
             raw = _deep_merge(DEFAULTS, loaded)
             resolved = p
     return Config(raw=raw, path=resolved)
+
+
+def apply_pairing(cfg: Config, overlay: Dict[str, Any]) -> Config:
+    """Deep-merge a pairing overlay (from pairing.pairing_to_config_overlay)
+    onto a loaded Config, in place. Returns the same Config for chaining.
+
+    Lets a `lmw://pair?...` string (§15) override broker host/port/wss, psk,
+    auth_mode, and device group/name without editing config.yaml."""
+    cfg.raw = _deep_merge(cfg.raw, overlay)
+    return cfg
 
 
 def detect_ip(broker_host: str = "8.8.8.8") -> str:

@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../net/broker_client.dart';
+import '../protocol/auth_mode.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
+import 'invite_screen.dart';
 
 /// 设备墙：每台设备一格，展示在线灯、当前文件名、播放进度、音量、当前帧缩略图(§5.2/§6.4)。
 class WallScreen extends StatelessWidget {
@@ -17,14 +19,23 @@ class WallScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('设备墙'),
         actions: [
-          _ConnBadge(conn: state.conn),
+          _AuthBadge(mode: state.authMode),
+          _TopoBadge(topology: state.topology, peers: state.p2pPeers),
+          _ConnBadge(conn: state.conn, isP2p: state.isP2p, connected: state.connected),
+          IconButton(
+            tooltip: '邀请设备 / 二维码',
+            icon: const Icon(Icons.qr_code_2),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const InviteScreen()),
+            ),
+          ),
           IconButton(
             tooltip: '刷新发现',
             icon: const Icon(Icons.wifi_find),
             onPressed: state.refreshDiscovery,
           ),
           IconButton(
-            tooltip: '重连 broker',
+            tooltip: '重连',
             icon: const Icon(Icons.refresh),
             onPressed: state.reconnect,
           ),
@@ -54,16 +65,20 @@ class WallScreen extends StatelessWidget {
 }
 
 class _ConnBadge extends StatelessWidget {
-  const _ConnBadge({required this.conn});
+  const _ConnBadge({required this.conn, required this.isP2p, required this.connected});
   final ConnState conn;
+  final bool isP2p;
+  final bool connected;
 
   @override
   Widget build(BuildContext context) {
-    final (color, text) = switch (conn) {
-      ConnState.connected => (Colors.green, '已连接'),
-      ConnState.connecting => (Colors.orange, '连接中'),
-      ConnState.disconnected => (Colors.red, '未连接'),
-    };
+    final (color, text) = isP2p
+        ? (connected ? Colors.green : Colors.red, connected ? '已连' : '搜寻中')
+        : switch (conn) {
+            ConnState.connected => (Colors.green, '已连接'),
+            ConnState.connecting => (Colors.orange, '连接中'),
+            ConnState.disconnected => (Colors.red, '未连接'),
+          };
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -74,6 +89,69 @@ class _ConnBadge extends StatelessWidget {
             const SizedBox(width: 6),
             Text(text, style: const TextStyle(fontSize: 13)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 鉴权模式徽标（开放 / 可选 / 加密，§13）。
+class _AuthBadge extends StatelessWidget {
+  const _AuthBadge({required this.mode});
+  final AuthMode mode;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, color) = switch (mode) {
+      AuthMode.open => (Icons.lock_open, Colors.grey),
+      AuthMode.optional => (Icons.lock_outline, Colors.amber),
+      AuthMode.required => (Icons.lock, Colors.green),
+    };
+    return Center(
+      child: Tooltip(
+        message: '鉴权：${mode.label}',
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 3),
+              Text(mode.label, style: TextStyle(fontSize: 12, color: color)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 拓扑徽标（§14）：p2p 下顺带显示已连台数。
+class _TopoBadge extends StatelessWidget {
+  const _TopoBadge({required this.topology, required this.peers});
+  final Topology topology;
+  final int peers;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, label) = switch (topology) {
+      Topology.dedicated => (Icons.hub, 'broker'),
+      Topology.cohosted => (Icons.device_hub, '寄生'),
+      Topology.p2p => (Icons.lan, 'p2p·$peers'),
+    };
+    return Center(
+      child: Tooltip(
+        message: topology.label,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14),
+              const SizedBox(width: 3),
+              Text(label, style: const TextStyle(fontSize: 12)),
+            ],
+          ),
         ),
       ),
     );

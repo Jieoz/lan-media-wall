@@ -24,6 +24,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 import envelope
+import auth as auth_mod
 from clock import ClockSync, now_ms
 
 log = logging.getLogger("lmw.ws")
@@ -37,7 +38,8 @@ class BrokerClient:
                  on_connect: Optional[Callable[[], Awaitable[None]]] = None,
                  on_message: Optional[HandlerType] = None,
                  time_sync_interval_s: float = 30.0,
-                 ping_interval_s: float = 20.0):
+                 ping_interval_s: float = 20.0,
+                 auth_state: Optional[auth_mod.AuthState] = None):
         self.url = url
         self.psk = psk
         self.device_id = device_id
@@ -47,6 +49,9 @@ class BrokerClient:
         self.on_message = on_message
         self.time_sync_interval_s = time_sync_interval_s
         self.ping_interval_s = ping_interval_s
+        # §13: auth adaptivity. Default to required (= v1 behavior) when the
+        # caller doesn't supply state, so existing wiring is unchanged.
+        self.auth = auth_state or auth_mod.AuthState(auth_mod.REQUIRED, psk)
 
         self._ws = None
         self._replay = envelope.ReplayCache()
@@ -69,7 +74,8 @@ class BrokerClient:
         if not self.connected:
             return None
         env = envelope.build_envelope(self.psk, type_, self.frm, to, payload,
-                                      msg_id=msg_id)
+                                      msg_id=msg_id,
+                                      sign_frame=self.auth.should_sign())
         data = json.dumps(env, ensure_ascii=False)
         try:
             async with self._send_lock:
@@ -144,21 +150,33 @@ class BrokerClient:
             env = json.loads(raw)
         except json.JSONDecodeError:
             return
+        # §13: a welcome may reveal the coordinator's auth_mode before we verify
+        # anything else. Peek the type so we can adopt the mode and verify this
+        # very frame under it (the broker is authoritative for the topology).
+        type_ = env.get("type")
+        payload = env.get("payload", {}) if isinstance(env, dict) else {}
+        if type_ == "welcome" and isinstance(payload, dict):
+            if self.auth.adopt(payload.get("auth_mode")):
+                log.info("adopted auth_mode=%s from welcome", self.auth.mode)
         ok, reason = envelope.verify(
             self.psk, env, replay=self._replay,
-            first_connect=self._first_connect)
+            first_connect=self._first_connect,
+            auth_mode=self.auth.mode)
         if not ok:
             log.debug("dropped inbound (%s): type=%s", reason, env.get("type"))
             return
-        type_ = env.get("type")
-        payload = env.get("payload", {})
         # time_sync_ack is handled internally to keep the clock authoritative
         if type_ == "time_sync_ack":
             self._on_time_sync_ack(env, payload)
             return
         if type_ == "welcome":
             # server_time is informational here; clock comes from time_sync.
-            pass
+            ok_op, why = self.auth.can_operate()
+            if not ok_op:
+                # §13: required mode but no PSK — soft error, keep retrying.
+                log.warning("auth gate: %s (auth_mode=%s) — staying connected "
+                            "but cannot sign; configure LMW_PSK", why,
+                            self.auth.mode)
         if self.on_message:
             try:
                 await self.on_message(type_, payload, env)

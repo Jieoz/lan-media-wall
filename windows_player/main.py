@@ -21,6 +21,9 @@ import sys
 from typing import Any, Dict, List, Optional
 
 import config as config_mod
+import auth as auth_mod
+import topology as topology_mod
+import pairing as pairing_mod
 from clock import ClockSync, now_ms
 from downloader import Downloader
 from websocket_client import BrokerClient
@@ -44,13 +47,27 @@ try:
     from discovery import DiscoveryResponder
 except Exception:  # pragma: no cover
     DiscoveryResponder = None  # type: ignore
+# §14 transports — import-guarded (need `websockets`); pure decision logic in
+# topology_mod is always available even if these aren't.
+try:
+    import discovery_probe as discovery_probe_mod
+except Exception:  # pragma: no cover
+    discovery_probe_mod = None  # type: ignore
+try:
+    from p2p_server import P2PServer
+except Exception:  # pragma: no cover
+    P2PServer = None  # type: ignore
+try:
+    import cohost as cohost_mod
+except Exception:  # pragma: no cover
+    cohost_mod = None  # type: ignore
 
 
 VALID_STATES = {"playing", "paused", "idle", "buffering", "downloading"}
 
 
 class Player:
-    def __init__(self, cfg: config_mod.Config):
+    def __init__(self, cfg: config_mod.Config, *, cohost: Optional[bool] = None):
         self.cfg = cfg
         self.state = config_mod.PersistentState.load(cfg.state_dir)
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -61,6 +78,14 @@ class Player:
         self.group_id = self.state.group_id if self.state.group_id != "default" \
             else (cfg.get("device", "group_id") or "default")
         self.ip = config_mod.detect_ip(cfg.get("broker", "host", default="8.8.8.8"))
+
+        # §13: shared auth state — starts from configured mode, adopts the
+        # coordinator's mode once welcome/announce reveals it.
+        self.auth = auth_mod.AuthState(cfg.auth_mode, cfg.psk)
+        # §14: cohost flag (CLI overrides config).
+        self.cohost = bool(cfg.get("topology", "cohost", default=False)
+                           if cohost is None else cohost)
+        self.cohost_broker = None  # set when we spawn an in-process broker
 
         self.clock = ClockSync()
         self.downloader = Downloader(
@@ -87,12 +112,10 @@ class Player:
         self.thumbnailer = None
         self.discovery = None
 
-        self.ws = BrokerClient(
-            cfg.broker_url, psk=cfg.psk, device_id=self.device_id,
-            clock=self.clock, on_connect=self._on_connect,
-            on_message=self._on_message,
-            time_sync_interval_s=float(cfg.get("time_sync_interval_s", default=30)),
-        )
+        # §14: transport is chosen at run() time from discovery (client vs p2p
+        # server). decision/ws are filled by _setup_transport().
+        self.decision: Optional[topology_mod.Decision] = None
+        self.ws = None  # BrokerClient | P2PServer
 
     # --- mpv helper: run a blocking IPC call off the event loop -------
     async def _mpv(self, fn, *args, **kwargs):
@@ -106,6 +129,97 @@ class Player:
         except Exception as exc:
             log.debug("mpv.%s failed: %s", fn, exc)
             return None
+
+    # --- §14 transport selection -------------------------------------
+    def _discover_decision(self) -> topology_mod.Decision:
+        """Decide client vs p2p-server from a UDP discovery probe (§14.5).
+
+        Blocking (socket + timeout) — call via to_thread. Falls back to the
+        configured broker as a pseudo-discovery when auto-discovery is off or
+        the probe module is unavailable, so behavior degrades gracefully."""
+        cohost = self.cohost
+        fallback_mode = self.auth.mode
+        auto = bool(self.cfg.get("topology", "auto", default=True))
+        p2p_port = int(self.cfg.get("topology", "p2p_listen_port", default=8770))
+        timeout = float(self.cfg.get("topology", "discover_timeout_s", default=3.0))
+
+        if cohost:
+            # operator intent wins; no probe needed (§14.2).
+            return topology_mod.decide_topology(
+                None, cohost=True, fallback_auth_mode=fallback_mode,
+                p2p_listen_port=p2p_port)
+
+        found = None
+        if auto and discovery_probe_mod is not None:
+            try:
+                found = discovery_probe_mod.probe_for_broker(
+                    psk=self.cfg.psk, auth_mode=self.auth.mode,
+                    device_id=self.device_id, timeout_s=timeout)
+            except Exception as exc:
+                log.warning("discovery probe failed (%s); using configured broker",
+                            exc)
+        if found is None and not auto:
+            # auto off → trust the configured broker host/port (mode A).
+            found = topology_mod.BrokerFound(
+                host=self.cfg.get("broker", "host", default="127.0.0.1"),
+                port=int(self.cfg.get("broker", "port", default=8770)),
+                auth_mode=self.auth.mode)
+        return topology_mod.decide_topology(
+            found, cohost=False, fallback_auth_mode=fallback_mode,
+            p2p_listen_port=p2p_port)
+
+    def _build_transport(self, decision: topology_mod.Decision):
+        """Construct the BrokerClient or P2PServer for `decision` (§14)."""
+        self.auth.adopt(decision.auth_mode)
+        interval = float(self.cfg.get("time_sync_interval_s", default=30))
+
+        if decision.role == topology_mod.ROLE_P2P_SERVER:
+            if P2PServer is None:
+                raise RuntimeError("p2p server unavailable (websockets missing)")
+            log.info("topology=p2p → running as WS server on :%d (controller=clock)",
+                     decision.listen_port)
+            return P2PServer(
+                psk=self.cfg.psk, device_id=self.device_id,
+                group_id=self.group_id, clock=self.clock, auth_state=self.auth,
+                on_connect=self._on_p2p_connect, on_message=self._on_message,
+                listen_port=int(decision.listen_port or 8770),
+                time_sync_interval_s=interval)
+
+        # client role (mode A or B) ------------------------------------
+        if decision.cohost_broker:
+            self._spawn_cohost_broker()
+        # discovered/cohost brokers are plain WS (the hint is host:ws_port);
+        # WSS is only used for an explicitly-configured dedicated broker.
+        if not decision.cohost_broker and self.cfg.get("broker", "use_wss",
+                                                        default=False):
+            url = f"wss://{decision.host}:{int(decision.port) + 1}"
+        else:
+            url = f"ws://{decision.host}:{decision.port}"
+        log.info("topology=%s → connecting as client to %s (auth_mode=%s)",
+                 decision.topology, url, self.auth.mode)
+        return BrokerClient(
+            url, psk=self.cfg.psk, device_id=self.device_id, clock=self.clock,
+            on_connect=self._on_connect, on_message=self._on_message,
+            time_sync_interval_s=interval, auth_state=self.auth)
+
+    def _spawn_cohost_broker(self) -> None:
+        """§14.2: start the broker in-process so we *are* the coordinator."""
+        if cohost_mod is None:
+            log.error("cohost requested but cohost module unavailable")
+            self._errors.append("cohost-unavailable")
+            return
+        bcfg = cohost_mod.build_broker_config(
+            self.cfg.psk, auth_mode=self.auth.mode,
+            ws_port=int(self.cfg.get("topology", "p2p_listen_port", default=8770)),
+            discovery_port=int(self.cfg.get("discovery", "udp_port", default=8772)))
+        self.cohost_broker = cohost_mod.CohostBroker(bcfg)
+        if not self.cohost_broker.start():
+            self._errors.append("cohost-broker-failed")
+
+    async def _on_p2p_connect(self) -> None:
+        """When a controller connects to our p2p server, surface its presence so
+        the thumbnail gate (§6.4) opens — the controller is now watching."""
+        self.controller_present = True
 
     # --- startup ------------------------------------------------------
     def start_os_subsystems(self) -> None:
@@ -141,11 +255,24 @@ class Player:
 
         if DiscoveryResponder is not None and \
                 self.cfg.get("discovery", "enabled", default=True):
-            bh = f"{self.cfg.get('broker','host')}:{self.cfg.get('broker','port')}"
+            # §14: advertise the right coordinator. cohosted/p2p → this machine
+            # is the coordinator (announce our own ip:8770); dedicated → point
+            # at the configured/discovered broker.
+            topo = self.decision.topology if self.decision else "dedicated"
+            if topo in (topology_mod.COHOSTED, topology_mod.P2P):
+                port = self.decision.listen_port or self.decision.port or 8770
+                bh = f"{self.ip}:{port}"
+            else:
+                host = self.decision.host if self.decision else \
+                    self.cfg.get("broker", "host")
+                port = self.decision.port if self.decision else \
+                    self.cfg.get("broker", "port")
+                bh = f"{host}:{port}"
             self.discovery = DiscoveryResponder(
                 psk=self.cfg.psk, device_id=self.device_id,
                 device_name=self.device_name, ip=self.ip, broker_hint=bh,
-                port=int(self.cfg.get("discovery", "udp_port", default=8772)))
+                port=int(self.cfg.get("discovery", "udp_port", default=8772)),
+                auth_mode=self.auth.mode, topology=topo)
             self.discovery.start()
 
     def _apply_idle_screen(self) -> None:
@@ -577,6 +704,11 @@ class Player:
     # --- run ----------------------------------------------------------
     async def run(self) -> None:
         self.loop = asyncio.get_running_loop()
+        # §14: decide client vs p2p server from discovery (blocking probe off
+        # the loop), build the transport, THEN bring up OS subsystems so the
+        # discovery responder can advertise the chosen topology/broker_hint.
+        self.decision = await asyncio.to_thread(self._discover_decision)
+        self.ws = self._build_transport(self.decision)
         self.start_os_subsystems()
         # apply persisted volume/mute to mpv up front
         await self._mpv("set_volume", self.volume)
@@ -606,11 +738,14 @@ class Player:
 
     async def shutdown(self) -> None:
         try:
-            await self.ws.stop()
+            if self.ws is not None:
+                await self.ws.stop()
         except Exception:
             pass
         if self.discovery is not None:
             self.discovery.stop()
+        if self.cohost_broker is not None:
+            self.cohost_broker.stop()
         self.downloader.stop()
         if self.watchdog is not None:
             self.watchdog.stop()
@@ -622,6 +757,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="LAN Media Wall — Windows player")
     parser.add_argument("--config", "-c", default=None,
                         help="path to config.yaml (else env LMW_CONFIG/defaults)")
+    parser.add_argument("--broker", action="store_true", default=None,
+                        help="§14.2 cohosted: also run the broker in-process "
+                             "(this machine becomes the coordinator)")
+    parser.add_argument("--pair", default=None,
+                        help="§15 paste an lmw://pair?... URI to fill "
+                             "host/port/group/mode/psk before connecting")
+    parser.add_argument("--mode", default=None,
+                        choices=["open", "optional", "required"],
+                        help="§13 override auth_mode (else config/env/default)")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
@@ -630,11 +774,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     cfg = config_mod.load_config(args.config)
-    log.info("LAN Media Wall player — protocol v%d", 1)
-    player = Player(cfg)
-    log.info("device_id=%s name=%s group=%s ip=%s broker=%s",
+    # §15: a pairing URI overrides broker/auth/group before anything connects.
+    if args.pair:
+        try:
+            fields = pairing_mod.parse_pairing_uri(args.pair)
+            overlay = pairing_mod.pairing_to_config_overlay(fields)
+            config_mod.apply_pairing(cfg, overlay)
+            log.info("applied pairing URI: %s", sorted(fields))
+        except pairing_mod.PairingError as exc:
+            log.error("ignoring bad --pair URI: %s", exc)
+    # §13: explicit --mode wins over file/env.
+    if args.mode:
+        cfg.raw["auth_mode"] = args.mode
+
+    log.info("LAN Media Wall player — protocol v%d (auth_mode=%s)",
+             1, cfg.auth_mode)
+    player = Player(cfg, cohost=args.broker)
+    log.info("device_id=%s name=%s group=%s ip=%s cohost=%s",
              player.device_id, player.device_name, player.group_id,
-             player.ip, cfg.broker_url)
+             player.ip, player.cohost)
     try:
         asyncio.run(player.run())
     except KeyboardInterrupt:

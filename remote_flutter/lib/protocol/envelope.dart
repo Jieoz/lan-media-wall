@@ -3,6 +3,8 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
+import 'auth_mode.dart';
+
 /// 信封 + HMAC 签名/校验 + msg_id，严格对齐 protocol_spec.md §2/§3。
 ///
 /// 签名串 = "{v}|{type}|{msg_id}|{ts}|{from}|{to}|{canonical_json(payload)}"
@@ -109,11 +111,19 @@ class Envelope {
 /// 校验结果。
 enum VerifyError { ok, badSig, expired, replay }
 
-/// 信封编解码器：按 PSK 签名出站、校验入站（§3）。
+/// 信封编解码器：按 PSK 签名出站、校验入站（§3 + §13 auth_mode 自适应）。
+///
+/// [authMode] 决定出站是否填真实 `sig`、入站是否验签：
+///  - `open`：出站 `sig=""`，入站不验签（仍做时效 + 去重）。
+///  - `optional`：有 PSK 才签；入站 `sig` 非空才验。
+///  - `required`：强制签 + 强制验（原 §3 行为）。
+///
+/// 时效（ts 窗口）+ 去重（msg_id LRU）在三档下都仍执行（§13 防重放卫生）。
 class EnvelopeCodec {
   EnvelopeCodec({
     required this.psk,
     required this.fromAddress,
+    this.authMode = AuthMode.required,
     this.tsWindowMs = 30000,
     this.firstWindowMs = 120000,
     this.dedupTtlMs = 300000,
@@ -124,6 +134,12 @@ class EnvelopeCodec {
 
   /// 本端地址，如 "controller:phone-jay"。
   String fromAddress;
+
+  /// 当前鉴权模式（§13）。默认 [AuthMode.required] 以保持与历史 §3 行为兼容；
+  /// 连上协调端读到 `welcome.auth_mode` 后由上层调整（见 [BrokerClient] / [WallState]）。
+  AuthMode authMode;
+
+  bool get _hasPsk => psk.isNotEmpty;
 
   /// 时效窗口（毫秒），首帧放宽到 [firstWindowMs]。
   final int tsWindowMs;
@@ -169,15 +185,18 @@ class EnvelopeCodec {
     final actualFrom = from ?? fromAddress;
     final actualMsgId = msgId ?? uuid4();
     final actualTs = ts ?? nowMs();
-    final sig = hmacHex(signingString(
-      v: v,
-      type: type,
-      msgId: actualMsgId,
-      ts: actualTs,
-      from: actualFrom,
-      to: to,
-      payload: payload,
-    ));
+    // §13：open → sig=""；optional → 有 PSK 才签；required → 总是签。
+    final sig = authMode.shouldSign(hasPsk: _hasPsk)
+        ? hmacHex(signingString(
+            v: v,
+            type: type,
+            msgId: actualMsgId,
+            ts: actualTs,
+            from: actualFrom,
+            to: to,
+            payload: payload,
+          ))
+        : '';
     return Envelope(
       v: v,
       type: type,
@@ -204,9 +223,22 @@ class EnvelopeCodec {
     return _constantTimeEquals(expected, e.sig);
   }
 
-  /// 完整校验入站信封：签名 → 时效 → 去重。
+  /// 按当前 [authMode] 判断一帧的签名是否可接受（不含时效/去重）。
+  ///
+  /// - `open`：永远接受（不验签）。
+  /// - `optional`：sig 为空 → 接受（放行）；非空 → 必须校验通过。
+  /// - `required`：必须有合法 sig（空 sig 视为失败）。
+  ///
+  /// 用于 UDP `announce`（§7/§13）等只需签名维度、无连接级时效去重的场景。
+  bool acceptSig(Envelope e) {
+    final present = e.sig.isNotEmpty;
+    if (!authMode.shouldVerify(sigPresent: present)) return true;
+    return checkSig(e);
+  }
+
+  /// 完整校验入站信封：签名（按 authMode） → 时效 → 去重。
   VerifyError verify(Envelope e, {int? now}) {
-    if (!checkSig(e)) return VerifyError.badSig;
+    if (!acceptSig(e)) return VerifyError.badSig;
     final t = now ?? nowMs();
     final window = _hadFirstFrame ? tsWindowMs : firstWindowMs;
     if ((t - e.ts).abs() > window) return VerifyError.expired;
