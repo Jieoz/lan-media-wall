@@ -153,10 +153,31 @@ jobs:
       # --- Attach APKs to a GitHub Release on tag pushes (v*) --------------
       # Glob matches every per-ABI release APK produced above (signed if a
       # keystore was present, otherwise the unsigned sideload set).
+      # Rename each per-ABI APK to an intuitive, version-tagged name so the
+      # Release page clearly shows it is the 遥控端 (controller) + which CPU arch.
+      - name: Rename controller APKs for Release
+        id: rename
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist_release
+          for f in remote_flutter/build/app/outputs/flutter-apk/*-release.apk; do
+            base="$(basename "$f")"
+            case "$base" in
+              *arm64-v8a*)   arch="ARM64-v8a-新手机" ;;
+              *armeabi-v7a*) arch="ARMv7-旧手机" ;;
+              *x86_64*)      arch="x86_64-模拟器" ;;
+              *)             arch="universal" ;;
+            esac
+            cp "$f" "dist_release/LANMediaWall-${TAG}-遥控端-Controller-${arch}.apk"
+          done
+          ls -la dist_release/
+
       - name: Attach APKs to Release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            remote_flutter/build/app/outputs/flutter-apk/*-release.apk
+            dist_release/*.apk
           fail_on_unmatched_files: true

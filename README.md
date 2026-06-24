@@ -34,8 +34,10 @@
 | 同步 / 各播各的 | 统一 group 模型:同组同步同一 playlist，不同组各播各的。`sync` 标志切换 |
 | 单文件 / 轮播 | playlist[] 统一模型，长度 1 = 单文件，>1 = 轮播;图片带 duration |
 | NAS 预分发 | 媒体存 NAS(WebDAV/HTTP GET)，被控端断点续传缓存 + sha256 校验，本地秒开 |
-| 鉴权防重放 | 全员预置 PSK + HMAC-SHA256 签名 + msg_id 去重 + ts 时效;可叠加 WSS |
-| 设备发现 | UDP 广播自动发现 + 手动 IP 直绑 + 上次清单持久化兜底 |
+| 鉴权(可选,v1.1) | 三档 `auth_mode`:`open` 默认零配置免密钥 / `optional` / `required`(PSK + HMAC-SHA256)。msg_id 去重 + ts 时效在所有档位常开;可叠加 WSS |
+| 拓扑(可选,v1.1) | 三模式 `topology`:`dedicated` 独立 broker / `cohosted` 被控端兼职 broker(零额外机器)/ `p2p` 无 broker 纯直连(遥控端兼协调,适合 ≤8 台小场景) |
+| 二维码配对(v1.1) | 遥控端生成 `lmw://pair?...` 二维码,被控端(尤其 Android)扫码免手输入组 |
+| 设备发现 | UDP 广播自动发现 + 手动 IP 直绑 + 上次清单持久化兜底;找不到 broker 自动退化 p2p |
 | 音频 | 组内可指定一台/多台出声，其余静音(默认全部出声) |
 | 设备墙预览 | 被控端周期回传当前帧缩略图，遥控端缩略图墙 |
 | 运维(Phase 2) | OTA 远程更新 / 远程重启 / 断电恢复上次任务 / 定时编排 |
@@ -46,26 +48,33 @@
 
 每打一个 `v*` tag，CI 会云编译四端并把产物挂到对应 [Release](https://github.com/Jieoz/lan-media-wall/releases/latest)，目标机无需装 Python / Flutter / Android SDK：
 
-| 端 | 产物 | 说明 |
+| 端 | 产物文件名 | 说明 |
 |---|---|---|
-| broker | `lmw-broker`(Linux ELF) / `lmw-broker.exe` | PyInstaller onefile，独立可执行，无需 Python |
-| Windows 被控端 | `lan-media-wall-player-setup.exe` | Inno Setup 安装包，已内置 mpv 运行时 |
-| Android 被控端 | `app-release.apk` | 原生 Kotlin 播放器(被控端) |
-| Flutter 遥控端 | `app-arm64-v8a / armeabi-v7a / x86_64-release.apk` | 分 ABI 的遥控端 APK，按手机架构装一个即可 |
+| 中枢 Broker(Linux) | `LANMediaWall-<版本>-Broker-中枢-Linux` | PyInstaller onefile，独立可执行，无需 Python |
+| 中枢 Broker(Windows) | `LANMediaWall-<版本>-Broker-中枢-Windows.exe` | 同上，Windows 版 |
+| Windows 被控端 | `LANMediaWall-<版本>-Windows-Player-被控端-安装包.exe` | Inno Setup 安装包，已内置 mpv 运行时 |
+| Android 被控端 | `LANMediaWall-<版本>-Android-Player-被控端.apk` | 原生 Kotlin 播放器，装在每块屏上 |
+| 遥控端(新手机) | `LANMediaWall-<版本>-遥控端-Controller-ARM64-v8a-新手机.apk` | 手机/平板遥控,近几年的机型选这个 |
+| 遥控端(旧手机) | `LANMediaWall-<版本>-遥控端-Controller-ARMv7-旧手机.apk` | 老旧 32 位机型 |
+| 遥控端(模拟器) | `LANMediaWall-<版本>-遥控端-Controller-x86_64-模拟器.apk` | x86 模拟器/极少数 x86 平板 |
+
+> 文件名一眼区分**端(被控/遥控/中枢)+ 平台/架构 + 版本号**;遥控端按手机架构选一个装即可,绝大多数人选「新手机 ARM64」。
 
 ### 端到端快速上手
 
 1. **起 broker**(群晖 / 任意 Linux):
    ```bash
-   LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))")  # 生成共享密钥，记下来
-   ./lmw-broker            # 或 docker 跑,见 broker/README.md
+   # 下载到的中枢文件名是 LANMediaWall-<版本>-Broker-中枢-Linux，赋可执行权后直接跑
+   chmod +x LANMediaWall-*-Broker-中枢-Linux
+   ./LANMediaWall-*-Broker-中枢-Linux          # 默认 open 模式零配置;或 docker 跑,见 broker/README.md
+   # 需要鉴权时:LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-中枢-Linux
    ```
    记下 broker 的局域网 IP(如 `192.168.1.10`)和这把 `PSK`,全系统共用。
-2. **装被控端**(每块屏):装 `lan-media-wall-player-setup.exe`(Windows) 或 `app-release.apk`(Android);首次启动填 broker IP + 端口 `8770` + **同一把 PSK** + 分组名,之后开机自启、全屏置顶。
-3. **装遥控端**(手机/平板):装对应 ABI 的遥控 APK,设置里填同样的 broker IP / 端口 / PSK,回到设备墙就能看到上线的屏。
+2. **装被控端**(每块屏):装 Windows 安装包或 Android 被控端 APK。**默认 `open` 模式零配置**——同一局域网自动发现 broker 即可上线,无需手填密钥。需要鉴权时再切 `required` 并填同一把 PSK。
+3. **装遥控端**(手机/平板):装对应架构的遥控 APK(多数人选「新手机 ARM64」)。最省事的入组方式是**在遥控端生成配对二维码、被控端扫码**,免手输 IP/PSK;也可手动填 broker IP / 端口 / PSK。
 4. **播放**:控制页选分组 → 编辑 playlist(单文件或多文件轮播)→ 预缓存 → 一键同步播放;同组走三段握手同步起播,`sync=false` 则各播各的。
 
-> **安全前提**:整套系统的信任边界就是这把 PSK——谁拿到 PSK + 在同一局域网,就能完全控制设备墙。务必保密,且不要把 broker 暴露在不可信网络上;需要机密性时在 broker 放证书启用 WSS(8771)。
+> **安全说明(v1.1 默认开放)**:为最快上手,默认 `open` 模式**不验签**——同一局域网内任何人都能控制设备墙。仅适合可信内网。一旦在不完全可信的网络使用,请切到 `auth_mode: required` 启用 PSK + HMAC,信任边界即这把 PSK(谁拿到谁能控);需要机密性时在 broker 放证书启用 WSS(8771)。
 
 ### 目录结构
 
@@ -107,7 +116,7 @@ A LAN group-control system to centrally drive **~30** Windows / Android screens,
 
 ### Key features
 
-Synchronized playback via WS clock-offset handshake (no system NTP dependency) + three-phase handshake (prepare→ready→play_at), targeting ±50–100ms. Unified **group** model toggles sync vs independent; unified **playlist[]** model covers single-file and rotation. NAS pre-distribution (WebDAV/HTTP) with resumable cached downloads + sha256 verification. PSK + HMAC-SHA256 auth with replay protection. UDP discovery + manual IP binding. Per-group audio master selection. Thumbnail device-wall preview. (Phase 2: OTA, remote reboot, power-loss resume, scheduling.)
+Synchronized playback via WS clock-offset handshake (no system NTP dependency) + three-phase handshake (prepare→ready→play_at), targeting ±50–100ms. Unified **group** model toggles sync vs independent; unified **playlist[]** model covers single-file and rotation. NAS pre-distribution (WebDAV/HTTP) with resumable cached downloads + sha256 verification. **Optional auth (v1.1)**: three `auth_mode` levels — `open` (zero-config, no key, default) / `optional` / `required` (PSK + HMAC-SHA256); msg_id dedup + ts window always on. **Topology modes (v1.1)**: `dedicated` / `cohosted` (a player doubles as the broker) / `p2p` (broker-less direct, controller coordinates — best for ≤8 screens). **QR pairing (v1.1)**: the controller renders an `lmw://pair?...` QR so players (esp. Android) join by scanning — no typing. UDP discovery + manual IP binding, auto-falls back to p2p when no broker is found. Per-group audio master selection. Thumbnail device-wall preview. (Phase 2: OTA, remote reboot, power-loss resume, scheduling.)
 
 See [`protocol_spec.md`](./protocol_spec.md) for the full wire protocol.
 
@@ -115,26 +124,33 @@ See [`protocol_spec.md`](./protocol_spec.md) for the full wire protocol.
 
 Each `v*` tag triggers CI to cloud-build all four ends and attach the binaries to the matching [Release](https://github.com/Jieoz/lan-media-wall/releases/latest) — target machines need no Python / Flutter / Android SDK:
 
-| End | Artifact | Notes |
+| End | Artifact filename | Notes |
 |---|---|---|
-| broker | `lmw-broker` (Linux ELF) / `lmw-broker.exe` | PyInstaller onefile, standalone, no Python required |
-| Windows player | `lan-media-wall-player-setup.exe` | Inno Setup installer, mpv runtime bundled |
-| Android player | `app-release.apk` | native Kotlin player (the controlled screen) |
-| Flutter controller | `app-arm64-v8a / armeabi-v7a / x86_64-release.apk` | per-ABI controller APK; install the one matching your phone |
+| Broker hub (Linux) | `LANMediaWall-<ver>-Broker-中枢-Linux` | PyInstaller onefile, standalone, no Python required |
+| Broker hub (Windows) | `LANMediaWall-<ver>-Broker-中枢-Windows.exe` | same, Windows build |
+| Windows player | `LANMediaWall-<ver>-Windows-Player-被控端-安装包.exe` | Inno Setup installer, mpv runtime bundled |
+| Android player | `LANMediaWall-<ver>-Android-Player-被控端.apk` | native Kotlin player; install on each screen |
+| Controller (modern phone) | `LANMediaWall-<ver>-遥控端-Controller-ARM64-v8a-新手机.apk` | phone/tablet remote; pick this for recent devices |
+| Controller (old phone) | `LANMediaWall-<ver>-遥控端-Controller-ARMv7-旧手机.apk` | legacy 32-bit devices |
+| Controller (emulator) | `LANMediaWall-<ver>-遥控端-Controller-x86_64-模拟器.apk` | x86 emulators / rare x86 tablets |
+
+> Each filename states **role (player/controller/broker) + platform/arch + version** at a glance. For the controller, install one matching your phone — most people want the modern ARM64 build.
 
 ### End-to-end quickstart
 
 1. **Run the broker** (Synology / any Linux):
    ```bash
-   LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))")  # generate the shared key
-   ./lmw-broker            # or via Docker, see broker/README.md
+   # the downloaded hub is named LANMediaWall-<ver>-Broker-中枢-Linux; mark it executable and run
+   chmod +x LANMediaWall-*-Broker-中枢-Linux
+   ./LANMediaWall-*-Broker-中枢-Linux          # default open mode, zero-config; or via Docker, see broker/README.md
+   # with auth: LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-中枢-Linux
    ```
    Note the broker LAN IP (e.g. `192.168.1.10`) and this `PSK` — shared system-wide.
-2. **Install players** (each screen): run `lan-media-wall-player-setup.exe` (Windows) or `app-release.apk` (Android); on first launch enter broker IP + port `8770` + the **same PSK** + a group name. They then autostart fullscreen on boot.
-3. **Install the controller** (phone/tablet): install the ABI-matching controller APK, set the same broker IP / port / PSK; the device wall lists online screens.
+2. **Install players** (each screen): run the Windows installer or the Android player APK. **Default `open` mode is zero-config** — players auto-discover the broker on the same LAN and come online with no key to type. Switch to `required` and set a shared PSK when you need auth.
+3. **Install the controller** (phone/tablet): install the arch-matching controller APK (most people want the modern ARM64 build). Easiest onboarding: **generate a pairing QR on the controller and scan it from the player** — no IP/PSK typing; or enter broker IP / port / PSK manually.
 4. **Play**: on the control page pick a group → edit a playlist (single file or multi-file rotation) → prefetch → one-tap synced play. Synced groups go through the three-phase handshake; `sync=false` plays each screen independently.
 
-> **Security premise**: the trust boundary of the whole system is this one PSK — anyone holding it on the same LAN can fully control the wall. Keep it secret, keep the broker off untrusted networks, and enable WSS (8771) by dropping certs into the broker for confidentiality.
+> **Security note (v1.1 default is open)**: for fastest setup the default `open` mode does **no signature check** — anyone on the same LAN can control the wall. Use it only on trusted networks. On any less-trusted network switch to `auth_mode: required` for PSK + HMAC (the PSK then is the trust boundary), and enable WSS (8771) with certs for confidentiality.
 
 ### License
 
