@@ -18,9 +18,11 @@ import com.jieoz.lanmediawall.player.cache.MediaStore
 import com.jieoz.lanmediawall.player.cache.Playlist
 import com.jieoz.lanmediawall.player.media.PlayerController
 import com.jieoz.lanmediawall.player.net.BrokerClient
+import com.jieoz.lanmediawall.player.net.AuthMode
 import com.jieoz.lanmediawall.player.net.Discovery
 import com.jieoz.lanmediawall.player.net.Envelope
 import com.jieoz.lanmediawall.player.net.Json
+import com.jieoz.lanmediawall.player.net.KeyMode
 import com.jieoz.lanmediawall.player.net.asArrayOrNull
 import com.jieoz.lanmediawall.player.net.asBoolOrNull
 import com.jieoz.lanmediawall.player.net.asIntOrNull
@@ -100,6 +102,11 @@ class PlayerService : Service() {
             clock = clock,
             onConnect = { onBrokerConnected() },
             onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+            initialKeyMode = KeyMode.parse(settings.keyMode),
+            deviceKey = settings.deviceKeyHex.takeIf { it.isNotBlank() }
+                ?.let { Envelope.hexToBytes(it) },
+            brokerKey = settings.brokerKeyHex.takeIf { it.isNotBlank() }
+                ?.let { Envelope.hexToBytes(it) },
         )
     }
 
@@ -332,6 +339,14 @@ class PlayerService : Service() {
         // §4.2: broker's group_id is authoritative for players.
         payload["group_id"].asString()?.let { gid ->
             if (gid != settings.groupId) settings.groupId = gid
+        }
+        // §13/§17.3: the coordinator is authoritative for auth_mode + key_mode.
+        // Adopt both so subsequent frames sign/verify under the declared regime.
+        payload["auth_mode"].asString()?.let { broker.setAuthMode(AuthMode.parse(it)) }
+        payload["key_mode"].asString()?.let {
+            val km = KeyMode.parse(it)
+            broker.setKeyMode(km)
+            if (settings.keyMode != km.wire) settings.keyMode = km.wire
         }
         payload["controllers_online"].asIntOrNull()?.let {
             controllerPresent = it > 0 || settings.alwaysCollectThumbnails

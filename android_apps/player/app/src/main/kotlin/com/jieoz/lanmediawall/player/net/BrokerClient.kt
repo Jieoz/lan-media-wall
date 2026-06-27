@@ -41,6 +41,18 @@ class BrokerClient(
      *  which interoperates with open / optional / required brokers alike until
      *  we lock to the declared mode. */
     initialAuthMode: AuthMode = AuthMode.OPTIONAL,
+    /** Key mode to start with before `welcome`/`announce` declares one (§17.3).
+     *  Defaults to GLOBAL = v1.2 behaviour (raw PSK as the HMAC key), which is
+     *  the on-the-wire backward-compat default for a missing field. */
+    initialKeyMode: KeyMode = KeyMode.GLOBAL,
+    /** §17.4 dk-only end: this end's own `device_key` bytes (from the pairing
+     *  QR's `dk`). When present we sign with it directly and never need the PSK.
+     *  Null → fall back to PSK-derivation (we hold the PSK). */
+    private val deviceKey: ByteArray? = null,
+    /** §17.4 forward-compat: broker's `device_key` bytes (pairing QR `bk`), used
+     *  to verify broker downlink when we're dk-only (no PSK). Null → if we also
+     *  lack the PSK, derived broker frames fail closed (dropped). */
+    private val brokerKey: ByteArray? = null,
     private val timeSyncIntervalS: Long = 30,
     private val pingIntervalS: Long = 20,
 ) : CoordinatorLink {
@@ -50,9 +62,16 @@ class BrokerClient(
     @Volatile override var authMode: AuthMode = initialAuthMode
         private set
 
+    @Volatile var keyMode: KeyMode = initialKeyMode
+        private set
+
     /** Adopt the auth mode the coordinator declared in `welcome`/`announce`
      *  (§13). Called by the owner once the mode is known. */
     fun setAuthMode(mode: AuthMode) { authMode = mode }
+
+    /** Adopt the key mode the coordinator declared in `welcome`/`announce`
+     *  (§17.3). Called by the owner once it is known. */
+    fun setKeyMode(mode: KeyMode) { keyMode = mode }
 
     private val client = OkHttpClient.Builder()
         .pingInterval(pingIntervalS, TimeUnit.SECONDS)
@@ -132,16 +151,29 @@ class BrokerClient(
 
     // --- outbound -----------------------------------------------------
     /** Build, sign, and send an envelope. Returns msg_id, or null if not
-     *  connected (caller may retry after reconnect). */
+     *  connected (caller may retry after reconnect). Signing key follows the
+     *  active [keyMode] (§17): in derived mode we sign with our own device_key
+     *  (held directly if dk-only, else derived from the PSK); in global mode we
+     *  sign with the raw PSK. [authMode] still gates whether we sign at all. */
     override fun send(type: String, payload: Json, to: String): String? {
         val socket = ws ?: return null
         if (!connected) return null
-        val env = Envelope.build(psk, type, from, to, payload)
+        val env = buildOutbound(type, payload, to)
         val text = Envelope.toWire(env)
         return if (socket.send(text)) {
             (env.entries["msg_id"] as? Json.Str)?.value
         } else null
     }
+
+    private fun buildOutbound(type: String, payload: Json, to: String): Json.Obj =
+        if (keyMode == KeyMode.DERIVED && deviceKey != null) {
+            // dk-only end (§17.4): sign directly with our stored device_key —
+            // byte-identical to deriving HMAC(PSK, from) but we never hold PSK.
+            Envelope.buildWithDeviceKey(deviceKey, authMode, type, from, to, payload)
+        } else {
+            // global, or derived-with-PSK: let buildWithMode pick the key.
+            Envelope.buildWithMode(psk, authMode, type, from, to, payload, keyMode = keyMode)
+        }
 
     /** Send a raw binary frame (thumbnail JPEG, §6.4). Must follow a
      *  thumb_meta text frame sent by the caller. */
@@ -178,7 +210,11 @@ class BrokerClient(
     }
 
     private fun handleText(raw: String) {
-        val result = Envelope.verify(psk, raw, replay = replay, firstConnect = firstConnect)
+        val result = Envelope.verify(
+            psk, raw, replay = replay, firstConnect = firstConnect,
+            authMode = authMode, keyMode = keyMode,
+            verifyKeyFor = ::verifyKeyFor,
+        )
         if (!result.ok || result.parsed == null) return
         val parsed = result.parsed
         // time_sync_ack handled internally to keep the clock authoritative
@@ -191,6 +227,16 @@ class BrokerClient(
         } catch (_: Exception) {
         }
     }
+
+    /**
+     * §17.4 dk-only verify-key resolver. Only consulted by [Envelope.verify] in
+     * derived mode **when we don't hold the PSK** (so we can't derive arbitrary
+     * identities). We can supply the broker's device_key for `from="broker"`;
+     * any other identity (or a missing broker key) → null = fail closed, the
+     * frame is dropped. See NOTES_TO_UPSTREAM §4.
+     */
+    private fun verifyKeyFor(fromIdentity: String): ByteArray? =
+        if (fromIdentity == "broker") brokerKey else null
 
     private fun onTimeSyncAck(payload: Json.Obj) {
         val t4 = Envelope.nowMs()

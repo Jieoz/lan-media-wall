@@ -49,3 +49,34 @@ concurrent same-group sessions as §9.1 intends.
 These are consistency/feature-completeness items for the v1.1 additions, not
 correctness bugs for the current single-session-per-group flow. The Android
 player interoperates today via the documented fallbacks.
+
+## 4. §17 derived keys (v1.3) — downlink verification gap when end holds no PSK
+
+**Context.** §17.4 (hard constraint) says ends no longer hold the PSK: the QR
+carries only the end's own `dk` (= `HMAC(PSK, own_identity)`) + `id`. The broker
+holds the PSK and verifies each end's *uplink* by deriving that end's key from
+the frame's `from` — uplink leak-isolation works perfectly with a dk-only end.
+
+**The gap.** For the *downlink* (broker → player) the player must verify frames
+with `from="broker"`, i.e. against `HMAC(PSK,"broker")`. A dk-only player can
+compute neither the PSK nor the broker's device_key. `broker/pairing.py`
+`build_pairing_uri` emits only the end's own `dk`+`id`, never a broker key.
+
+**What this player does (safe, reversible default).**
+- Outbound: signs with its own device_key in derived mode — full uplink
+  isolation, no PSK needed. ✓ Byte-for-byte equal to `broker/envelope.py`.
+- Inbound under `key_mode=derived`:
+  - PSK held (global/legacy/manual) → derive per-`from` key and verify
+    (matches broker exactly). ✓
+  - only a dk held, no key available for the frame's `from` (broker downlink)
+    → **fail closed: drop** (accepting an unverifiable signed frame would
+    re-open broker spoofing). A pure dk-only + `required` deployment can sign
+    but cannot act on broker commands.
+- Forward-compat: `PairUri` also parses an optional **`bk`** (broker device_key
+  hex); when present the dk-only player verifies broker downlink against it.
+  Absent in today's QR, so the fail-closed path applies.
+
+**Ask.** To make dk-only + derived + required fully functional end-to-end, the
+pairing URI should also carry the broker's device_key (proposed
+`bk=<HMAC(PSK,"broker").hex()>`), or §17 should state ends keep a broker-verify
+key. Implemented against the current contract; no change required on other ends.
