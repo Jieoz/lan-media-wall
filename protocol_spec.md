@@ -1,4 +1,4 @@
-# LAN Media Wall — 通信协议规范 (Protocol Spec) v1.2
+# LAN Media Wall — 通信协议规范 (Protocol Spec) v1.3
 
 > 这是 broker / Windows 被控端 / Android 被控端 / Flutter 遥控端 **共同遵守的合同**。
 > 任何一端都不得擅自更改字段名或语义；如需扩展，只能新增 `type` 或在 `payload` 里加可选字段，并升 `v`。
@@ -411,3 +411,48 @@ lmw://pair?host=<ip>&port=<8770>&group=<gid>&mode=<open|optional|required>&psk=<
 
 ### 16.4 `controller_present` 缩略图门控(§6.4)
 §6.4 的「仅当 ≥1 controller 在线时采集缩略图」**正式约定**:在 broker 提供 presence 信号前,players 用本地配置 `thumbnail.always_collect`(默认 `false`)门控;需常态供墙的设备置 `true`。**可选推荐**:broker 在 `welcome` 加 `controllers_online:int`,或周期性推 `controller_presence{present:bool}`,使 players 精确门控。
+
+---
+
+## 17. 派生密钥 (key derivation) — §3 密钥的泄露隔离 (v1.3)
+
+> **v1.3 变更(向后兼容的加法)**:§3 的签名**字符串布局、canonical JSON、ts 时效、msg_id 去重**全部不变;唯一变化是 HMAC 使用的**密钥**从"全系统单一 PSK"升级为"按端身份派生的 device_key",使任一被控端泄露不再污染全局。仅影响 `auth_mode=optional/required`(签名生效)的场景;`open` 模式不涉及密钥,行为完全不变。
+
+### 17.1 动机
+v1.2 全系统共享单一 PSK:任一墙机(常年裸放展厅/大厅)被物理接触导出 PSK,即可伪造**任意端**(含 broker)的指令。派生密钥让每端只持有自己那把 key,broker 持 PSK 现场派生验签,攻破一台只暴露该台。
+
+### 17.2 派生函数
+```
+device_key = HMAC_SHA256(PSK, identity).digest()        # 32 bytes
+```
+- `identity` = 该端 envelope 的 `from` 字段**完整字符串**,逐字节参与派生:
+  - player:    `"player:<device_id>"`   (如 `"player:win-lobby-01"`)
+  - controller:`"controller:<id>"`
+  - broker:    `"broker"`
+- 签名:`sig = HMAC_SHA256(device_key, signing_string(§3)).hexdigest()`,其中 `device_key` 是**发送方自己 identity** 派生的 key。
+- 验签:接收方从被验帧的 `from` 字段取 identity → 用 PSK 派生该 identity 的 device_key → 重算 `sig` 比对。**broker 持 PSK,可对任意 `from` 现场派生,无需保存每端 key(无状态)。**
+
+### 17.3 key_mode 协商(向后兼容)
+| key_mode | 签名 key | 适用 |
+|---|---|---|
+| `derived`(**v1.3 默认**) | 按 §17.2 派生的 device_key | 新部署;泄露隔离 |
+| `global`(v1.2 兼容) | 直接用 PSK(= 旧行为) | 与未升级的老端互通 |
+
+- **协调端(broker / cohost / P2P controller)的 `key_mode` 是该拓扑的权威**,在 `welcome.payload.key_mode`(string)与 UDP `announce.payload.key_mode` 中声明。缺省/缺失字段 → 接收端按 `global` 处理(= v1.2 行为,向后兼容)。
+- 被控端/遥控端连上后读 `key_mode`,据此决定**出站帧用 device_key 还是 PSK 签名**,并用同样口径验入站帧。
+- `open` 模式下不签不验,`key_mode` 无意义(可省略)。
+
+### 17.4 密钥分发与零感知约束(**硬约束**)
+**部署体验与 v1.2 完全一致,不得新增任何 per-device 配置。**
+- broker 仍只在部署时配置**一个 PSK**(`auth_mode=required/optional` 时);`open` 模式连 PSK 都不需要。
+- 各被控端/遥控端**不再持有 PSK**,而是通过**已有的 §15 配对 URI / QR** 获得自己那把 `device_key` + 自身 `identity`:
+  - 配对 URI 在 `required/derived` 下携带的字段从 `psk` 改为 `dk`(device_key 的 hex/base64)+ `id`(identity),不再下发 PSK 给端。
+  - 用户操作不变:broker 出码、端扫码,仍是一步。
+  - 派生 device_key 由 broker 在出码时用 PSK 现场算出嵌入 QR;端只存 device_key,**永不接触 PSK**。
+- 兼容回退:若配对 URI 仍下发 `psk`(老 broker / `key_mode=global`),端按 v1.2 全局 PSK 行事。
+
+### 17.5 实现一致性红线(四端必须逐字一致)
+- 派生输入 `identity` = `from` 字段完整字符串,**不做任何归一化/小写化/裁剪**。
+- `device_key` 是 32 字节**二进制** HMAC 输出,作为下一层 HMAC 的 key 直接使用(不要 hexencode 后再当 key)。
+- broker 扇出/下行帧 `from="broker"`,用 `HMAC(PSK,"broker")` 派生的 key 签名;各端验 broker 帧时按 `from="broker"` 派生验签。
+- **泄露隔离的契约符合性证据(每端必须有此负向测试)**:用 identity-A 派生的 key 去签一个 `from=identity-B` 的帧,接收方验签**必须失败丢弃**。
