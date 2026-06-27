@@ -46,6 +46,9 @@ DEFAULTS = {
     "auth_cooldown_s": 60,
     # §13 auth_mode: open (default, zero-config) | optional | required.
     "auth_mode": envelope.AUTH_OPEN,
+    # §17 key_mode: derived (v1.3 default, leak isolation) | global (v1.2 compat).
+    # Only meaningful when signing is active (auth_mode optional/required).
+    "key_mode": envelope.KEY_DERIVED,
     # §14 topology this broker advertises: dedicated (default) | cohosted.
     "topology": "dedicated",
     # §14.5: discovery on by default so endpoints can auto-find the broker.
@@ -93,8 +96,12 @@ def load_config(path: Optional[str] = None) -> dict:
     env_topo = os.environ.get("LMW_TOPOLOGY")
     if env_topo:
         cfg["topology"] = env_topo
+    env_key_mode = os.environ.get("LMW_KEY_MODE")
+    if env_key_mode:
+        cfg["key_mode"] = env_key_mode
     cfg["auth_mode"] = envelope.normalize_auth_mode(cfg.get("auth_mode"))
     cfg["topology"] = normalize_topology(cfg.get("topology"))
+    cfg["key_mode"] = envelope.normalize_key_mode(cfg.get("key_mode"))
     if not cfg.get("psk"):
         cfg["psk"] = ""
         if cfg["auth_mode"] == envelope.AUTH_REQUIRED:
@@ -139,6 +146,7 @@ class Hub:
         self.cfg = cfg
         self.psk = cfg.get("psk", "")
         self.auth_mode = envelope.normalize_auth_mode(cfg.get("auth_mode"))
+        self.key_mode = envelope.normalize_key_mode(cfg.get("key_mode"))
         self.topology = cfg.get("topology", "dedicated")
         self.reg = registry_mod.Registry(cfg["state_path"])
         self.sync = sync_mod.SyncManager(
@@ -189,14 +197,21 @@ class Hub:
     def make_env(self, type_: str, payload: dict, to: str) -> dict:
         # §13: sign only when the active auth_mode calls for it; otherwise the
         # frame goes out with sig:"" (structure unchanged, parse still works).
+        # §17: when signing, the broker's own frames are from="broker" and are
+        # signed with the key for key_mode (derived -> HMAC(PSK,"broker")).
         sign = envelope.should_sign(self.auth_mode, self.psk)
         return envelope.build_envelope(
-            type_, payload, "broker", to, self.psk, sign=sign)
+            type_, payload, "broker", to, self.psk, sign=sign,
+            key_mode=self.key_mode)
 
     def auth_meta(self) -> dict:
         """Fields advertised in welcome + announce so endpoints self-adapt
-        (§13 auth_mode authority, §14 topology declaration)."""
-        return {"auth_mode": self.auth_mode, "topology": self.topology}
+        (§13 auth_mode authority, §14 topology declaration, §17 key_mode)."""
+        return {
+            "auth_mode": self.auth_mode,
+            "topology": self.topology,
+            "key_mode": self.key_mode,
+        }
 
     def broker_hint(self) -> str:
         host = self.cfg.get("advertise_host") or pairing.local_ip()
@@ -258,7 +273,11 @@ class Hub:
             return
         # §13 verification pipeline. The sig gate depends on auth_mode; the
         # ts-window + msg_id dedup checks run in EVERY mode (replay hygiene).
-        if not envelope.verify_inbound(env, self.psk, self.auth_mode):
+        # §17: in derived key_mode the broker derives the device_key for THIS
+        # frame's `from` identity (stateless — it holds the PSK and derives on
+        # the fly), so a frame signed for a different identity fails to verify.
+        if not envelope.verify_inbound(env, self.psk, self.auth_mode,
+                                       self.key_mode):
             # Auth-fail counter + cooldown apply ONLY in `required` (§13).
             if self.auth_mode == envelope.AUTH_REQUIRED:
                 if self._register_auth_fail(conn):
@@ -647,8 +666,8 @@ async def run(cfg: dict, *, hub: Optional["Hub"] = None,
         ping_interval=20, ping_timeout=20, max_size=4 * 1024 * 1024,
     )
     servers.append(ws_server)
-    log.info("broker WS listening on :%d (auth_mode=%s topology=%s)",
-             cfg["ws_port"], hub.auth_mode, hub.topology)
+    log.info("broker WS listening on :%d (auth_mode=%s key_mode=%s topology=%s)",
+             cfg["ws_port"], hub.auth_mode, hub.key_mode, hub.topology)
 
     ssl_ctx = build_ssl_context(cfg["certs_dir"])
     wss_enabled = ssl_ctx is not None
@@ -666,7 +685,8 @@ async def run(cfg: dict, *, hub: Optional["Hub"] = None,
     if cfg.get("enable_discovery"):
         hub.discovery = discovery_mod.Discovery(
             hub.psk, hub.on_announce, cfg["discovery_port"],
-            auth_mode=hub.auth_mode, on_discover=hub.on_discover)
+            auth_mode=hub.auth_mode, on_discover=hub.on_discover,
+            key_mode=hub.key_mode)
         try:
             await hub.discovery.start()
             log.info("UDP discovery on :%d", cfg["discovery_port"])

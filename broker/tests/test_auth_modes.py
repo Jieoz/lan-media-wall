@@ -84,7 +84,8 @@ def test_required_rejects_empty_and_bad_sig():
 
 # ---- load_config PSK rules per mode -------------------------------------
 def _clean_env(monkeypatch):
-    for k in ("LMW_PSK", "LMW_AUTH_MODE", "LMW_TOPOLOGY", "LMW_CONFIG"):
+    for k in ("LMW_PSK", "LMW_AUTH_MODE", "LMW_TOPOLOGY", "LMW_CONFIG",
+              "LMW_KEY_MODE"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -135,3 +136,29 @@ def test_default_auth_mode_is_open_and_discovery_on(monkeypatch, tmp_path):
     assert cfg["auth_mode"] == "open"
     assert cfg["enable_discovery"] is True
     assert cfg["topology"] == "dedicated"
+
+
+# ---- §17 key_mode config rules ------------------------------------------
+def test_default_key_mode_is_derived(monkeypatch, tmp_path):
+    # §17.3: a fresh broker deployment defaults to derived.
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("LMW_KEY_MODE", raising=False)
+    monkeypatch.setenv("LMW_CONFIG", str(tmp_path / "absent.yaml"))
+    cfg = broker_mod.load_config()
+    assert cfg["key_mode"] == "derived"
+
+
+def test_key_mode_env_override(monkeypatch, tmp_path):
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LMW_CONFIG", str(tmp_path / "absent.yaml"))
+    monkeypatch.setenv("LMW_KEY_MODE", "global")
+    cfg = broker_mod.load_config()
+    assert cfg["key_mode"] == "global"
+
+
+def test_unknown_key_mode_falls_back_to_global(monkeypatch, tmp_path):
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("LMW_CONFIG", str(tmp_path / "absent.yaml"))
+    monkeypatch.setenv("LMW_KEY_MODE", "nonsense")
+    cfg = broker_mod.load_config()
+    assert cfg["key_mode"] == "global"

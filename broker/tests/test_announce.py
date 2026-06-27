@@ -34,9 +34,16 @@ def test_announce_payload_carries_topology_auth_mode_hint():
 
 
 def test_auth_meta_shape():
-    hub = _hub(auth_mode="required", topology="dedicated")
+    hub = _hub(auth_mode="required", topology="dedicated", key_mode="global")
     meta = hub.auth_meta()
-    assert meta == {"auth_mode": "required", "topology": "dedicated"}
+    assert meta == {"auth_mode": "required", "topology": "dedicated",
+                    "key_mode": "global"}
+
+
+def test_auth_meta_defaults_to_derived_key_mode():
+    # §17: a fresh broker deployment advertises key_mode=derived.
+    hub = _hub(auth_mode="required", topology="dedicated")
+    assert hub.auth_meta()["key_mode"] == "derived"
 
 
 def test_make_env_open_emits_empty_sig():
@@ -46,10 +53,22 @@ def test_make_env_open_emits_empty_sig():
 
 
 def test_make_env_required_signs():
+    # Default broker key_mode is derived (§17): broker frames are from="broker"
+    # and signed with HMAC(PSK,"broker"), so verify with the same key_mode.
     hub = _hub(auth_mode="required")
     env = hub.make_env("announce", hub.build_announce_payload(), "all")
     assert env["sig"] != ""
-    assert envelope.verify_sig(env, PSK)
+    assert env["from"] == "broker"
+    assert envelope.verify_sig(env, PSK, "derived")
+    # global-mode verify (raw PSK) must NOT match a derived-signed broker frame.
+    assert not envelope.verify_sig(env, PSK, "global")
+
+
+def test_make_env_global_key_mode_signs_with_psk():
+    hub = _hub(auth_mode="required", key_mode="global")
+    env = hub.make_env("announce", hub.build_announce_payload(), "all")
+    assert env["sig"] != ""
+    assert envelope.verify_sig(env, PSK, "global")
 
 
 def test_make_env_optional_signs_when_psk_present():

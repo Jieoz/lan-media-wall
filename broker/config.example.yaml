@@ -12,6 +12,19 @@
 # Override with the LMW_AUTH_MODE env var (env wins over this file).
 auth_mode: open
 
+# §17 key_mode: derived (default) | global. Controls which HMAC key signs/verifies
+# frames when signing is active (auth_mode optional/required). It is moot under
+# auth_mode=open (nothing is signed).
+#   derived — per-endpoint device_key = HMAC(PSK, identity). A leaked player key
+#             can forge only that player, not the whole system. Pairing QRs carry
+#             each endpoint's `dk` (not the PSK); deployment config is unchanged —
+#             you still set ONE psk below, the broker derives per-device on the fly.
+#   global  — use the raw PSK as the HMAC key (v1.2 behaviour). Use this only to
+#             interop with endpoints that haven't been upgraded to v1.3.
+# Endpoints that receive a welcome/announce with key_mode MISSING treat it as
+# `global` (backward compat, §17.3). Override with the LMW_KEY_MODE env var.
+key_mode: derived
+
 # §14 topology this broker advertises (diagnostic only): dedicated | cohosted.
 #   dedicated — standalone broker process/container (default, 30-screen deploy).
 #   cohosted  — broker embedded in a player process (run via broker.run_broker).

@@ -95,3 +95,42 @@ them in that listed order, URL-encode every value, omit `psk` entirely in `open`
 (and whenever no PSK is set), and encode `wss` as `0`/`1`. Unknown query params
 are preserved on parse but should be ignored by consumers (§15.1).
 
+---
+
+# v1.3 additions (§17 derived keys) — ambiguities resolved
+
+Resolved with the safest backward-compatible default; no contract changes.
+
+## 10. `minor` bumped to 3; `welcome`/`announce` gain `key_mode` (§17.3)
+
+`welcome.payload` and the broker `announce.payload` now carry
+`key_mode` (`derived`|`global`) alongside the existing `auth_mode`/`topology`,
+and `PROTOCOL_MINOR` is `3` (`v` stays `1` per the v1.3 additive preamble). A
+peer that omits `key_mode` is read as `global` (§17.3) so pre-v1.3 endpoints
+interoperate unchanged.
+
+## 11. Broker *deployment* default is `derived`, but the wire default is `global` (§17.3)
+
+§17.3 says a missing `key_mode` field on the wire → treat as `global`
+(backward compat), while `derived` is the "v1.3 default". I split these: a fresh
+broker *deployment* defaults `key_mode=derived` (DEFAULTS / `config.example.yaml`),
+but the receive-side `normalize_key_mode(missing)` returns `global`. So a new
+broker advertises `derived`, yet still reads a silent peer as `global`. This
+matches the spec's intent (new deploys isolate; silence = old behaviour).
+
+## 12. Derived-mode startup banner is discovery-only (no key) (§17.4)
+
+The startup pairing QR is broker-wide, but a derived `dk` is per-identity, so a
+single broker-wide QR can't carry one endpoint's key without picking an identity.
+
+- **What I did:** in `derived`+signed modes the startup banner URI carries
+  `key_mode` but **no key** (discovery-only), and prints a note. Concrete
+  per-endpoint codes are minted on demand via
+  `pairing.device_pairing_uri(cfg, "player:<id>")`, which embeds that endpoint's
+  `dk` + `id` and never the PSK. `global` mode still prints the PSK-bearing QR
+  exactly as in v1.2.
+- **Suggestion:** §17.4 could note that derived-mode onboarding is inherently
+  per-endpoint (one code per device id), unlike the single shared-PSK QR of
+  `global`/v1.2 — i.e. the controller/admin UI picks the identity before
+  rendering a code.
+

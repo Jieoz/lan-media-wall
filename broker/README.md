@@ -7,21 +7,21 @@ aggregation, and command fan-out.
 
 This implements the broker-side responsibilities of
 [`../protocol_spec.md`](../protocol_spec.md) (§2–§10, plus the v1.2 additions
-§13–§15). That spec is the contract — field names and semantics here follow it
-exactly.
+§13–§15 and the v1.3 derived keys §17). That spec is the contract — field names
+and semantics here follow it exactly.
 
 ## Modules
 
 | File | Responsibility |
 |---|---|
 | `broker.py` | asyncio entry point + WS/WSS server, connection lifecycle, dispatch, auth-mode gating |
-| `envelope.py` | envelope build/parse, HMAC sign/verify, auth-mode helpers, msg_id dedup, ts window (§2/§3/§13) |
+| `envelope.py` | envelope build/parse, HMAC sign/verify, auth-mode + derived-key helpers, msg_id dedup, ts window (§2/§3/§13/§17) |
 | `registry.py` | device table, grouping, `state.json` persistence (§4/§5) |
 | `router.py` | fan-out resolution by the `to` field (§2/§9.3) |
 | `clock.py` | master clock + time-sync ack + NTP offset/rtt math (§8) |
 | `sync.py` | three-phase prepare→ready→play_at state machine (§9) |
 | `discovery.py` | UDP 8772 discover/announce, self-announce + discover replies (§7/§14.5) |
-| `pairing.py` | `lmw://pair?...` URI builder + terminal QR (§15) |
+| `pairing.py` | `lmw://pair?...` URI builder + terminal QR; derived per-endpoint codes (§15/§17.4) |
 
 ## Ports
 
@@ -68,8 +68,30 @@ The broker self-announces over UDP (`announce_interval_ms`, default 5s) carrying
 On startup the broker prints an `lmw://pair?...` URI (and a scannable terminal
 QR when the optional `qrcode` package is installed; otherwise the URI plus a
 note). Scan it to onboard an endpoint with no hand-typing. In `open` mode the
-URI carries **no** PSK; in `optional`/`required` it embeds the PSK as the entry
-ticket. See `pairing.py` (`build_pairing_uri` / `pairing_uri_from_config`).
+URI carries **no** key. In `optional`/`required` what it carries depends on
+`key_mode` (below): `global` embeds the PSK; `derived` embeds that endpoint's
+own `dk` (device_key hex) + `id` and **never** the PSK. See `pairing.py`
+(`build_pairing_uri` / `pairing_uri_from_config` / `device_pairing_uri`).
+
+### Derived keys (§17, v1.3)
+
+`key_mode` (config / `LMW_KEY_MODE`) chooses the HMAC key used when signing is
+active (`auth_mode` `optional`/`required`); it is moot under `open`.
+
+| key_mode | HMAC key | use |
+|---|---|---|
+| `derived` (default) | per-endpoint `device_key = HMAC_SHA256(PSK, identity)` | leak isolation — a stolen player key forges only that player |
+| `global` | the raw PSK (v1.2 behaviour) | interop with endpoints not yet upgraded to v1.3 |
+
+`identity` is the envelope `from` string verbatim (`player:<id>`,
+`controller:<id>`, or `broker`) — no normalization. The broker holds only the
+**one** PSK and derives each endpoint's key on the fly (stateless), so verifying
+a frame derives the key from that frame's own `from`: a frame signed for
+identity-A but claiming `from=B` fails. Deployment is unchanged from v1.2 — you
+still configure a single PSK; endpoints receive only their own `device_key` via
+the pairing QR and never touch the PSK. `key_mode` is advertised in
+`welcome.payload.key_mode` and the UDP `announce.payload.key_mode`; a missing
+field is read as `global` (backward compat).
 
 ## Configuration
 
@@ -166,7 +188,11 @@ python3 tests/smoke_local.py       # end-to-end (auth_mode=required): hello/
 signed nor verified — fine for a trusted home/exhibition LAN, zero-config. For
 untrusted networks set `auth_mode=required`: every control message is then
 HMAC-signed and replay-protected, so commands cannot be forged or replayed, and
-you can layer WSS (drop certs in `certs/`) for confidentiality. Even in
-`required` the broker has **no per-device authorization beyond the shared PSK** —
-anyone with the PSK on the LAN is fully trusted. Keep the PSK secret and, in
-`open` mode especially, keep the broker off untrusted networks.
+you can layer WSS (drop certs in `certs/`) for confidentiality. With the v1.3
+default `key_mode=derived` (§17) each endpoint signs with its own
+`device_key = HMAC(PSK, identity)`, so a key lifted off one always-on wall player
+forges only that player — not the broker or its peers. The broker still holds
+the single PSK (it derives per-endpoint keys on the fly); keep that PSK secret
+and, in `open` mode especially, keep the broker off untrusted networks. Use
+`key_mode=global` only to interop with endpoints not yet upgraded to v1.3, which
+reverts to the shared-PSK trust model (anyone with the PSK is fully trusted).

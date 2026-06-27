@@ -28,8 +28,11 @@ PORT = 8790  # off the default port to avoid clashes
 
 
 def env(type_, payload, from_, to):
+    # §17: sign with the sender's own derived device_key (broker defaults to
+    # key_mode=derived). identity == from_, byte-for-byte.
     return envelope.dumps(
-        envelope.build_envelope(type_, payload, from_, to, PSK))
+        envelope.build_envelope(type_, payload, from_, to, PSK,
+                                key_mode="derived"))
 
 
 async def recv_type(ws, want, timeout=5.0):
@@ -39,7 +42,8 @@ async def recv_type(ws, want, timeout=5.0):
         if isinstance(raw, (bytes, bytearray)):
             continue
         e = envelope.parse(raw)
-        assert envelope.verify_sig(e, PSK), "broker sent bad signature"
+        # Broker frames are from="broker", signed with HMAC(PSK,"broker") (§17).
+        assert envelope.verify_sig(e, PSK, "derived"), "broker sent bad signature"
         if e["type"] == want:
             return e
 
@@ -50,8 +54,10 @@ async def main():
     cfg.update({
         "psk": PSK,
         # Pin the strict path so this stays a backward-compat regression of the
-        # dedicated+required flow (v1.2 default auth_mode is `open`, §13).
+        # dedicated+required flow (v1.2 default auth_mode is `open`, §13). With
+        # key_mode=derived (v1.3 default) this also exercises §17 end-to-end.
         "auth_mode": "required",
+        "key_mode": "derived",
         "ws_port": PORT,
         "state_path": os.path.join(tmp, "state.json"),
         "certs_dir": os.path.join(tmp, "certs"),

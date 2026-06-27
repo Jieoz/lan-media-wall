@@ -24,9 +24,11 @@ DISCOVERY_PORT = 8772
 class DiscoveryProtocol(asyncio.DatagramProtocol):
     def __init__(self, psk: str, auth_mode: str,
                  on_announce: Callable[[dict, tuple], None],
-                 on_discover: Optional[Callable[[dict, tuple], None]] = None):
+                 on_discover: Optional[Callable[[dict, tuple], None]] = None,
+                 key_mode: str = envelope.KEY_GLOBAL):
         self.psk = psk
         self.auth_mode = auth_mode
+        self.key_mode = envelope.normalize_key_mode(key_mode)
         self.on_announce = on_announce
         self.on_discover = on_discover
         self.transport: Optional[asyncio.DatagramTransport] = None
@@ -40,8 +42,11 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             env = envelope.parse(data.decode("utf-8"))
         except Exception:
             return
-        # Same auth gate as WS (§13): mode decides whether sig is checked.
-        if not envelope.verify_inbound(env, self.psk, self.auth_mode):
+        # Same auth gate as WS (§13): mode decides whether sig is checked. In
+        # derived key_mode (§17) the device_key is derived from the packet's own
+        # `from` identity, so a spoofed `from` fails to verify.
+        if not envelope.verify_inbound(env, self.psk, self.auth_mode,
+                                       self.key_mode):
             return
         # ts-window + msg_id dedup run in every mode (replay hygiene, §13 table).
         if not envelope.check_ts(env["ts"], first=True):
@@ -69,9 +74,11 @@ class Discovery:
     def __init__(self, psk: str, on_announce: Callable[[dict, tuple], None],
                  port: int = DISCOVERY_PORT, *,
                  auth_mode: str = envelope.AUTH_OPEN,
-                 on_discover: Optional[Callable[[dict, tuple], None]] = None):
+                 on_discover: Optional[Callable[[dict, tuple], None]] = None,
+                 key_mode: str = envelope.KEY_GLOBAL):
         self.psk = psk
         self.auth_mode = envelope.normalize_auth_mode(auth_mode)
+        self.key_mode = envelope.normalize_key_mode(key_mode)
         self.on_announce = on_announce
         self.on_discover = on_discover
         self.port = port
@@ -86,7 +93,8 @@ class Discovery:
         sock.bind(("0.0.0.0", self.port))
         self.transport, self.protocol = await loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(
-                self.psk, self.auth_mode, self.on_announce, self.on_discover),
+                self.psk, self.auth_mode, self.on_announce, self.on_discover,
+                key_mode=self.key_mode),
             sock=sock,
         )
 
@@ -104,10 +112,11 @@ class Discovery:
         self.transport.sendto(data, ("255.255.255.255", self.port))
 
     def broadcast_discover(self, from_: str = "broker") -> None:
-        """Send a discover broadcast to the LAN (signed per auth_mode)."""
+        """Send a discover broadcast to the LAN (signed per auth_mode/§17)."""
         env = envelope.build_envelope(
             "discover", {}, from_, "all", self.psk,
             sign=envelope.should_sign(self.auth_mode, self.psk),
+            key_mode=self.key_mode,
         )
         self.broadcast(env)
 
