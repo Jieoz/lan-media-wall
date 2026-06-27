@@ -46,6 +46,7 @@ class BrokerFound:
     port: int
     auth_mode: str = auth.DEFAULT_MODE
     topology: str = DEDICATED
+    key_mode: str = auth.DEFAULT_KEY_MODE  # §17.3: declared by the coordinator
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class Decision:
     port: Optional[int] = None
     listen_port: Optional[int] = None  # p2p server: where to listen
     cohost_broker: bool = False     # client: must we spawn a broker first?
+    key_mode: str = auth.DEFAULT_KEY_MODE  # §17.3: effective key mode to start
 
 
 def decide_topology(
@@ -65,6 +67,7 @@ def decide_topology(
     *,
     cohost: bool = False,
     fallback_auth_mode: str = auth.DEFAULT_MODE,
+    fallback_key_mode: str = auth.DEFAULT_KEY_MODE,
     p2p_listen_port: int = P2P_LISTEN_PORT,
 ) -> Decision:
     """Pick a transport role from a discovery outcome (§14.5).
@@ -77,6 +80,8 @@ def decide_topology(
       fallback_auth_mode: auth mode to assume when we have no coordinator to
         learn it from (p2p server / freshly-spawned cohost). Defaults to open
         (§15.3 zero-config).
+      fallback_key_mode: key_mode to assume with no coordinator (§17.3). Default
+        global (= v1.2 behavior).
       p2p_listen_port: port to listen on in p2p server mode.
 
     Precedence: cohost flag > discovered broker > p2p server fallback."""
@@ -86,6 +91,7 @@ def decide_topology(
             role=ROLE_CLIENT,
             topology=COHOSTED,
             auth_mode=auth.normalize_mode(fallback_auth_mode),
+            key_mode=auth.normalize_key_mode(fallback_key_mode),
             host=COHOST_BROKER_HOST,
             port=COHOST_BROKER_PORT,
             cohost_broker=True,
@@ -96,6 +102,7 @@ def decide_topology(
             role=ROLE_CLIENT,
             topology=broker.topology,
             auth_mode=auth.normalize_mode(broker.auth_mode),
+            key_mode=auth.normalize_key_mode(broker.key_mode),
             host=broker.host,
             port=broker.port,
         )
@@ -104,5 +111,6 @@ def decide_topology(
         role=ROLE_P2P_SERVER,
         topology=P2P,
         auth_mode=auth.normalize_mode(fallback_auth_mode),
+        key_mode=auth.normalize_key_mode(fallback_key_mode),
         listen_port=p2p_listen_port,
     )

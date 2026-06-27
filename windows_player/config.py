@@ -29,6 +29,12 @@ DEFAULTS: Dict[str, Any] = {
     "broker": {"host": "127.0.0.1", "port": 8770, "use_wss": False, "wss_port": 8771},
     "psk": "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY",
     "auth_mode": "open",                      # §13: open|optional|required (open=default)
+    "key_mode": "global",                     # §17.3: global(v1.2)|derived(v1.3)
+    # §17.4 per-end key material from §15 pairing (derived mode, zero-PSK end).
+    # device_key/broker_key are hex; identity is our `from`. Empty = not paired
+    # in derived mode (we use the global psk instead). Users never hand-fill
+    # these — they arrive via the pairing QR. Kept out of the yaml by default.
+    "derived_key": {"device_key": None, "identity": None, "broker_key": None},
     "topology": {"cohost": False,             # §14.2: True → also run broker in-process
                  "discover_timeout_s": 3.0,   # §14.5: wait this long for a broker before p2p
                  "p2p_listen_port": 8770,      # §14.3: p2p server port
@@ -62,6 +68,20 @@ def _deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _hex_to_bytes(hexkey: Any) -> Optional[bytes]:
+    """Decode a hex key string to raw bytes, or None if absent/malformed.
+
+    §17 device/broker keys travel as hex in config/QR; the HMAC layer needs the
+    raw bytes. Malformed hex degrades to None (fall back to the psk path) rather
+    than raising — a bad QR must never crash the player."""
+    if not isinstance(hexkey, str) or not hexkey.strip():
+        return None
+    try:
+        return bytes.fromhex(hexkey.strip())
+    except ValueError:
+        return None
+
+
 @dataclass
 class Config:
     raw: Dict[str, Any]
@@ -85,6 +105,39 @@ class Config:
         """§13 auth mode. env LMW_AUTH_MODE wins over file/default, mirroring
         the PSK override so a deployment can flip modes without editing yaml."""
         return os.environ.get("LMW_AUTH_MODE", self.raw.get("auth_mode", "open"))
+
+    @property
+    def key_mode(self) -> str:
+        """§17.3 key mode. env LMW_KEY_MODE wins over file/default. Coordinator
+        announcements still override this at runtime via AuthState.adopt_key_mode
+        — this is only the *starting* mode before we hear from a coordinator."""
+        return os.environ.get("LMW_KEY_MODE", self.raw.get("key_mode", "global"))
+
+    @property
+    def device_key(self) -> Optional[bytes]:
+        """§17.4 this end's own device_key (raw 32 bytes) from pairing, or None.
+
+        Stored as hex in config/state; decoded here. env LMW_DEVICE_KEY (hex)
+        wins, mirroring the PSK override. Invalid hex → None (we then fall back
+        to the global psk path rather than crashing)."""
+        hexkey = os.environ.get("LMW_DEVICE_KEY") or \
+            self.get("derived_key", "device_key")
+        return _hex_to_bytes(hexkey)
+
+    @property
+    def identity(self) -> Optional[str]:
+        """§17.4 our paired identity (the `from` we sign as), or None to let the
+        caller default it to `player:<device_id>`."""
+        ident = self.get("derived_key", "identity")
+        return ident if isinstance(ident, str) and ident else None
+
+    @property
+    def broker_key(self) -> Optional[bytes]:
+        """§17.4 broker verify key (raw bytes) from pairing, for verifying
+        inbound broker frames without holding the PSK. None if not paired."""
+        hexkey = os.environ.get("LMW_BROKER_KEY") or \
+            self.get("derived_key", "broker_key")
+        return _hex_to_bytes(hexkey)
 
     @property
     def cache_dir(self) -> Path:

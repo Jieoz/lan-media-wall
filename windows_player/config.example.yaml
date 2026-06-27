@@ -9,7 +9,25 @@ broker:
 
 # Pre-shared key, 32+ random bytes, IDENTICAL on broker + every player (§3).
 # Strongly prefer setting env LMW_PSK instead of committing this.
+# §17 (v1.3): with derived key_mode you DON'T put a PSK here at all — scan the
+# broker's pairing QR and this player stores only its own device_key (never the
+# PSK). The derived_key fields below are filled by the QR; leave them blank.
 psk: "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY"
+
+# §17.3 key derivation mode. "global" = v1.2 (HMAC key = PSK, every end shares
+# it). "derived" = v1.3 (each end signs with its own device_key = HMAC(PSK,id),
+# so a leaked player can't forge other ends). The coordinator's declared
+# key_mode (welcome/announce) wins at runtime — this is just the start value.
+# Absent/unknown → global (backward compatible). env LMW_KEY_MODE overrides.
+key_mode: "global"
+
+# §17.4 per-device key material — populated by the pairing QR, NOT by hand.
+# In derived mode the QR carries `dk` (this end's device_key) + `id` (identity)
+# + `bk` (broker verify key); they land here. Users never touch this block.
+derived_key:
+  device_key: null         # hex; this player's own signing key (QR `dk`)
+  identity: null           # our `from`, e.g. "player:win-lobby-01" (QR `id`)
+  broker_key: null         # hex; key to verify broker frames (QR `bk`)
 
 device:
   name: "大厅左屏"          # first-boot display name; persisted to state.json after

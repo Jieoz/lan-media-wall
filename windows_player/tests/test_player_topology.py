@@ -100,3 +100,24 @@ def test_build_transport_client_returns_broker_client(tmp_path):
     assert transport.url == "ws://10.0.0.1:8770"
     # player adopted the discovered broker's auth mode
     assert p.auth.mode == "optional"
+
+
+def test_build_transport_adopts_broker_key_mode(tmp_path):
+    # §17.3: a derived-mode broker discovered → player adopts key_mode=derived.
+    p = _player(tmp_path)
+    found = TP.BrokerFound(host="10.0.0.1", port=8770, auth_mode="required",
+                           key_mode="derived")
+    d = TP.decide_topology(found)
+    assert d.key_mode == "derived"
+    p._build_transport(d)
+    assert p.auth.key_mode == "derived"
+
+
+def test_p2p_decision_carries_fallback_key_mode(tmp_path, monkeypatch):
+    p = _player(tmp_path)
+    p.auth.key_mode = "derived"  # locally configured derived
+    monkeypatch.setattr(M.discovery_probe_mod, "probe_for_broker",
+                        lambda **kw: None)
+    d = p._discover_decision()
+    assert d.role == TP.ROLE_P2P_SERVER
+    assert d.key_mode == "derived"  # we are coordinator → keep our key_mode

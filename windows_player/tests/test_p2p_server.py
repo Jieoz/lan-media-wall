@@ -24,6 +24,18 @@ def test_welcome_payload_normalizes_bad_mode():
     assert p["auth_mode"] == "open"
 
 
+def test_welcome_payload_declares_key_mode():
+    # §17.3: the p2p coordinator declares its key_mode so the controller adapts.
+    p = PS.build_welcome_payload(0, group_id="g", auth_mode="required",
+                                 key_mode="derived")
+    assert p["key_mode"] == "derived"
+    # default + bad value normalize to global (v1.2 backward compat)
+    assert PS.build_welcome_payload(0, group_id="g",
+                                    auth_mode="open")["key_mode"] == "global"
+    assert PS.build_welcome_payload(0, group_id="g", auth_mode="open",
+                                    key_mode="weird")["key_mode"] == "global"
+
+
 def test_time_sync_ack_payload_echoes_and_stamps():
     p = PS.build_time_sync_ack_payload(100, 250, 260, req_msg_id="mid-7")
     assert p["t1"] == 100

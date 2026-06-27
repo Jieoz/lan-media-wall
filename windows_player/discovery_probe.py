@@ -45,6 +45,7 @@ def parse_announce(env: Dict[str, Any]) -> Optional[topology.BrokerFound]:
         port=port,
         auth_mode=auth.normalize_mode(payload.get("auth_mode")),
         topology=payload.get("topology") or topology.DEDICATED,
+        key_mode=auth.normalize_key_mode(payload.get("key_mode")),
     )
 
 
@@ -77,17 +78,22 @@ def pick_broker(announces: List[Dict[str, Any]]) -> Optional[topology.BrokerFoun
 def probe_for_broker(
     *, psk: str, auth_mode: str, device_id: str,
     port: int = DISCOVERY_PORT, timeout_s: float = DEFAULT_TIMEOUT_S,
+    key_mode: str = envelope.KEY_MODE_GLOBAL,
+    device_key: Optional[bytes] = None,
 ) -> Optional[topology.BrokerFound]:
     """Broadcast a `discover` and collect `announce` replies for `timeout_s`.
 
     Returns a BrokerFound if any reply names a broker_hint, else None (caller
     then flips to p2p server mode, §14.5). Signs the discover only when the
     local auth mode calls for it (§13) — an `open`-mode probe goes out with
-    sig="" so an open coordinator answers it."""
-    sign = auth.should_sign(auth_mode, auth.has_usable_psk(psk))
+    sig="" so an open coordinator answers it. §17: signs with our device_key
+    in derived mode (or PSK-derived if we hold the PSK)."""
+    has_material = auth.has_usable_psk(psk) or (
+        key_mode == envelope.KEY_MODE_DERIVED and device_key is not None)
+    sign = auth.should_sign(auth_mode, has_material)
     env = envelope.build_envelope(
         psk, "discover", f"player:{device_id}", "all", {},
-        sign_frame=sign)
+        sign_frame=sign, key_mode=key_mode, device_key=device_key)
     data = json.dumps(env, ensure_ascii=False).encode("utf-8")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

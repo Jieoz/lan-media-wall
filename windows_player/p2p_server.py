@@ -44,12 +44,13 @@ HandlerType = Callable[[str, Dict[str, Any], Dict[str, Any]], Awaitable[None]]
 
 
 def build_welcome_payload(server_time: int, *, group_id: str,
-                          auth_mode: str) -> Dict[str, Any]:
+                          auth_mode: str,
+                          key_mode: str = envelope.KEY_MODE_GLOBAL) -> Dict[str, Any]:
     """The `welcome` we (acting as coordinator) send the controller (§14.3).
 
-    Declares topology:"p2p" and our auth_mode so the controller adapts (§13).
-    server_time is our local clock — but the controller is authoritative for
-    sync (§14.3), so this is diagnostic only."""
+    Declares topology:"p2p", our auth_mode, and our key_mode so the controller
+    adapts (§13/§17.3). server_time is our local clock — but the controller is
+    authoritative for sync (§14.3), so this is diagnostic only."""
     return {
         "assigned": True,
         "server_time": int(server_time),
@@ -57,6 +58,7 @@ def build_welcome_payload(server_time: int, *, group_id: str,
         "group_id": group_id,
         "topology": topology.P2P,
         "auth_mode": auth_mod.normalize_mode(auth_mode),
+        "key_mode": auth_mod.normalize_key_mode(key_mode),
     }
 
 
@@ -117,7 +119,8 @@ class P2PServer:
             return None
         env = envelope.build_envelope(self.psk, type_, self.frm, to, payload,
                                       msg_id=msg_id,
-                                      sign_frame=self.auth.should_sign())
+                                      sign_frame=self.auth.should_sign(),
+                                      **self.auth.sign_kwargs())
         data = json.dumps(env, ensure_ascii=False)
         try:
             async with self._send_lock:
@@ -170,7 +173,8 @@ class P2PServer:
         try:
             # send welcome immediately (we are the coordinator now).
             await self.send("welcome", build_welcome_payload(
-                now_ms(), group_id=self.group_id, auth_mode=self.auth.mode),
+                now_ms(), group_id=self.group_id, auth_mode=self.auth.mode,
+                key_mode=self.auth.key_mode),
                 to="controller")
             if self.on_connect:
                 await self.on_connect()
@@ -204,7 +208,9 @@ class P2PServer:
         ok, reason = envelope.verify(
             self.psk, env, replay=self._replay,
             first_connect=self._first_connect,
-            auth_mode=self.auth.mode)
+            auth_mode=self.auth.mode,
+            key_mode=self.auth.verify_key_mode(),
+            key_resolver=self.auth.verify_resolver())
         if not ok:
             log.debug("p2p dropped inbound (%s): type=%s", reason,
                       env.get("type"))

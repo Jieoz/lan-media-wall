@@ -89,6 +89,7 @@ def _load_broker_module():
 
 def build_broker_config(psk: str, *, auth_mode: str, ws_port: int = 8770,
                         discovery_port: int = 8772,
+                        key_mode: str = "global",
                         base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Assemble the cfg dict the broker's entry expects.
 
@@ -104,6 +105,7 @@ def build_broker_config(psk: str, *, auth_mode: str, ws_port: int = 8770,
         "discovery_port": discovery_port,
         "enable_discovery": False,  # the player's DiscoveryResponder announces
         "auth_mode": auth_mode,
+        "key_mode": key_mode,       # §17.3: the cohost broker is authoritative
         "topology": "cohosted",
     })
     return cfg

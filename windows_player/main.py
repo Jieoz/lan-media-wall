@@ -79,9 +79,17 @@ class Player:
             else (cfg.get("device", "group_id") or "default")
         self.ip = config_mod.detect_ip(cfg.get("broker", "host", default="8.8.8.8"))
 
-        # §13: shared auth state — starts from configured mode, adopts the
-        # coordinator's mode once welcome/announce reveals it.
-        self.auth = auth_mod.AuthState(cfg.auth_mode, cfg.psk)
+        # §13/§17: shared auth state — starts from configured mode + key mode,
+        # adopts the coordinator's mode once welcome/announce reveals it. In
+        # derived mode a PSK-less end signs with its paired device_key and
+        # verifies broker frames via the paired broker_key (§17.4).
+        identity = self.cfg.identity or f"player:{self.device_id}"
+        broker_key = self.cfg.broker_key
+        verify_keys = {"broker": broker_key} if broker_key else None
+        self.auth = auth_mod.AuthState(
+            cfg.auth_mode, cfg.psk,
+            key_mode=cfg.key_mode, identity=identity,
+            device_key=cfg.device_key, verify_keys=verify_keys)
         # §14: cohost flag (CLI overrides config).
         self.cohost = bool(cfg.get("topology", "cohost", default=False)
                            if cohost is None else cohost)
@@ -139,6 +147,7 @@ class Player:
         the probe module is unavailable, so behavior degrades gracefully."""
         cohost = self.cohost
         fallback_mode = self.auth.mode
+        fallback_key_mode = self.auth.key_mode
         auto = bool(self.cfg.get("topology", "auto", default=True))
         p2p_port = int(self.cfg.get("topology", "p2p_listen_port", default=8770))
         timeout = float(self.cfg.get("topology", "discover_timeout_s", default=3.0))
@@ -147,14 +156,16 @@ class Player:
             # operator intent wins; no probe needed (§14.2).
             return topology_mod.decide_topology(
                 None, cohost=True, fallback_auth_mode=fallback_mode,
-                p2p_listen_port=p2p_port)
+                fallback_key_mode=fallback_key_mode, p2p_listen_port=p2p_port)
 
         found = None
         if auto and discovery_probe_mod is not None:
             try:
                 found = discovery_probe_mod.probe_for_broker(
                     psk=self.cfg.psk, auth_mode=self.auth.mode,
-                    device_id=self.device_id, timeout_s=timeout)
+                    device_id=self.device_id, timeout_s=timeout,
+                    key_mode=self.auth.key_mode,
+                    device_key=self.auth.device_key)
             except Exception as exc:
                 log.warning("discovery probe failed (%s); using configured broker",
                             exc)
@@ -163,14 +174,15 @@ class Player:
             found = topology_mod.BrokerFound(
                 host=self.cfg.get("broker", "host", default="127.0.0.1"),
                 port=int(self.cfg.get("broker", "port", default=8770)),
-                auth_mode=self.auth.mode)
+                auth_mode=self.auth.mode, key_mode=self.auth.key_mode)
         return topology_mod.decide_topology(
             found, cohost=False, fallback_auth_mode=fallback_mode,
-            p2p_listen_port=p2p_port)
+            fallback_key_mode=fallback_key_mode, p2p_listen_port=p2p_port)
 
     def _build_transport(self, decision: topology_mod.Decision):
         """Construct the BrokerClient or P2PServer for `decision` (§14)."""
         self.auth.adopt(decision.auth_mode)
+        self.auth.adopt_key_mode(decision.key_mode)
         interval = float(self.cfg.get("time_sync_interval_s", default=30))
 
         if decision.role == topology_mod.ROLE_P2P_SERVER:
@@ -209,7 +221,7 @@ class Player:
             self._errors.append("cohost-unavailable")
             return
         bcfg = cohost_mod.build_broker_config(
-            self.cfg.psk, auth_mode=self.auth.mode,
+            self.cfg.psk, auth_mode=self.auth.mode, key_mode=self.auth.key_mode,
             ws_port=int(self.cfg.get("topology", "p2p_listen_port", default=8770)),
             discovery_port=int(self.cfg.get("discovery", "udp_port", default=8772)))
         self.cohost_broker = cohost_mod.CohostBroker(bcfg)
@@ -272,7 +284,9 @@ class Player:
                 psk=self.cfg.psk, device_id=self.device_id,
                 device_name=self.device_name, ip=self.ip, broker_hint=bh,
                 port=int(self.cfg.get("discovery", "udp_port", default=8772)),
-                auth_mode=self.auth.mode, topology=topo)
+                auth_mode=self.auth.mode, topology=topo,
+                key_mode=self.auth.key_mode, device_key=self.auth.device_key,
+                verify_keys=self.auth.verify_keys)
             self.discovery.start()
 
     def _apply_idle_screen(self) -> None:

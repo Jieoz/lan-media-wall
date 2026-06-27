@@ -75,7 +75,8 @@ class BrokerClient:
             return None
         env = envelope.build_envelope(self.psk, type_, self.frm, to, payload,
                                       msg_id=msg_id,
-                                      sign_frame=self.auth.should_sign())
+                                      sign_frame=self.auth.should_sign(),
+                                      **self.auth.sign_kwargs())
         data = json.dumps(env, ensure_ascii=False)
         try:
             async with self._send_lock:
@@ -158,10 +159,14 @@ class BrokerClient:
         if type_ == "welcome" and isinstance(payload, dict):
             if self.auth.adopt(payload.get("auth_mode")):
                 log.info("adopted auth_mode=%s from welcome", self.auth.mode)
+            if self.auth.adopt_key_mode(payload.get("key_mode")):
+                log.info("adopted key_mode=%s from welcome", self.auth.key_mode)
         ok, reason = envelope.verify(
             self.psk, env, replay=self._replay,
             first_connect=self._first_connect,
-            auth_mode=self.auth.mode)
+            auth_mode=self.auth.mode,
+            key_mode=self.auth.verify_key_mode(),
+            key_resolver=self.auth.verify_resolver())
         if not ok:
             log.debug("dropped inbound (%s): type=%s", reason, env.get("type"))
             return

@@ -24,7 +24,10 @@ class DiscoveryResponder:
     def __init__(self, *, psk: str, device_id: str, device_name: str,
                  ip: str, broker_hint: str, port: int = 8772,
                  replay: Optional[envelope.ReplayCache] = None,
-                 auth_mode: str = "open", topology: str = "dedicated"):
+                 auth_mode: str = "open", topology: str = "dedicated",
+                 key_mode: str = envelope.KEY_MODE_GLOBAL,
+                 device_key: Optional[bytes] = None,
+                 verify_keys: Optional[dict] = None):
         self.psk = psk
         self.device_id = device_id
         self.device_name = device_name
@@ -36,6 +39,10 @@ class DiscoveryResponder:
         # endpoints adapt (signing) and diagnose (role) without connecting.
         self.auth_mode = auth_mod.normalize_mode(auth_mode)
         self.topology = topology
+        # §17: key_mode for signing our announce / verifying inbound discover.
+        self.key_mode = auth_mod.normalize_key_mode(key_mode)
+        self.device_key = device_key
+        self.verify_keys = dict(verify_keys or {})
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -47,8 +54,11 @@ class DiscoveryResponder:
 
     def _make_announce(self) -> bytes:
         # §13: sign the announce only when our mode calls for it (open → "").
-        sign = auth_mod.should_sign(self.auth_mode,
-                                    auth_mod.has_usable_psk(self.psk))
+        frm = f"player:{self.device_id}"
+        has_material = auth_mod.has_usable_psk(self.psk) or (
+            self.key_mode == envelope.KEY_MODE_DERIVED
+            and self.device_key is not None)
+        sign = auth_mod.should_sign(self.auth_mode, has_material)
         payload = {
             "device_id": self.device_id,
             "device_name": self.device_name,
@@ -56,10 +66,11 @@ class DiscoveryResponder:
             "broker_hint": self.broker_hint,
             "auth_mode": self.auth_mode,
             "topology": self.topology,
+            "key_mode": self.key_mode,
         }
         env = envelope.build_envelope(
-            self.psk, "announce", f"player:{self.device_id}", "all", payload,
-            sign_frame=sign)
+            self.psk, "announce", frm, "all", payload,
+            sign_frame=sign, key_mode=self.key_mode, device_key=self.device_key)
         return json.dumps(env, ensure_ascii=False).encode("utf-8")
 
     def _run(self) -> None:
@@ -91,8 +102,15 @@ class DiscoveryResponder:
             return
         if env.get("type") != "discover":
             return
+        resolver = None
+        verify_km = self.key_mode
+        if self.key_mode == envelope.KEY_MODE_DERIVED and \
+                not auth_mod.has_usable_psk(self.psk):
+            keys = self.verify_keys
+            resolver = lambda frm: keys.get(frm)  # noqa: E731
         ok, _ = envelope.verify(self.psk, env, replay=self.replay,
-                                first_connect=True, auth_mode=self.auth_mode)
+                                first_connect=True, auth_mode=self.auth_mode,
+                                key_mode=verify_km, key_resolver=resolver)
         if not ok:
             return
         try:
