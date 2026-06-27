@@ -21,12 +21,14 @@ class InviteScreen extends StatefulWidget {
 class _InviteScreenState extends State<InviteScreen> {
   final _group = TextEditingController(text: 'lobby');
   final _host = TextEditingController();
+  final _invitee = TextEditingController();
   bool _hostLoaded = false;
 
   @override
   void dispose() {
     _group.dispose();
     _host.dispose();
+    _invitee.dispose();
     super.dispose();
   }
 
@@ -39,12 +41,18 @@ class _InviteScreenState extends State<InviteScreen> {
       _host.text = state.isP2p ? '' : state.brokerHost;
     }
 
+    final invitee = _invitee.text.trim();
     final uri = state.buildPairUri(
       group: _group.text.trim().isEmpty ? 'lobby' : _group.text.trim(),
       overrideHost: _host.text,
+      inviteeId: invitee,
     );
     final uriStr = uri.build();
     final canRenderQr = uri.connHost.isNotEmpty;
+    // §17.4：派生密钥模式下，需先填受邀端设备 id 才能为其派生 device_key（QR 不含 PSK）。
+    final derived = state.keyMode == KeyMode.derived &&
+        state.authMode != AuthMode.open &&
+        state.psk.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(title: const Text('邀请设备 / 添加')),
@@ -71,6 +79,27 @@ class _InviteScreenState extends State<InviteScreen> {
               prefixIcon: Icon(Icons.group_work),
             ),
           ),
+          if (derived) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _invitee,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: '受邀设备 id（派生密钥模式）',
+                hintText: '如 win-lobby-01（为该设备单独派生密钥，二维码不含全局 PSK）',
+                prefixIcon: Icon(Icons.devices_other),
+              ),
+            ),
+            if (invitee.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  '派生密钥模式：填入受邀设备 id 后，二维码只携带该设备专属密钥；'
+                  '留空则回退为携带全局 PSK。',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+          ],
           const SizedBox(height: 20),
           if (canRenderQr)
             Center(

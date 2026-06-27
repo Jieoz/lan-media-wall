@@ -137,11 +137,15 @@ class P2pCoordinator {
   }
 
   void _sendHello(String deviceId) {
+    // §17.3：p2p 下遥控端是协调端，其 key_mode 是该拓扑的权威，随 hello 声明给各 player，
+    // player 据此决定验本端帧用 device_key（derived）还是 PSK（global）。
     _sendTo(deviceId, 'hello', to: 'player:$deviceId', payload: {
       'role': 'controller',
       'controller_id': controllerId,
       'app_version': '1.0.0',
       'topology': 'p2p',
+      'auth_mode': codec.authMode.wire,
+      'key_mode': codec.keyMode.wire,
     });
   }
 

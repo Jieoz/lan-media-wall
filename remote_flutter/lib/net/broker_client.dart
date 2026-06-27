@@ -36,6 +36,9 @@ class BrokerClient {
   /// 协调端在 welcome 中声明的 auth_mode（§13）变化（端侧据此自适应签名/验签）。
   void Function(AuthMode mode)? onAuthMode;
 
+  /// 协调端在 welcome 中声明的 key_mode（§17.3）变化（端侧据此用 PSK / device_key 签验）。
+  void Function(KeyMode mode)? onKeyMode;
+
   /// 协调端在 welcome 中声明的 topology（§14）字符串变化（仅诊断展示）。
   void Function(String topology)? onTopology;
 
@@ -133,6 +136,24 @@ class BrokerClient {
     );
   }
 
+  /// §13/§17.3：据 welcome.payload 校正本端 auth_mode / key_mode（协调端为权威）。
+  /// key_mode 字段缺失 → 按 `global` 处理（向后兼容）。
+  void _applyWelcomeModes(Map<String, dynamic> payload) {
+    if (payload.containsKey('auth_mode')) {
+      final mode = AuthMode.parse(payload['auth_mode']);
+      codec.authMode = mode;
+      onAuthMode?.call(mode);
+      _log('auth_mode=${mode.wire}');
+    }
+    // 缺省/缺失 → global（§17.3）。welcome 一旦到达即按其声明对齐。
+    final km = KeyMode.parse(payload['key_mode']);
+    if (codec.keyMode != km) {
+      codec.keyMode = km;
+      onKeyMode?.call(km);
+      _log('key_mode=${km.wire}');
+    }
+  }
+
   /// 构造、签名并发送一个出站信封。未连接时丢弃并记录。
   void send(
     String type, {
@@ -166,6 +187,12 @@ class BrokerClient {
       _log('JSON 解析失败: $e');
       return;
     }
+    // §13/§17.3 引导：welcome 是协调端对本端策略的权威声明。它本身由 broker 用其
+    // auth_mode/key_mode 签名，而本端引导期可能口径不同（如默认 global），导致先验签必失败。
+    // 因此对 welcome 先按其 payload 声明校正 authMode/keyMode，再用校正后的口径验签。
+    if (env.type == 'welcome') {
+      _applyWelcomeModes(env.payload);
+    }
     final vr = codec.verify(env);
     if (vr != VerifyError.ok) {
       _log('入站验签失败(${env.type}): $vr');
@@ -173,13 +200,6 @@ class BrokerClient {
     }
     switch (env.type) {
       case 'welcome':
-        // §13：先据 welcome.auth_mode 调整本端签名/验签策略，再处理快照。
-        if (env.payload.containsKey('auth_mode')) {
-          final mode = AuthMode.parse(env.payload['auth_mode']);
-          codec.authMode = mode;
-          onAuthMode?.call(mode);
-          _log('auth_mode=${mode.wire}');
-        }
         if (env.payload.containsKey('topology')) {
           final topo = env.payload['topology'].toString();
           onTopology?.call(topo);

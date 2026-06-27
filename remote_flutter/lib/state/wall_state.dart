@@ -57,6 +57,9 @@ class WallState extends ChangeNotifier {
   /// 当前鉴权模式（§13）。默认 open。
   AuthMode _authMode = AuthMode.open;
 
+  /// 当前密钥模式（§17.3）。默认 global（向后兼容；连上协调端 / p2p 兼任时校正）。
+  KeyMode _keyMode = KeyMode.global;
+
   WallSnapshot _wall = const WallSnapshot();
   final Map<String, Uint8List> _thumbs = {};
   final List<AnnounceInfo> _discovered = [];
@@ -74,6 +77,7 @@ class WallState extends ChangeNotifier {
   List<AnnounceInfo> get discovered => List.unmodifiable(_discovered);
   ConnState get conn => _conn;
   AuthMode get authMode => _authMode;
+  KeyMode get keyMode => _keyMode;
   Topology get topology => _topology;
   bool get isP2p => _topology == Topology.p2p;
   int get p2pPeers => _p2pPeers;
@@ -83,21 +87,49 @@ class WallState extends ChangeNotifier {
       isP2p ? _p2pPeers > 0 : _conn == ConnState.connected;
   List<String> get logLines => List.unmodifiable(_log);
 
-  /// 由当前连接信息生成一张配对 URI（§15）。
+  /// 由当前连接信息生成一张配对 URI（§15 + §17.4）。
   ///  - broker 模式：用当前 broker host/port。
   ///  - p2p 模式：无单一 broker；用本机作为协调端，host 留空交由 UI 提示手填本机 IP。
+  ///
+  /// 密钥下发（§17.4 零感知）：
+  ///  - open：不含任何密钥。
+  ///  - global：携带全局 PSK（= v1.2；老 broker / 兼容回退）。
+  ///  - derived：协调端用 PSK 为受邀端 identity 现场派生 device_key，QR 只带 `dk`+`id`，
+  ///    **永不下发 PSK**。需要受邀端 identity → 由 [inviteeId]（如 `win-lobby-01`）拼成
+  ///    `player:<inviteeId>` 派生；[inviteeId] 为空时退化为 global（仍携带 PSK，确保可用）。
   /// [group] 为要邀请加入的目标组（默认 "lobby"）。
-  PairUri buildPairUri({String group = 'lobby', String? overrideHost}) {
+  PairUri buildPairUri({
+    String group = 'lobby',
+    String? overrideHost,
+    String? inviteeId,
+  }) {
     final host = overrideHost?.trim().isNotEmpty == true
         ? overrideHost!.trim()
         : (isP2p ? '' : brokerHost);
+    final port = isP2p ? 8770 : brokerPort;
+    // open：纯进组，不含密钥。
+    if (_authMode == AuthMode.open) {
+      return PairUri(
+        connHost: host, port: port, group: group,
+        mode: _authMode, keyMode: KeyMode.global, wss: brokerSecure,
+      );
+    }
+    final invitee = inviteeId?.trim() ?? '';
+    // derived + 持 PSK + 已知受邀端 id → 派生该端 device_key，QR 不含 PSK（§17.4）。
+    if (_keyMode == KeyMode.derived && psk.isNotEmpty && invitee.isNotEmpty) {
+      final identity = 'player:$invitee';
+      return PairUri(
+        connHost: host, port: port, group: group,
+        mode: _authMode, keyMode: KeyMode.derived,
+        dk: deriveDeviceKeyHex(psk, identity), id: identity,
+        wss: brokerSecure,
+      );
+    }
+    // 其余（global，或 derived 但未指定受邀端 id）→ 携带全局 PSK（兼容回退）。
     return PairUri(
-      connHost: host,
-      port: isP2p ? 8770 : brokerPort,
-      group: group,
-      mode: _authMode,
-      psk: _authMode == AuthMode.open ? null : psk,
-      wss: brokerSecure,
+      connHost: host, port: port, group: group,
+      mode: _authMode, keyMode: KeyMode.global,
+      psk: psk, wss: brokerSecure,
     );
   }
 
@@ -136,16 +168,21 @@ class WallState extends ChangeNotifier {
     // 引导期 auth_mode：有 PSK → required(签)，无 PSK → open(空 sig)。
     // 连上协调端后据 welcome.auth_mode 再校正(§13)。
     _authMode = psk.isEmpty ? AuthMode.open : AuthMode.required;
+    // 引导期 key_mode：默认 global（§17.3 向后兼容）；连上协调端读 welcome.key_mode
+    // 或 p2p 兼任协调端时再校正（见 _onKeyMode / _enterP2p）。
+    _keyMode = KeyMode.global;
     _codec = EnvelopeCodec(
       psk: psk,
       fromAddress: _fromAddress(),
       authMode: _authMode,
+      keyMode: _keyMode,
     );
     _broker = BrokerClient(codec: _codec, controllerId: controllerId)
       ..onWall = _onWall
       ..onThumb = _onThumb
       ..onState = _onConn
       ..onAuthMode = _onAuthMode
+      ..onKeyMode = _onKeyMode
       ..onTopology = _onTopologyHint
       ..onLog = _pushLog;
     _discovery = Discovery(codec: _codec, controllerId: controllerId)
@@ -267,6 +304,10 @@ class WallState extends ChangeNotifier {
     // p2p 下遥控端是协调端：auth_mode 由本端 PSK 决定（有则 required，无则 open，§13/§14.3）。
     _authMode = psk.isEmpty ? AuthMode.open : AuthMode.required;
     _codec.authMode = _authMode;
+    // §17.3：p2p 兼任协调端时，本端 key_mode 即该拓扑权威。持 PSK → derived（v1.3 默认，
+    // 泄露隔离）；无 PSK（open）→ key_mode 无意义，留 global。随 hello 声明给各 player。
+    _keyMode = psk.isEmpty ? KeyMode.global : KeyMode.derived;
+    _codec.keyMode = _keyMode;
     _p2p.setPeers([
       for (final a in _discovered)
         if (a.ip.isNotEmpty)
@@ -312,6 +353,11 @@ class WallState extends ChangeNotifier {
 
   void _onAuthMode(AuthMode mode) {
     _authMode = mode;
+    notifyListeners();
+  }
+
+  void _onKeyMode(KeyMode mode) {
+    _keyMode = mode;
     notifyListeners();
   }
 
