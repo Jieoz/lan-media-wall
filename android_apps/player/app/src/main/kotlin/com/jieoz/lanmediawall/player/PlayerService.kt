@@ -19,10 +19,14 @@ import com.jieoz.lanmediawall.player.cache.Playlist
 import com.jieoz.lanmediawall.player.media.PlayerController
 import com.jieoz.lanmediawall.player.net.BrokerClient
 import com.jieoz.lanmediawall.player.net.AuthMode
+import com.jieoz.lanmediawall.player.net.CoordinatorLink
 import com.jieoz.lanmediawall.player.net.Discovery
+import com.jieoz.lanmediawall.player.net.DiscoveryProbe
 import com.jieoz.lanmediawall.player.net.Envelope
 import com.jieoz.lanmediawall.player.net.Json
 import com.jieoz.lanmediawall.player.net.KeyMode
+import com.jieoz.lanmediawall.player.net.P2pServer
+import com.jieoz.lanmediawall.player.net.TransportSelector
 import com.jieoz.lanmediawall.player.net.asArrayOrNull
 import com.jieoz.lanmediawall.player.net.asBoolOrNull
 import com.jieoz.lanmediawall.player.net.asIntOrNull
@@ -64,7 +68,12 @@ class PlayerService : Service() {
     private lateinit var clock: ClockSync
     private lateinit var mediaStore: MediaStore
     private lateinit var downloader: Downloader
-    private lateinit var broker: BrokerClient
+    /** §14: the coordinator link — a [BrokerClient] (modes A/B) or a [P2pServer]
+     *  (mode C). Chosen at startup by [TransportSelector] from discovery; null
+     *  until [startSubsystems] resolves and builds it. All protocol I/O goes
+     *  through this interface so playback/status/handshake code is topology-
+     *  agnostic (§14.3: `to:"broker"` addressing is unchanged in p2p). */
+    @Volatile private var link: CoordinatorLink? = null
     private var discovery: Discovery? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -94,20 +103,9 @@ class PlayerService : Service() {
         downloader = Downloader(mediaStore.mediaCacheDir, onChange = { /* status loop reads */ })
         controllerPresent = settings.alwaysCollectThumbnails
         deviceIp = detectIp()
-
-        broker = BrokerClient(
-            url = settings.brokerWsUrl,
-            psk = settings.psk,
-            deviceId = settings.deviceId,
-            clock = clock,
-            onConnect = { onBrokerConnected() },
-            onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
-            initialKeyMode = KeyMode.parse(settings.keyMode),
-            deviceKey = settings.deviceKeyHex.takeIf { it.isNotBlank() }
-                ?.let { Envelope.hexToBytes(it) },
-            brokerKey = settings.brokerKeyHex.takeIf { it.isNotBlank() }
-                ?.let { Envelope.hexToBytes(it) },
-        )
+        // §14: the transport (BrokerClient vs P2pServer) is not chosen here — it
+        // depends on a UDP discovery probe that must run off the main thread.
+        // startSubsystems() probes, selects, and builds `link` on a coroutine.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -120,21 +118,123 @@ class PlayerService : Service() {
     private fun startSubsystems() {
         if (started) return
         started = true
-        broker.start()
-        if (settings.isConfigured) {
-            discovery = Discovery(
+        // watchdog + resume_last don't need the link — start them immediately so
+        // the screen shows the last task ASAP after a (re)boot (§10/§11).
+        scope.launch { watchdogLoop() }
+        scope.launch { resumeLast() }
+        // §14.5: choose + build the transport off the main thread (the discovery
+        // probe blocks), then start the link and the loops that talk to it.
+        scope.launch { selectAndStartTransport() }
+    }
+
+    /**
+     * §14.5 decide-then-pick: run a UDP discovery probe (skipped for a configured
+     * player, which keeps dialing its paired broker — modes A/B byte-for-byte),
+     * resolve a [TransportSelector.Plan], build the matching [CoordinatorLink],
+     * advertise the chosen topology over UDP, and start the link + its loops.
+     */
+    private suspend fun selectAndStartTransport() {
+        val keyMode = KeyMode.parse(settings.keyMode)
+        val deviceKey = settings.deviceKeyHex.takeIf { it.isNotBlank() }
+            ?.let { Envelope.hexToBytes(it) }
+        val hasKeyMaterial = Envelope.hasUsableKey(settings.psk) || deviceKey != null
+
+        // a configured player trusts its paired broker (no probe needed); an
+        // unconfigured one probes the LAN for a coordinator (§14.5).
+        val announces = if (settings.isConfigured) {
+            emptyList()
+        } else {
+            DiscoveryProbe(
+                psk = settings.psk,
+                deviceId = settings.deviceId,
+                authMode = if (hasKeyMaterial) AuthMode.OPTIONAL else AuthMode.OPEN,
+                keyMode = keyMode,
+                deviceKey = deviceKey,
+            ).probe(timeoutMs = 3000)
+        }
+
+        val plan = TransportSelector.select(
+            TransportSelector.Config(
+                isConfigured = settings.isConfigured,
+                brokerHost = settings.brokerHost,
+                brokerPort = settings.brokerPort,
+                useWss = settings.useWss,
+                configuredKeyMode = keyMode,
+                hasKeyMaterial = hasKeyMaterial,
+            ),
+            announces,
+        )
+
+        val brokerKey = settings.brokerKeyHex.takeIf { it.isNotBlank() }
+            ?.let { Envelope.hexToBytes(it) }
+        val newLink: CoordinatorLink = when (plan) {
+            is TransportSelector.Plan.Client -> BrokerClient(
+                url = plan.url,
+                psk = settings.psk,
+                deviceId = settings.deviceId,
+                clock = clock,
+                onConnect = { onCoordinatorConnected() },
+                onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+                initialKeyMode = plan.keyMode,
+                deviceKey = deviceKey,
+                brokerKey = brokerKey,
+            )
+            is TransportSelector.Plan.P2pServer -> P2pServer(
+                psk = settings.psk,
+                deviceId = settings.deviceId,
+                groupId = settings.groupId,
+                clock = clock,
+                // §14.3: a controller dialing in is now watching → open the
+                // thumbnail gate (§6.4). We are the coordinator; no hello to send.
+                onConnect = { controllerPresent = true },
+                onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+                initialAuthMode = plan.authMode,
+                initialKeyMode = plan.keyMode,
+                deviceKey = deviceKey,
+                listenPort = plan.listenPort,
+            )
+        }
+        link = newLink
+        newLink.start()
+        startDiscoveryResponder(plan)
+
+        // loops that depend on the link start now that it exists.
+        scope.launch { statusLoop() }
+        scope.launch { thumbnailLoop() }
+    }
+
+    /**
+     * §7/§14.5: advertise over UDP. In client mode (A/B) we point peers at the
+     * broker we connected to (today's behavior). In p2p mode we advertise
+     * **ourselves** as the coordinator (our ip:8770, topology:"p2p") so a
+     * controller's discovery finds us and dials in (§14.3).
+     */
+    private fun startDiscoveryResponder(plan: TransportSelector.Plan) {
+        val deviceKey = settings.deviceKeyHex.takeIf { it.isNotBlank() }
+            ?.let { Envelope.hexToBytes(it) }
+        discovery = when (plan) {
+            is TransportSelector.Plan.Client -> {
+                if (!settings.isConfigured) return // nothing trustworthy to advertise
+                Discovery(
+                    psk = settings.psk,
+                    deviceId = settings.deviceId,
+                    deviceName = settings.deviceName,
+                    ip = deviceIp,
+                    brokerHint = "${settings.brokerHost}:${settings.brokerPort}",
+                )
+            }
+            is TransportSelector.Plan.P2pServer -> Discovery(
                 psk = settings.psk,
                 deviceId = settings.deviceId,
                 deviceName = settings.deviceName,
                 ip = deviceIp,
-                brokerHint = "${settings.brokerHost}:${settings.brokerPort}",
-            ).also { it.start() }
-        }
-        scope.launch { statusLoop() }
-        scope.launch { thumbnailLoop() }
-        scope.launch { watchdogLoop() }
-        // resume_last on (re)start so the screen is the player, not the desktop
-        scope.launch { resumeLast() }
+                brokerHint = "$deviceIp:${plan.listenPort}",
+                topology = "p2p",
+                authMode = plan.authMode,
+                keyMode = plan.keyMode,
+                deviceKey = deviceKey,
+            )
+        }.also { it.start() }
     }
 
     @Volatile private var started = false
@@ -142,7 +242,7 @@ class PlayerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         scope.cancel()
-        try { broker.stop() } catch (_: Exception) {}
+        try { link?.stop() } catch (_: Exception) {}
         discovery?.stop()
         downloader.stop()
         releaseLocks()
@@ -222,7 +322,11 @@ class PlayerService : Service() {
     }
 
     // --- §4 hello on (re)connect -------------------------------------
-    private fun onBrokerConnected() {
+    /** Fired when the coordinator link comes up. In client mode (A/B) this is a
+     *  broker (re)connect → send `hello` (§4). In p2p mode the player IS the
+     *  coordinator and sends `welcome` from [P2pServer] instead, so this is only
+     *  wired for the client path. */
+    private fun onCoordinatorConnected() {
         val payload = jsonObj {
             put("role", "player")
             put("device_id", settings.deviceId)
@@ -234,7 +338,7 @@ class PlayerService : Service() {
             put("capabilities", jsonStrArr(listOf("video", "image", "audio", "thumbnail")))
             put("group_id", settings.groupId)
         }
-        broker.send("hello", payload)
+        link?.send("hello", payload)
     }
 
     private fun screenJson(): Json {
@@ -286,7 +390,7 @@ class PlayerService : Service() {
             put("cpu", 0)
             put("errors", jsonStrArr(errors.toList().takeLast(5)))
         }
-        broker.send("status", payload)
+        link?.send("status", payload)
     }
 
     private fun cacheJson(): Json {
@@ -327,7 +431,7 @@ class PlayerService : Service() {
         }
         // ack commands that carry a msg_id (§10)
         if (type in ACKABLE) {
-            broker.send("ack", jsonObj {
+            link?.send("ack", jsonObj {
                 put("ack_of", env.msgId)
                 put("ok", true)
                 put("err", "")
@@ -342,10 +446,14 @@ class PlayerService : Service() {
         }
         // §13/§17.3: the coordinator is authoritative for auth_mode + key_mode.
         // Adopt both so subsequent frames sign/verify under the declared regime.
-        payload["auth_mode"].asString()?.let { broker.setAuthMode(AuthMode.parse(it)) }
+        // Only meaningful in client mode (we *receive* welcome from a broker); in
+        // p2p WE send welcome and are authoritative, so there's no inbound one to
+        // adopt — hence the BrokerClient-typed adoption.
+        val client = link as? BrokerClient
+        payload["auth_mode"].asString()?.let { client?.setAuthMode(AuthMode.parse(it)) }
         payload["key_mode"].asString()?.let {
             val km = KeyMode.parse(it)
-            broker.setKeyMode(km)
+            client?.setKeyMode(km)
             if (settings.keyMode != km.wire) settings.keyMode = km.wire
         }
         payload["controllers_online"].asIntOrNull()?.let {
@@ -404,7 +512,7 @@ class PlayerService : Service() {
             }
         }
         // §9.1: echo prepare_id + group_id back so broker matches the session.
-        broker.send("ready", jsonObj {
+        link?.send("ready", jsonObj {
             put("device_id", settings.deviceId)
             put("playlist_id", pid)
             put("group_id", groupId)
@@ -539,18 +647,19 @@ class PlayerService : Service() {
     private suspend fun thumbnailLoop() {
         while (scope.isActive) {
             delay(5000) // §6.4 ~5s
-            if (!broker.isConnected) continue
+            val coordinator = link ?: continue
+            if (!coordinator.isConnected) continue
             if (!(settings.alwaysCollectThumbnails || controllerPresent)) continue
             val ctl = controllerRef ?: continue
             val res = ctl.captureThumbnail(maxWidth = 320, quality = 70) ?: continue
             val (seq, jpeg) = res
-            broker.send("thumb_meta", jsonObj {
+            coordinator.send("thumb_meta", jsonObj {
                 put("device_id", settings.deviceId)
                 put("seq", seq)
                 put("bytes", jpeg.size)
                 put("mime", "image/jpeg")
             })
-            broker.sendBinary(jpeg)
+            coordinator.sendBinary(jpeg)
         }
     }
 

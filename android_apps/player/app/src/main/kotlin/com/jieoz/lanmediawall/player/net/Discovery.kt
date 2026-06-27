@@ -24,6 +24,19 @@ class Discovery(
     @Volatile private var ip: String,
     @Volatile private var brokerHint: String,
     private val port: Int = 8772,
+    /**
+     * §14/§13/§17.3: the topology this device advertises, and the auth/key mode
+     * the coordinator declares. **Null `topology` = today's broker-client path**
+     * — the announce payload is byte-for-byte unchanged (device_id/name/ip/
+     * broker_hint, signed with the global PSK) so modes A/B are untouched. When
+     * set (e.g. "p2p" — this device IS the coordinator, §14.3), the announce
+     * additionally carries `topology`/`auth_mode`/`key_mode` and is signed under
+     * that auth/key mode, matching windows_player/discovery.py::DiscoveryResponder.
+     */
+    @Volatile private var topology: String? = null,
+    private val authMode: AuthMode = AuthMode.OPTIONAL,
+    private val keyMode: KeyMode = KeyMode.GLOBAL,
+    private val deviceKey: ByteArray? = null,
 ) {
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var running = false
@@ -77,13 +90,31 @@ class Discovery(
     }
 
     private fun makeAnnounce(): ByteArray {
+        val topo = topology
         val payload = jsonObj {
             put("device_id", deviceId)
             put("device_name", deviceName)
             put("ip", ip)
             put("broker_hint", brokerHint)
+            // §14/§13/§17.3: only when this device declares a topology (it is the
+            // coordinator). Omitted on the broker-client path → payload (and its
+            // signature) stay byte-for-byte identical to the v1.2 announce.
+            if (topo != null) {
+                put("topology", topo)
+                put("auth_mode", authMode.wire)
+                put("key_mode", keyMode.wire)
+            }
         }
-        val env = Envelope.build(psk, "announce", "player:$deviceId", "all", payload)
+        val env = if (topo == null) {
+            // broker-client path: unchanged — global-PSK signed (§3).
+            Envelope.build(psk, "announce", "player:$deviceId", "all", payload)
+        } else if (keyMode == KeyMode.DERIVED && deviceKey != null) {
+            // dk-only coordinator (§17.4): sign with our own device_key.
+            Envelope.buildWithDeviceKey(deviceKey, authMode, "announce", "player:$deviceId", "all", payload)
+        } else {
+            // coordinator: sign per the declared auth/key mode (§13/§17).
+            Envelope.buildWithMode(psk, authMode, "announce", "player:$deviceId", "all", payload, keyMode = keyMode)
+        }
         return Envelope.toWire(env).toByteArray(Charsets.UTF_8)
     }
 
