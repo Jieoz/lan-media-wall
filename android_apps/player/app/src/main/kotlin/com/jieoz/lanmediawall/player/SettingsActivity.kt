@@ -3,9 +3,12 @@ package com.jieoz.lanmediawall.player
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.jieoz.lanmediawall.player.databinding.ActivitySettingsBinding
+import com.jieoz.lanmediawall.player.pair.PairUri
+import com.jieoz.lanmediawall.player.pair.PairingScanActivity
 
 /**
  * First-boot setup — protocol_spec §4: custom device_name (persisted), broker
@@ -20,13 +23,42 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var settings: Settings
 
+    /**
+     * §15 scan-to-pair launcher. On RESULT_OK we re-parse the returned
+     * `lmw://pair?…` URI, apply it to [Settings.applyPairing], and refill the
+     * form from the now-updated settings so the operator sees (and can still
+     * tweak) what was scanned before saving.
+     */
+    private val scanPair =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode != RESULT_OK) return@registerForActivityResult
+            val raw = result.data?.getStringExtra(PairingScanActivity.EXTRA_PAIR_URI)
+            val pairUri = PairUri.parse(raw)
+            if (pairUri == null) {
+                toast(getString(R.string.scan_pair_invalid)); return@registerForActivityResult
+            }
+            settings.applyPairing(pairUri)
+            prefillFromSettings()
+            toast(getString(R.string.scan_pair_applied))
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(applicationContext)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Prefill with current values (device_name defaults to device_id).
+        prefillFromSettings()
+
+        binding.btnScanPair.setOnClickListener {
+            scanPair.launch(Intent(this, PairingScanActivity::class.java))
+        }
+        binding.btnSave.setOnClickListener { save() }
+    }
+
+    /** Fill every input from the current [settings] (used on open + post-scan). */
+    private fun prefillFromSettings() {
+        // device_name defaults to device_id; leave blank until configured.
         binding.inputDeviceName.setText(
             if (settings.isConfigured) settings.deviceName else "",
         )
@@ -34,10 +66,9 @@ class SettingsActivity : AppCompatActivity() {
         binding.inputBrokerPort.setText(settings.brokerPort.toString())
         binding.inputUseWss.isChecked = settings.useWss
         binding.inputGroupId.setText(settings.groupId)
+        // §13/§15.3 open semantics: DEFAULT_PSK means "no key" → show empty.
         binding.inputPsk.setText(if (settings.psk == Settings.DEFAULT_PSK) "" else settings.psk)
         binding.inputAlwaysThumbs.isChecked = settings.alwaysCollectThumbnails
-
-        binding.btnSave.setOnClickListener { save() }
     }
 
     private fun save() {
@@ -54,9 +85,10 @@ class SettingsActivity : AppCompatActivity() {
         if (port == null || port !in 1..65535) {
             toast("Broker port must be 1–65535"); return
         }
-        if (psk.isEmpty()) {
-            toast("PSK is required"); return
-        }
+        // §13/§15.3: PSK is OPTIONAL. v1.1+ defaults to `open` (zero-config, no
+        // key). An empty field means "no key" — the player connects to an open
+        // broker and signs sig="" (see Envelope.hasUsableKey / AuthMode.OPEN).
+        // Only a non-empty PSK enables optional/required signing.
 
         settings.deviceName = if (name.isEmpty()) settings.deviceId else name
         settings.brokerHost = host

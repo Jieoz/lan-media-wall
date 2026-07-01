@@ -248,6 +248,7 @@ class Player:
             self.watchdog = MpvWatchdog(
                 mpv_path=mcfg.get("path", "mpv"), ipc_path=ipc,
                 idle_image=self.cfg.get("idle_image"),
+                hwdec=mcfg.get("hwdec", "auto-safe"),
                 extra_args=mcfg.get("extra_args", []),
                 check_interval_s=float(wd.get("check_interval_s", 1.0)),
                 restart_grace_s=float(wd.get("restart_grace_s", 5.0)),

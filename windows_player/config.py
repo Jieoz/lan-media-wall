@@ -46,6 +46,11 @@ DEFAULTS: Dict[str, Any] = {
         "path": "mpv",                       # mpv.exe shipped alongside on Windows
         "ipc_pipe": r"\\.\pipe\lmw-mpv",     # Windows named pipe
         "ipc_socket": "/tmp/lmw-mpv.sock",   # POSIX fallback (dev/CI)
+        # §9/§11: hardware decoding. auto-safe = let mpv pick only vetted HW
+        # decoders (no known green/tear fallbacks) so low-end boxes stop
+        # CPU-soft-decoding. Set "no" to disable when diagnosing green/garbled
+        # video, or pin a specific decoder (e.g. "d3d11va"). Survives restarts.
+        "hwdec": "auto-safe",
         "extra_args": [],
     },
     "idle_image": None,                       # path to placeholder; None = pure black

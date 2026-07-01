@@ -2,6 +2,7 @@ package com.jieoz.lanmediawall.player.cache
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -89,6 +90,13 @@ class Downloader(
 ) {
     private val entries = ConcurrentHashMap<String, CacheEntry>()
     private val inFlight = ConcurrentHashMap<String, Boolean>()
+
+    /** §6 cache quota. 0 = unlimited (never evict). Set by the service from
+     *  Settings.cacheMaxBytes. The *effective* cap also factors free disk. */
+    @Volatile private var quotaMaxBytes: Long = 0L
+
+    /** Absolute paths that back the current playlist — NEVER evicted (§11). */
+    @Volatile private var protectedPaths: Set<String> = emptySet()
     private val pool = Executors.newCachedThreadPool { r ->
         Thread(r, "dl-worker").apply { isDaemon = true }
     }
@@ -124,7 +132,83 @@ class Downloader(
 
     /** Queue a batch (§6.2). Ready items are skipped; others get a worker. */
     fun prefetch(items: List<MediaItem>) {
+        // §6: reclaim space before pulling new media so a churning wall never
+        // hits Storage Full. Protect what the incoming batch will reference so
+        // we don't evict a file we're about to (re)use.
+        enforceQuota(extraProtected = items.map { localPath(it).absolutePath })
         for (item in items) ensureEntryAndStart(item)
+    }
+
+    /**
+     * §6 quota configuration. [maxBytes] is the operator cap (0 = unlimited);
+     * [protectedFiles] are absolute paths backing the current playlist that
+     * must never be evicted. Called by the service on playlist/prepare changes.
+     */
+    fun configureQuota(maxBytes: Long, protectedFiles: Set<String>) {
+        quotaMaxBytes = maxBytes
+        protectedPaths = protectedFiles
+    }
+
+    /** Mark a file as just-used so LRU eviction keeps it (updates mtime). */
+    fun touch(path: File) {
+        try { if (path.exists()) path.setLastModified(System.currentTimeMillis()) }
+        catch (_: Exception) {}
+    }
+
+    /**
+     * §6 LRU eviction pass. Scans the cache dir, computes the effective quota
+     * (operator cap ∩ %-of-free-disk), and deletes least-recently-accessed
+     * files until under quota — never touching protected paths, in-flight
+     * `.part` files, or the current playlist's media. Safe to call often; a
+     * no-op when unlimited or already under quota.
+     */
+    @Synchronized
+    fun enforceQuota(extraProtected: List<String> = emptyList()) {
+        val cap = quotaMaxBytes
+        if (cap <= 0L) return // unlimited
+        val protectedNow = HashSet(protectedPaths).apply { addAll(extraProtected) }
+        val readyPaths = entries.values.mapNotNull { it.path?.absolutePath }.toHashSet()
+
+        val onDisk = cacheDir.listFiles()?.filter { it.isFile } ?: return
+        val currentBytes = onDisk.sumOf { it.length() }
+        val usable = try { cacheDir.usableSpace } catch (_: Exception) { Long.MAX_VALUE }
+        val quota = CacheEviction.effectiveQuota(
+            configuredMaxBytes = cap,
+            usableSpaceBytes = usable,
+            currentCacheBytes = currentBytes,
+        )
+
+        val files = onDisk.map { f ->
+            val abs = f.absolutePath
+            // Never evict: protected playlist media, or an in-progress .part.
+            val isPart = f.name.endsWith(".part")
+            val prot = isPart || protectedNow.contains(abs)
+            CacheEviction.CacheFile(
+                id = abs,
+                sizeBytes = f.length(),
+                lastAccessMs = f.lastModified(),
+                protected = prot,
+            )
+        }
+        val plan = CacheEviction.selectEvictions(files, quota)
+        if (plan.evict.isEmpty()) return
+
+        var deleted = 0
+        for (path in plan.evict) {
+            val f = File(path)
+            if (f.delete()) {
+                deleted++
+                // drop any cache entry pointing at the deleted file so a later
+                // prepare re-fetches it instead of trusting a dead path.
+                entries.entries.removeIf { it.value.path?.absolutePath == path }
+                if (readyPaths.contains(path)) { /* was ready; entry pruned above */ }
+            }
+        }
+        Log.i(TAG, "cache eviction: freed ~${plan.freedBytes / (1024 * 1024)}MB " +
+            "(deleted $deleted/${plan.evict.size} files; " +
+            "${plan.totalBefore / (1024 * 1024)}MB→${plan.totalAfter / (1024 * 1024)}MB, " +
+            "quota=${quota / (1024 * 1024)}MB)")
+        notifyChange()
     }
 
     private fun ensureEntryAndStart(item: MediaItem) {
@@ -258,5 +342,9 @@ class Downloader(
     fun stop() {
         stopped = true
         pool.shutdownNow()
+    }
+
+    companion object {
+        private const val TAG = "lmw.Downloader"
     }
 }

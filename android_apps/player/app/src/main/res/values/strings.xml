@@ -12,14 +12,27 @@
     <string name="label_group_id">Group ID</string>
     <string name="hint_group_id">default</string>
     <string name="label_psk">Preshared key (PSK)</string>
-    <string name="hint_psk">32+ byte shared secret</string>
+    <string name="hint_psk">Leave empty for open mode (no key)</string>
     <string name="label_always_thumbs">Always send thumbnails</string>
     <string name="action_save">Save and start</string>
     <string name="action_settings">Settings</string>
+    <string name="action_scan_pair">Scan pairing QR</string>
+    <string name="scan_pair_hint">Point the camera at the pairing QR</string>
+    <string name="scan_pair_denied">Camera permission denied</string>
+    <string name="scan_pair_applied">Pairing applied</string>
+    <string name="scan_pair_invalid">Not a valid pairing QR</string>
 
     <string name="notif_channel_name">Media Wall Player</string>
     <string name="notif_title">LAN Media Wall</string>
     <string name="notif_text">Player running</string>
 
     <string name="idle_text">LAN Media Wall</string>
+
+    <!-- §debug backdoor: hidden kiosk-exit PIN dialog (top-left 7-tap / D-pad
+         UP UP DOWN DOWN). Lets an operator leave the locked kiosk on-device. -->
+    <string name="kiosk_pin_title">Exit kiosk</string>
+    <string name="kiosk_pin_hint">Enter PIN</string>
+    <string name="kiosk_pin_ok">Unlock</string>
+    <string name="kiosk_pin_cancel">Cancel</string>
+    <string name="kiosk_pin_wrong">Wrong PIN</string>
 </resources>

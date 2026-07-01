@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- §15 scan-to-pair: fullscreen CameraX preview + a bottom hint overlay.
+     The PreviewView drives the live camera feed; each frame is analysed off
+     this layout by PairingScanActivity (ImageAnalysis → QrDecoder). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/preview_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/scan_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#99000000"
+        android:gravity="center"
+        android:padding="16dp"
+        android:text="@string/scan_pair_hint"
+        android:textColor="@color/white"
+        android:textSize="16sp" />
+
+</FrameLayout>

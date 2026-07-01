@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.net.wifi.WifiManager
@@ -387,10 +388,56 @@ class PlayerService : Service() {
             put("audio_master", audioMaster)
             put("cache", cacheJson())
             put("clock_offset_ms", clock.offsetMs)
+            put("app_version", Settings.APP_VERSION)
+            // §5.1: resource telemetry. `cpu` kept for backward-compat with the
+            // documented shape; low-end boxes can't read per-app CPU without
+            // root, so we report an honest 0 rather than a fabricated value.
+            // Memory IS readable everywhere via ActivityManager.MemoryInfo, so
+            // we add real mem_* fields (controllers ignore unknown fields, §5.1).
             put("cpu", 0)
+            putMemory(this)
+            readTempC()?.let { put("temp_c", it) }
             put("errors", jsonStrArr(errors.toList().takeLast(5)))
         }
         link?.send("status", payload)
+    }
+
+    /**
+     * §5.1 memory telemetry — always available on Android via
+     * [ActivityManager.MemoryInfo]. Reports device-wide RAM so operators can
+     * spot a box under memory pressure. Fields are additive (forward-compat):
+     * `mem_avail_mb`, `mem_total_mb`, `mem_low` (OS low-memory flag).
+     */
+    private fun putMemory(b: com.jieoz.lanmediawall.player.net.JsonObjectBuilder) {
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val mi = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            b.put("mem_avail_mb", (mi.availMem / (1024 * 1024)).toInt())
+            b.put("mem_total_mb", (mi.totalMem / (1024 * 1024)).toInt())
+            b.put("mem_low", mi.lowMemory)
+        } catch (_: Exception) {
+            // MemoryInfo shouldn't fail; if it does, simply omit (don't fake).
+        }
+    }
+
+    /**
+     * Best-effort SoC temperature (°C). Most 山寨 boxes expose no readable
+     * thermal zone to an unprivileged app, so this returns null far more often
+     * than not — we omit the field entirely rather than report a fake value
+     * (§5.1 forward-compat: absent field is fine). Reads the common
+     * `/sys/class/thermal/thermal_zone0/temp` (milli-°C or °C) when present.
+     */
+    private fun readTempC(): Int? {
+        return try {
+            val f = java.io.File("/sys/class/thermal/thermal_zone0/temp")
+            if (!f.canRead()) return null
+            val raw = f.readText().trim().toLongOrNull() ?: return null
+            val c = if (raw > 1000) (raw / 1000).toInt() else raw.toInt()
+            c.takeIf { it in 1..150 } // sanity-gate obvious garbage
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun cacheJson(): Json {
@@ -484,7 +531,20 @@ class PlayerService : Service() {
         playlist = pl
         index = 0
         mediaStore.storePlaylist(pl)
+        updateCacheProtection(pl)
         if (pl.items.isNotEmpty()) downloader.prefetch(pl.items)
+    }
+
+    /**
+     * §6: tell the downloader which files back the current playlist so its
+     * quota-eviction never deletes media we're about to play (§11), and refresh
+     * the operator cap from Settings. Called whenever the active playlist
+     * changes (playlist / prepare / resume_last).
+     */
+    private fun updateCacheProtection(pl: Playlist?) {
+        val protectedFiles = pl?.items?.map { downloader.localPath(it).absolutePath }
+            ?.toSet() ?: emptySet()
+        downloader.configureQuota(settings.cacheMaxBytes, protectedFiles)
     }
 
     // --- §9.1 prepare -------------------------------------------------
@@ -500,8 +560,11 @@ class PlayerService : Service() {
             val item = pl.items[startIndex]
             playlist = pl
             index = startIndex
+            updateCacheProtection(pl)
             if (downloader.isReady(item.itemId)) {
-                val path = downloader.readyPath(item.itemId)?.absolutePath
+                val readyFile = downloader.readyPath(item.itemId)
+                readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
+                val path = readyFile?.absolutePath
                 if (path != null) {
                     controllerRef?.loadPaused(path, seekMs, pl.loop)
                     playState = "buffering"
@@ -531,8 +594,11 @@ class PlayerService : Service() {
         if (startIndex !in pl.items.indices) return
         playlist = pl
         index = startIndex
+        updateCacheProtection(pl)
         val item = pl.items[startIndex]
-        val source = downloader.readyPath(item.itemId)?.absolutePath ?: item.url
+        val readyFile = downloader.readyPath(item.itemId)
+        readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
+        val source = readyFile?.absolutePath ?: item.url
         scheduledStart.getAndSet(null)?.cancel()
         persistLastTask(pid!!, startIndex, seekMs)
         val job = scope.launch { scheduledStart(source, seekMs, playAt, pl.loop) }
@@ -606,7 +672,9 @@ class PlayerService : Service() {
         }
         index = newIndex
         val item = pl.items[newIndex]
-        val source = downloader.readyPath(item.itemId)?.absolutePath ?: item.url
+        val readyFile = downloader.readyPath(item.itemId)
+        readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
+        val source = readyFile?.absolutePath ?: item.url
         controllerRef?.loadAndPlay(source, 0, pl.loop)
         playState = "playing"
         persistLastTask(pl.playlistId, newIndex, 0)
@@ -728,8 +796,11 @@ class PlayerService : Service() {
         }
         playlist = pl
         index = task.index
+        updateCacheProtection(pl)
         val item = pl.items[task.index]
-        val source = downloader.readyPath(item.itemId)?.absolutePath ?: item.url
+        val readyFile = downloader.readyPath(item.itemId)
+        readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
+        val source = readyFile?.absolutePath ?: item.url
         settings.volume = task.volume
         settings.muted = task.muted
         ctl?.currentVolumePercent = task.volume

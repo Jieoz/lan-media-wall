@@ -16,6 +16,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <!-- Post notifications (Android 13+ requires runtime grant for FGS notif) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- §15 scan-to-pair: camera for the QR pairing scanner (SettingsActivity) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
         android:name=".PlayerApp"
@@ -56,11 +59,33 @@
             android:label="@string/settings_title"
             android:theme="@style/Theme.Player" />
 
+        <!-- §15 QR scan-to-pair: CameraX preview + ZXing decode -->
+        <activity
+            android:name=".pair.PairingScanActivity"
+            android:exported="false"
+            android:label="@string/action_scan_pair"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Player" />
+
         <!-- Resident foreground service: WS + status + watchdog -->
         <service
             android:name=".PlayerService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- §11 true kiosk: Device Admin/Owner receiver. Being declared lets a
+             provisioned box `dpm set-device-owner` this app for silent Lock Task. -->
+        <receiver
+            android:name=".admin.PlayerDeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
 
         <!-- §11: open on boot -->
         <receiver

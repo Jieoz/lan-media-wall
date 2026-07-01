@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Device Admin policy for PlayerDeviceAdminReceiver (§11 true kiosk).
+  Minimal policy set — being an admin/Device Owner is what matters for Lock
+  Task; we don't enforce passwords/wipe. force-lock lets the app assert lock
+  state if ever needed.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <force-lock />
+    </uses-policies>
+</device-admin>

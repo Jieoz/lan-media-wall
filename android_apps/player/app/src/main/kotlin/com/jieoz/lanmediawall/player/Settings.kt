@@ -126,6 +126,31 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_ALWAYS_THUMBS, false)
         set(value) { prefs.edit().putBoolean(KEY_ALWAYS_THUMBS, value).apply() }
 
+    /**
+     * §6 cache quota (bytes). Hard cap on the media cache so a small 4–8GB box
+     * never hits `Storage Full` when媒体 churn. The effective quota is the
+     * smaller of this and a % of free disk (see [com.jieoz.lanmediawall.player
+     * .cache.CacheEviction.effectiveQuota]). Default 2 GiB. Configurable via
+     * prefs; no dedicated UI (zero-config default is fine for most walls).
+     */
+    var cacheMaxBytes: Long
+        get() = prefs.getLong(KEY_CACHE_MAX_BYTES,
+            com.jieoz.lanmediawall.player.cache.CacheEviction.DEFAULT_MAX_BYTES)
+        set(value) { prefs.edit().putLong(KEY_CACHE_MAX_BYTES, value).apply() }
+
+    /**
+     * PIN that unlocks the hidden kiosk-exit backdoor (on-device debugging, see
+     * [ExitGestureDetector] + MainActivity). Plain prefs by design: this only
+     * gates *local* egress from the kiosk (stopLockTask + jump to Settings) — it
+     * carries no network-auth weight, so encrypting it would add cost for no
+     * threat-model benefit. Default [DEFAULT_KIOSK_EXIT_PIN]; change it here or
+     * via prefs before shipping a wall. See README §kiosk-exit.
+     */
+    var kioskExitPin: String
+        get() = prefs.getString(KEY_KIOSK_EXIT_PIN, DEFAULT_KIOSK_EXIT_PIN)
+            ?: DEFAULT_KIOSK_EXIT_PIN
+        set(value) { prefs.edit().putString(KEY_KIOSK_EXIT_PIN, value).apply() }
+
     val brokerWsUrl: String
         get() {
             val scheme = if (useWss) "wss" else "ws"
@@ -189,8 +214,20 @@ class Settings(context: Context) {
         private const val KEY_VOLUME = "volume"
         private const val KEY_MUTED = "muted"
         private const val KEY_ALWAYS_THUMBS = "always_thumbs"
+        private const val KEY_CACHE_MAX_BYTES = "cache_max_bytes"
+        private const val KEY_KIOSK_EXIT_PIN = "kiosk_exit_pin"
 
         const val DEFAULT_PSK = "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY"
-        const val APP_VERSION = "1.0.0"
+
+        /**
+         * App version reported in §4 `hello.app_version`. Sourced from
+         * `BuildConfig.VERSION_NAME` (gradle `versionName`) so it never drifts
+         * from the shipped build — no hand-edited constant to forget (was
+         * hard-coded "1.0.0"). BuildConfig is generated (buildConfig=true).
+         */
+        val APP_VERSION: String = com.jieoz.lanmediawall.player.BuildConfig.VERSION_NAME
+
+        /** Default PIN for the kiosk-exit backdoor (see [kioskExitPin]). */
+        const val DEFAULT_KIOSK_EXIT_PIN = "246813"
     }
 }

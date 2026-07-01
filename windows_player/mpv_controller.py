@@ -29,8 +29,19 @@ IS_WIN = sys.platform == "win32"
 
 
 def mpv_launch_args(ipc_path: str, *, idle_image: Optional[str] = None,
+                    hwdec: Optional[str] = "auto-safe",
                     extra: Optional[List[str]] = None) -> List[str]:
-    """The kiosk/black-screen-proof mpv command line (§11)."""
+    """The kiosk/black-screen-proof mpv command line (§11).
+
+    `hwdec` selects the mpv hardware-decoding mode (§9/§11 performance). The
+    default `auto-safe` lets mpv pick a HW decoder only from the vetted/safe
+    list (no fallbacks known to green/tear on flaky drivers), so low-end/山寨
+    boxes stop soft-decoding high-bitrate video on the CPU. Set it to `no` (or
+    empty) to disable HW decoding entirely when diagnosing green/garbled video
+    — that reproduces the old software-only behaviour byte-for-byte. Any other
+    string is passed straight through to `--hwdec=` so operators can pin a
+    specific decoder (e.g. `d3d11va`, `mediacodec`) when they know their box.
+    """
     args = [
         f"--input-ipc-server={ipc_path}",
         "--idle=yes",              # stay alive with empty playlist (no desktop)
@@ -48,6 +59,13 @@ def mpv_launch_args(ipc_path: str, *, idle_image: Optional[str] = None,
         "--input-vo-keyboard=no",
         "--really-quiet",
     ]
+    # §9/§11: hardware decoding. Normalise falsy/`no` → explicit off so the flag
+    # is always present and deterministic across watchdog restarts.
+    hw = (hwdec or "no").strip() or "no"
+    if hw.lower() in ("no", "off", "none", "false", "0"):
+        args.append("--hwdec=no")
+    else:
+        args.append(f"--hwdec={hw}")
     if idle_image:
         # show placeholder when idle instead of black; loaded explicitly too
         args.append(f"--idle=yes")

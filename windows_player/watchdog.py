@@ -27,6 +27,7 @@ IS_WIN = sys.platform == "win32"
 class MpvWatchdog:
     def __init__(self, mpv_path: str, ipc_path: str, *,
                  idle_image: Optional[str] = None,
+                 hwdec: Optional[str] = "auto-safe",
                  extra_args: Optional[List[str]] = None,
                  check_interval_s: float = 1.0,
                  restart_grace_s: float = 5.0,
@@ -34,6 +35,7 @@ class MpvWatchdog:
         self.mpv_path = mpv_path
         self.ipc_path = ipc_path
         self.idle_image = idle_image
+        self.hwdec = hwdec
         self.extra_args = extra_args or []
         self.check_interval_s = check_interval_s
         self.restart_grace_s = restart_grace_s
@@ -61,7 +63,8 @@ class MpvWatchdog:
     def _spawn(self) -> None:
         with self._lock:
             args = [self.mpv_path] + mpv_launch_args(
-                self.ipc_path, idle_image=self.idle_image, extra=self.extra_args)
+                self.ipc_path, idle_image=self.idle_image,
+                hwdec=self.hwdec, extra=self.extra_args)
             # On POSIX, clean up a stale socket so connect() doesn't grab it.
             if not IS_WIN:
                 try:

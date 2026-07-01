@@ -68,11 +68,20 @@
             android:textColor="@color/white"
             android:text="@string/label_always_thumbs" />
 
+        <!-- §15 scan-to-pair: launches the CameraX QR scanner and auto-fills the
+             fields above from the decoded lmw://pair?… URI (no typing). -->
+        <Button
+            android:id="@+id/btn_scan_pair"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/action_scan_pair" />
+
         <Button
             android:id="@+id/btn_save"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="12dp"
             android:text="@string/action_save" />
 
     </LinearLayout>
