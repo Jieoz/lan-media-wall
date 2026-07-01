@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+
+## [v1.4.0] — 2026-07-02
+
+### Added
+- **Android 扫码配对 UI (§15)**: 设置页新增 Scan pairing QR 按钮，拉起 CameraX 后置摄像头预览 + ZXing 解码，扫到 `lmw://pair?...` 后自动回填 broker host/port/group/WSS/name/密钥字段，真正免手输。
+- **Android 数字标牌加固**: Device Owner/Lock Task 真 kiosk 注册、无 Device Owner 时不弹屏幕固定确认；隐藏退出后门(左上 7 连击或遥控 ↑↑↓↓ + PIN)；缓存 LRU 配额/保护当前 playlist；心跳补充 app_version/内存/温度字段。
+- **Windows player 硬解参数**: mpv 默认 `--hwdec=auto-safe`，支持显式关闭/指定解码器，配套 pytest 覆盖。
+
+### Changed
+- Android `APP_VERSION` 改为读取 Gradle `BuildConfig.VERSION_NAME`，避免协议上报版本与 APK 版本漂移。
+- Android PSK 输入遵循 open 语义：空 PSK 表示无密钥/open 模式，不再强制填写。
+
+### Verified
+- windows_player pytest: 137 passed。
+- windows_player py_compile: pass(使用独立 pycache 前缀；仅保留既有 mpv docstring escape warning)。
+- Android 本地仅做引用/资源/manifest/CameraX API 静态核对；APK 编译按项目约束走 GitHub Actions 云端。
+
 ## [v1.1.0] — 2026-06-24
 
 ### Added (易用性 / 上手门槛大幅降低)
