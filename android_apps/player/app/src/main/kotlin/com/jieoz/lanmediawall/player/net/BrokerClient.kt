@@ -7,7 +7,6 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
-import okio.ByteString.Companion.toByteString
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -180,7 +179,9 @@ class BrokerClient(
     override fun sendBinary(data: ByteArray): Boolean {
         val socket = ws ?: return false
         if (!connected) return false
-        return socket.send(data.toByteString())
+        // okhttp 3.12 ships okio 1.x — no `ByteArray.toByteString()` extension
+        // (that's okio 2.x+ / okhttp 4). Use the static factory instead.
+        return socket.send(ByteString.of(data, 0, data.size))
     }
 
     // --- time sync (§8) ----------------------------------------------

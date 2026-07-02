@@ -60,7 +60,6 @@ import java.util.concurrent.atomic.AtomicReference
  * + a screen-on flag (on the kiosk Activity) keep the wall awake. The watchdog
  * loop re-asserts state and recovers playback after a player error.
  */
-@androidx.media3.common.util.UnstableApi
 class PlayerService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

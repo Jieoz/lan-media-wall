@@ -16,9 +16,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <!-- Post notifications (Android 13+ requires runtime grant for FGS notif) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- §15 scan-to-pair: camera for the QR pairing scanner (SettingsActivity) -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
         android:name=".PlayerApp"
@@ -31,8 +28,8 @@
         android:theme="@style/Theme.Player"
         tools:targetApi="34">
 
-        <!-- Kiosk fullscreen player. LAUNCHER + HOME so it can act as the
-             default home app on a locked-down device (no desktop, §11). -->
+        <!-- Kiosk fullscreen player. §4.1 mode 1 (default): LAUNCHER only — this
+             box never grabs HOME by default (avoids fighting the OEM desktop). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -44,27 +41,31 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Make this a HOME candidate for kiosk lockdown -->
+        </activity>
+
+        <!-- §4.1 mode 2 (fallback, default OFF): HOME/launcher capability lives
+             on this activity-alias, NOT on MainActivity, so we never seize the
+             desktop by default. android:enabled="false" — the "set as home"
+             toggle in SettingsActivity flips it at runtime via
+             PackageManager.setComponentEnabledSetting (works on 4.4). The alias
+             name is referenced from code as HomeAlias. -->
+        <activity-alias
+            android:name=".HomeAlias"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <!-- First-boot setup: device_name / broker / PSK -->
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:label="@string/settings_title"
-            android:theme="@style/Theme.Player" />
-
-        <!-- §15 QR scan-to-pair: CameraX preview + ZXing decode -->
-        <activity
-            android:name=".pair.PairingScanActivity"
-            android:exported="false"
-            android:label="@string/action_scan_pair"
-            android:screenOrientation="portrait"
             android:theme="@style/Theme.Player" />
 
         <!-- Resident foreground service: WS + status + watchdog -->

@@ -1,0 +1,45 @@
+<resources>
+    <string name="app_name">局域网媒体墙</string>
+    <string name="settings_title">播放器设置</string>
+
+    <!-- §4.2/§7 首启中文提示:stopped-state 规则 + 仅内网。 -->
+    <string name="first_boot_notice">装完后请先手动打开本应用一次 —— 否则安卓不会下发开机广播,重启后无法自启。仅限内网使用:切勿把本播放器暴露到公网。</string>
+    <!-- §2 零配置状态行:本机 IP / device_id / 组名。 -->
+    <string name="device_info_fmt">本机 IP:%1$s\n设备 ID:%2$s\n分组:%3$s</string>
+
+    <string name="label_device_name">设备名称</string>
+    <string name="hint_device_name">例如 大厅左屏</string>
+    <string name="label_broker_host">Broker 地址 / IP(可选)</string>
+    <string name="hint_broker_host">留空则自动发现</string>
+    <string name="label_broker_port">Broker 端口</string>
+    <string name="hint_broker_port">8770</string>
+    <string name="label_use_wss">使用安全 WebSocket(WSS)</string>
+    <string name="label_group_id">分组 ID</string>
+    <string name="hint_group_id">default</string>
+    <string name="label_psk">预共享密钥(PSK)</string>
+    <string name="hint_psk">留空为开放模式(无密钥)</string>
+    <string name="label_always_thumbs">始终发送缩略图</string>
+    <string name="action_save">保存并启动</string>
+    <string name="action_settings">设置</string>
+    <string name="err_broker_port">Broker 端口须在 1–65535 之间</string>
+
+    <!-- §1 配置反转:本机展示自己的配对二维码。 -->
+    <string name="label_pair_qr">配对二维码 —— 用遥控端扫描</string>
+    <!-- §4.1 模式2:设为桌面 / 启动器开关(默认关)。 -->
+    <string name="label_set_as_home">设为桌面(kiosk 兜底)</string>
+    <string name="hint_set_as_home">默认关闭。仅当本盒开机自启失灵时再打开;之后需在系统里把本应用选为默认桌面一次。</string>
+
+    <string name="notif_channel_name">媒体墙播放器</string>
+    <string name="notif_title">局域网媒体墙</string>
+    <string name="notif_text">播放器运行中</string>
+
+    <string name="idle_text">局域网媒体墙</string>
+
+    <!-- §调试后门:隐藏的退出 kiosk PIN 弹窗(左上角连点 7 下 / 方向键
+         上 上 下 下)。让操作者在设备上离开锁定的 kiosk。 -->
+    <string name="kiosk_pin_title">退出 kiosk</string>
+    <string name="kiosk_pin_hint">输入 PIN</string>
+    <string name="kiosk_pin_ok">解锁</string>
+    <string name="kiosk_pin_cancel">取消</string>
+    <string name="kiosk_pin_wrong">PIN 错误</string>
+</resources>

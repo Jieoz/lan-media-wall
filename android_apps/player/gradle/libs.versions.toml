@@ -1,15 +1,22 @@
 [versions]
 agp = "8.6.1"
 kotlin = "1.9.24"
-coreKtx = "1.13.1"
-appcompat = "1.7.0"
-activity = "1.9.2"
-lifecycle = "2.8.6"
-media3 = "1.4.1"
-okhttp = "4.12.0"
-securityCrypto = "1.1.0-alpha06"
+# minSdk 19 (Android 4.4.2) floor — AndroidX libs bumped their own minSdk to 21
+# at these releases, so we pin the last versions that still allow minSdk 19:
+#   appcompat 1.7.0, activity 1.8.0, lifecycle 2.8.0 all require minSdk 21.
+coreKtx = "1.13.1"          # 1.13.x still allows minSdk 19; 1.15+ requires 21
+appcompat = "1.6.1"         # last appcompat before the 1.7.0 minSdk-21 bump
+activity = "1.7.2"          # last activity before the 1.8.0 minSdk-21 bump
+lifecycle = "2.7.0"         # last lifecycle before the 2.8.0 minSdk-21 bump
+# §6 播放内核: media3 1.4 -> ExoPlayer 2.19.1 (2.x 末代, 吃 API16+)
+exoplayer = "2.19.1"
+# §6 网络库: okhttp 4.12 -> 3.12.x (最后支持 <21 的分支)
+okhttp = "3.12.13"
+# §15 二维码: 仅保留 zxing-core 用于被控端「生成」QR (纯 Java, 兼容 4.4)
 zxing = "3.5.3"
-camerax = "1.3.4"
+# §6 语言级: coreLibraryDesugaring 兜 java.time/stream
+desugar = "2.0.4"
+multidex = "2.0.1"
 junit = "4.13.2"
 coroutines = "1.8.1"
 
@@ -18,15 +25,12 @@ androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = 
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "activity" }
 androidx-lifecycle-service = { group = "androidx.lifecycle", name = "lifecycle-service", version.ref = "lifecycle" }
-androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
+androidx-multidex = { group = "androidx.multidex", name = "multidex", version.ref = "multidex" }
+# §6: ExoPlayer 2.x umbrella artifact (core + ui). com.google.android.exoplayer2.*
+exoplayer = { group = "com.google.android.exoplayer", name = "exoplayer", version.ref = "exoplayer" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
+desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }

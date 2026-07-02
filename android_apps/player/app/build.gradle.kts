@@ -11,11 +11,17 @@ android {
 
     defaultConfig {
         applicationId = "com.jieoz.lanmediawall.player"
-        minSdk = 24
+        // §6: minSdk 24 -> 19 (Android 4.4.2). Fixes INSTALL_FAILED_OLDER_SDK on
+        // the target 1688 外贸盒. targetSdk stays high for modern-OS behavior.
+        minSdk = 19
         targetSdk = 34
-        versionCode = 14
-        versionName = "1.4.0"
+        versionCode = 15
+        versionName = "1.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // §6: on minSdk 19 the merged dex can exceed the 65k method limit
+        // (exoplayer2 + appcompat + okhttp + coroutines). Pre-21 has no native
+        // multidex, so enable the support-library loader (see PlayerApp).
+        multiDexEnabled = true
     }
 
     buildTypes {
@@ -37,9 +43,20 @@ android {
         }
     }
 
+    // §6.1: APK MUST carry a v1 (JAR) signature or it won't install on <7.0
+    // ("应用未安装"). AGP enables v1 by default at minSdk 19, but pin it
+    // explicitly on the debug key both build types sign with, so a future
+    // minSdk bump or AGP default change can't silently drop v1.
+    signingConfigs.getByName("debug") {
+        enableV1Signing = true
+        enableV2Signing = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // §6/§6.1: desugar java.time/stream so they don't VerifyError on API 19.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -69,22 +86,23 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.lifecycle.service)
-    implementation(libs.androidx.security.crypto)
+    // §6: pre-21 multidex loader (minSdk 19 has no native multidex).
+    implementation(libs.androidx.multidex)
 
-    implementation(libs.media3.exoplayer)
-    implementation(libs.media3.ui)
-    implementation(libs.media3.common)
+    // §6 播放内核: media3 1.4 -> ExoPlayer 2.19.1 (com.google.android.exoplayer2.*).
+    // Umbrella artifact bundles core + ui; we only use the core player + a
+    // TextureView surface (no PlayerView), so ui is unused but harmless.
+    implementation(libs.exoplayer)
 
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
 
-    // §15 QR pairing: ZXing core (Apache-2.0) for decode/encode — pure Java,
-    // unit-testable on the JVM. CameraX drives the live preview/analysis on
-    // device (behind the PairingScanner interface; not exercised in CI).
+    // §15 pairing:被控端只**生成**二维码(显示本机 IP/device_id/group 供手机扫)。
+    // ZXing core 是纯 Java、兼容 4.4;摄像头扫码整套(CameraX)已按 §1 删除。
     implementation(libs.zxing.core)
-    implementation(libs.camera.camera2)
-    implementation(libs.camera.lifecycle)
-    implementation(libs.camera.view)
+
+    // §6/§6.1: java.time/stream backport for API 19.
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

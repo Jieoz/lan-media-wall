@@ -5,10 +5,10 @@ import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.view.TextureView
-import androidx.media3.common.MediaItem as ExoMediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import com.google.android.exoplayer2.MediaItem as ExoMediaItem
+import com.google.android.exoplayer2.PlaybackException
+import com.google.android.exoplayer2.Player
+import com.google.android.exoplayer2.ExoPlayer
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -23,7 +23,6 @@ import java.util.concurrent.atomic.AtomicInteger
  * service/WS threads can call freely. Read-only snapshots also marshal to main
  * and block briefly for the value.
  */
-@androidx.media3.common.util.UnstableApi
 class PlayerController(context: Context) {
 
     private val appContext = context.applicationContext

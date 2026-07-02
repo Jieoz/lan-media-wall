@@ -40,7 +40,6 @@ import com.jieoz.lanmediawall.player.media.PlayerController
  * shared [playerController] reference. If first-boot setup is incomplete it
  * bounces to [SettingsActivity].
  */
-@androidx.media3.common.util.UnstableApi
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding

@@ -36,7 +36,7 @@
 | NAS 预分发 | 媒体存 NAS(WebDAV/HTTP GET)，被控端断点续传缓存 + sha256 校验，本地秒开 |
 | 鉴权(可选,v1.1) | 三档 `auth_mode`:`open` 默认零配置免密钥 / `optional` / `required`(PSK + HMAC-SHA256)。msg_id 去重 + ts 时效在所有档位常开;可叠加 WSS |
 | 拓扑(可选,v1.1) | 三模式 `topology`:`dedicated` 独立 broker / `cohosted` 被控端兼职 broker(零额外机器)/ `p2p` 无 broker 纯直连(遥控端兼协调,适合 ≤8 台小场景) |
-| 二维码配对(v1.1;v1.4 Android 扫码端落地) | 遥控端生成 `lmw://pair?...` 二维码,Android 被控端设置页内置 CameraX+ZXing 扫码,免手输入组 |
+| 二维码配对(v1.1;v1.4.2 配置反转) | 无摄像头 TV 盒被控端**展示自己的** `lmw://pair?...` 二维码(首启/设置页),遥控端手机扫码入组,免手输;摄像头扫码栈按 minSdk 19 已整组删除 |
 | 派生密钥(v1.3) | `required`/`optional` 下各端不再共享 PSK:broker 持唯一 PSK,各端经配对二维码只拿到自己那把 `device_key = HMAC(PSK, 设备身份)`。攻破一台只暴露该台,伪造不了 broker 或别台。`key_mode` 协商 `derived`(默认)/`global`(兼容老端),部署体验与单 PSK 完全一致,零额外配置 |
 | 设备发现 | UDP 广播自动发现 + 手动 IP 直绑 + 上次清单持久化兜底;找不到 broker 自动退化 p2p |
 | 音频 | 组内可指定一台/多台出声，其余静音(默认全部出声) |
@@ -74,10 +74,24 @@
    ```
    记下 broker 的局域网 IP(如 `192.168.1.10`)和这把 `PSK`,全系统共用。
 2. **装被控端**(每块屏):装 Windows 安装包或 Android 被控端 APK。**默认 `open` 模式零配置**——同一局域网自动发现 broker 即可上线,无需手填密钥。需要鉴权时再切 `required` 并填同一把 PSK。
-3. **装遥控端**(手机/平板):装对应架构的遥控 APK(多数人选「新手机 ARM64」)。最省事的入组方式是**在遥控端生成配对二维码、被控端扫码**,免手输 IP/PSK;也可手动填 broker IP / 端口 / PSK。
+3. **装遥控端**(手机/平板):装对应架构的遥控 APK(多数人选「新手机 ARM64」)。最省事的入组方式是**用遥控端扫描被控端首启页展示的配对二维码**,免手输 IP/PSK;也可手动填 broker IP / 端口 / PSK。
 4. **播放**:控制页选分组 → 编辑 playlist(单文件或多文件轮播)→ 预缓存 → 一键同步播放;同组走三段握手同步起播,`sync=false` 则各播各的。
 
 > **安全说明(v1.1 默认开放,v1.3 派生密钥隔离)**:为最快上手,默认 `open` 模式**不验签**——同一局域网内任何人都能控制设备墙,仅适合可信内网。在不完全可信的网络请切到 `auth_mode: required` 启用 PSK + HMAC。**v1.3 起(`key_mode: derived`,默认)**:你仍只在 broker 配**一把 PSK**、各端照旧扫码入组,但二维码里装的是该端专属的 `device_key`(broker 用 PSK 现场派生),**各端不再持有 PSK**——任一被控端(常年裸放展厅)被导出密钥也只暴露它自己,伪造不了 broker 指令或别台设备。需要机密性时在 broker 放证书启用 WSS(8771)。
+
+### Android 被控端首启与开机自启(4.4+ 数字标牌)
+
+Android 被控端锁定 minSdk 19(Android 4.4.2),纯内网 kiosk。装机与自启务必按以下流程,否则「装不上」或「开机不自启」:
+
+1. **装内部存储**:`adb install -r LANMediaWall-<版本>-Player-Android.apk`(adb 默认装内部存储)。**切勿装到 SD 卡**——装 SD 卡收不到开机广播。
+2. **首启必须手动打开一次**:安卓 3.1+ 的 stopped-state 规则规定,APK 装后处于 stopped 状态,**从未被手动打开过就收不到 `BOOT_COMPLETED`**。所以流程必须是:装 → **手动打开一次**(完成首启配对)→ 之后开机才会自启。首启页顶部有中文提示。
+3. **配置反转(免手输)**:被控端(无摄像头 TV 盒)**不再扫码**,而是在首启页**展示自己的配对二维码**(含本机 LAN IP / device_id / 分组),用**遥控端手机扫这个码**入组。首启页也大字显示本机 IP / device_id / 分组,便于肉眼核对。
+4. **两种开机自启(默认只开模式1,互斥,绝不同时生效)**:
+   - **模式1(默认,推荐)**:`BootReceiver` 监听 `BOOT_COMPLETED`,开机后台拉起 `PlayerService` + 前台全屏播放,与盒子原桌面共存不冲突。`startForegroundService` 按 `Build.VERSION` 分支(<26 走 `startService`),4.4 原生可用。
+   - **模式2(兜底,默认关)**:设置页的「设为桌面」开关运行时启用一个默认禁用的 HOME `activity-alias`(`PackageManager.setComponentEnabledSetting`,4.4 可用),把本应用注册为 Launcher/HOME。仅当模式1 在某盒 ROM 失灵时再手动开,之后在系统里选本应用为默认桌面一次。
+5. **验证开机自启**:`adb reboot` 后跑 `adb logcat | grep BootReceiver`,看到 `boot self-start on android.intent.action.BOOT_COMPLETED (sdk=…)` 日志即自启成功。
+
+> **仅限内网**:被控端 PSK/device_key 以**明文 SharedPreferences** 存储(4.4 无 EncryptedSharedPreferences),默认 `auth_mode=open` 零配置直连。这在公网会是漏洞——**切勿把被控端暴露到公网**。首启页顶部亦有此中文警告。
 
 ### 目录结构
 
@@ -119,7 +133,7 @@ A LAN group-control system to centrally drive **~30** Windows / Android screens,
 
 ### Key features
 
-Synchronized playback via WS clock-offset handshake (no system NTP dependency) + three-phase handshake (prepare→ready→play_at), targeting ±50–100ms. Unified **group** model toggles sync vs independent; unified **playlist[]** model covers single-file and rotation. NAS pre-distribution (WebDAV/HTTP) with resumable cached downloads + sha256 verification. **Optional auth (v1.1)**: three `auth_mode` levels — `open` (zero-config, no key, default) / `optional` / `required` (PSK + HMAC-SHA256); msg_id dedup + ts window always on. **Topology modes (v1.1)**: `dedicated` / `cohosted` (a player doubles as the broker) / `p2p` (broker-less direct, controller coordinates — best for ≤8 screens). **QR pairing (v1.1)**: the controller renders an `lmw://pair?...` QR so players (esp. Android) join by scanning — no typing. **Per-device derived keys (v1.3)**: under `required`/`optional`, endpoints no longer share the PSK — the broker holds the single PSK and each endpoint receives only its own `device_key = HMAC(PSK, identity)` via the pairing QR. Compromising one screen exposes only that screen; it cannot forge the broker or other devices. `key_mode` negotiates `derived` (default) / `global` (legacy-compatible); deployment stays a single PSK with zero extra config. UDP discovery + manual IP binding, auto-falls back to p2p when no broker is found. Per-group audio master selection. Thumbnail device-wall preview. **Digital-signage kiosk (v1.4)**: Android true kiosk via Device Owner / Lock Task + boot auto-start, with an isolated hidden exit backdoor (top-left 7-tap or D-pad UP UP DOWN DOWN + PIN) for on-device debugging. **Hardware decode (v1.4)**: Windows mpv defaults to `--hwdec=auto-safe`; media cache gains LRU quota eviction. **Scan-to-pair now lands on Android (v1.4)**: the player Settings screen embeds a CameraX + ZXing scanner that reads the controller’s `lmw://pair?...` QR and auto-fills the connection. (Phase 2: OTA, remote reboot, power-loss resume, scheduling.)
+Synchronized playback via WS clock-offset handshake (no system NTP dependency) + three-phase handshake (prepare→ready→play_at), targeting ±50–100ms. Unified **group** model toggles sync vs independent; unified **playlist[]** model covers single-file and rotation. NAS pre-distribution (WebDAV/HTTP) with resumable cached downloads + sha256 verification. **Optional auth (v1.1)**: three `auth_mode` levels — `open` (zero-config, no key, default) / `optional` / `required` (PSK + HMAC-SHA256); msg_id dedup + ts window always on. **Topology modes (v1.1)**: `dedicated` / `cohosted` (a player doubles as the broker) / `p2p` (broker-less direct, controller coordinates — best for ≤8 screens). **QR pairing (v1.1)**: the controller renders an `lmw://pair?...` QR so players (esp. Android) join by scanning — no typing. **Per-device derived keys (v1.3)**: under `required`/`optional`, endpoints no longer share the PSK — the broker holds the single PSK and each endpoint receives only its own `device_key = HMAC(PSK, identity)` via the pairing QR. Compromising one screen exposes only that screen; it cannot forge the broker or other devices. `key_mode` negotiates `derived` (default) / `global` (legacy-compatible); deployment stays a single PSK with zero extra config. UDP discovery + manual IP binding, auto-falls back to p2p when no broker is found. Per-group audio master selection. Thumbnail device-wall preview. **Digital-signage kiosk (v1.4)**: Android true kiosk via Device Owner / Lock Task + boot auto-start, with an isolated hidden exit backdoor (top-left 7-tap or D-pad UP UP DOWN DOWN + PIN) for on-device debugging. **Hardware decode (v1.4)**: Windows mpv defaults to `--hwdec=auto-safe`; media cache gains LRU quota eviction. **Android 4.4 signage (v1.4.2)**: the player targets minSdk 19 (ExoPlayer 2.x, OkHttp 3.12, plain LAN-only prefs); the camera scan stack is removed and the camera-less TV box now **displays its own** `lmw://pair?...` QR for the controller to scan (configuration reversal). Boot auto-start branches on `Build.VERSION` (`startService` under API 26); a default-disabled HOME `activity-alias` is toggled at runtime for the kiosk-launcher fallback. (Phase 2: OTA, remote reboot, power-loss resume, scheduling.)
 
 See [`protocol_spec.md`](./protocol_spec.md) for the full wire protocol.
 
@@ -150,7 +164,7 @@ Each `v*` tag triggers CI to cloud-build all four ends and attach the binaries t
    ```
    Note the broker LAN IP (e.g. `192.168.1.10`) and this `PSK` — shared system-wide.
 2. **Install players** (each screen): run the Windows installer or the Android player APK. **Default `open` mode is zero-config** — players auto-discover the broker on the same LAN and come online with no key to type. Switch to `required` and set a shared PSK when you need auth.
-3. **Install the controller** (phone/tablet): install the arch-matching controller APK (most people want the modern ARM64 build). Easiest onboarding: **generate a pairing QR on the controller and scan it from the player** — no IP/PSK typing; or enter broker IP / port / PSK manually.
+3. **Install the controller** (phone/tablet): install the arch-matching controller APK (most people want the modern ARM64 build). Easiest onboarding: **scan the pairing QR the player shows on its first-boot screen** — no IP/PSK typing; or enter broker IP / port / PSK manually.
 4. **Play**: on the control page pick a group → edit a playlist (single file or multi-file rotation) → prefetch → one-tap synced play. Synced groups go through the three-phase handshake; `sync=false` plays each screen independently.
 
 > **Security note (v1.1 default is open)**: for fastest setup the default `open` mode does **no signature check** — anyone on the same LAN can control the wall. Use it only on trusted networks. On any less-trusted network switch to `auth_mode: required` for PSK + HMAC (the PSK then is the trust boundary), and enable WSS (8771) with certs for confidentiality.

@@ -2,8 +2,6 @@ package com.jieoz.lanmediawall.player
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import com.jieoz.lanmediawall.player.net.AuthMode
 import com.jieoz.lanmediawall.player.net.KeyMode
 import java.util.UUID
@@ -11,11 +9,11 @@ import java.util.UUID
 /**
  * Persistent device identity + connection settings (protocol_spec §4, §10).
  *
- * Two backing stores:
- *  - regular SharedPreferences for non-secret identity/config (device_id,
- *    device_name, group_id, broker host/port, intervals, flags);
- *  - EncryptedSharedPreferences (AES-256) for the PSK only — the §3 preshared
- *    key must not sit in plaintext on a kiosk device that could be picked up.
+ * §6/§7 (minSdk 19): the old EncryptedSharedPreferences (androidx.security-crypto,
+ * needs API 23+) is **removed** — it can't run on Android 4.4. Per §7 this is a
+ * LAN-only kiosk, so the PSK/device_key are stored in **plain** SharedPreferences.
+ * This is a deliberate security downgrade, valid only inside a trusted LAN; the
+ * README + first-boot page warn against public-internet use.
  *
  * device_id is generated once ("and-" + 10 hex) and persisted forever (§4.1).
  * device_name is settable on first boot (SettingsActivity) and persisted.
@@ -26,24 +24,9 @@ class Settings(context: Context) {
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private val securePrefs: SharedPreferences by lazy {
-        try {
-            val masterKey = MasterKey.Builder(appContext)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                appContext,
-                SECURE_PREFS,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
-        } catch (e: Exception) {
-            // Keystore unavailable (rare; e.g. corrupted) — degrade to plain
-            // prefs so the player still runs. Logged by caller.
-            appContext.getSharedPreferences(SECURE_FALLBACK, Context.MODE_PRIVATE)
-        }
-    }
+    // §7: single plain store for both config and (LAN-only) secrets. Kept as a
+    // named alias so the secret accessors below read as "this is the secret bag".
+    private val securePrefs: SharedPreferences get() = prefs
 
     val deviceId: String
         get() {
@@ -97,7 +80,7 @@ class Settings(context: Context) {
     /**
      * §17.4 derived mode: this end's own `device_key` (hex), received via the
      * pairing QR's `dk`. The end stores only this — never the PSK. Empty when not
-     * paired in derived mode. Secret → EncryptedSharedPreferences.
+     * paired in derived mode. §7: plain storage (LAN-only downgrade).
      */
     var deviceKeyHex: String
         get() = securePrefs.getString(KEY_DEVICE_KEY, "") ?: ""
@@ -107,7 +90,7 @@ class Settings(context: Context) {
      * §17.4 derived mode (forward-compat): the broker's `device_key` (hex),
      * received via the pairing QR's optional `bk`. Lets a dk-only end verify
      * broker downlink without the PSK. Empty when absent (today's QR omits it —
-     * see NOTES_TO_UPSTREAM §4). Secret → EncryptedSharedPreferences.
+     * see NOTES_TO_UPSTREAM §4). §7: plain storage (LAN-only downgrade).
      */
     var brokerKeyHex: String
         get() = securePrefs.getString(KEY_BROKER_KEY, "") ?: ""
@@ -197,8 +180,6 @@ class Settings(context: Context) {
 
     companion object {
         private const val PREFS = "lmw_settings"
-        private const val SECURE_PREFS = "lmw_secure"
-        private const val SECURE_FALLBACK = "lmw_secure_fallback"
 
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_NAME = "device_name"

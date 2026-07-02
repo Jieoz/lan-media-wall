@@ -200,7 +200,13 @@ class Downloader(
                 deleted++
                 // drop any cache entry pointing at the deleted file so a later
                 // prepare re-fetches it instead of trusting a dead path.
-                entries.entries.removeIf { it.value.path?.absolutePath == path }
+                // NB: MutableMap.entries.removeIf is API 24+ — use an explicit
+                // iterator so this is safe on API 19 (§6) without desugaring a
+                // platform collection method.
+                val it = entries.entries.iterator()
+                while (it.hasNext()) {
+                    if (it.next().value.path?.absolutePath == path) it.remove()
+                }
                 if (readyPaths.contains(path)) { /* was ready; entry pruned above */ }
             }
         }
@@ -248,7 +254,9 @@ class Downloader(
             RangeMath.rangeHeader(existing)?.let { builder.header("Range", it) }
 
             client.newCall(builder.build()).execute().use { resp ->
-                val code = resp.code
+                // okhttp 3.12: Response exposes code()/body()/header() as
+                // methods (okhttp 4 turned them into Kotlin properties).
+                val code = resp.code()
                 if (code != 200 && code != 206) {
                     fail(itemId, "http-$code")
                     return
@@ -263,7 +271,7 @@ class Downloader(
                 var downloaded = existing
                 set(itemId, state = "downloading", progress = RangeMath.percent(downloaded, total))
 
-                val body = resp.body ?: run { fail(itemId, "no-body"); return }
+                val body = resp.body() ?: run { fail(itemId, "no-body"); return }
                 val append = existing > 0
                 val out = java.io.FileOutputStream(part, append)
                 out.use { fos ->

@@ -19,6 +19,27 @@
             android:textSize="22sp"
             android:paddingBottom="16dp" />
 
+        <!-- §4.2/§7 first-boot notice: must open once manually (stopped-state
+             rule) + LAN-only warning. Shown big at the top so it isn't missed. -->
+        <TextView
+            android:id="@+id/text_first_boot_notice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/first_boot_notice"
+            android:textColor="@color/accent"
+            android:textSize="14sp"
+            android:paddingBottom="16dp" />
+
+        <!-- §2 zero-config status: LAN IP / device_id / group so the operator
+             can eyeball-verify this box before pairing. -->
+        <TextView
+            android:id="@+id/text_device_info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="13sp"
+            android:paddingBottom="12dp" />
+
         <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
         <EditText
             android:id="@+id/input_device_name"
@@ -68,14 +89,52 @@
             android:textColor="@color/white"
             android:text="@string/label_always_thumbs" />
 
-        <!-- §15 scan-to-pair: launches the CameraX QR scanner and auto-fills the
-             fields above from the decoded lmw://pair?… URI (no typing). -->
-        <Button
-            android:id="@+id/btn_scan_pair"
+        <!-- §1 configuration reversal: this camera-less TV box no longer scans.
+             It DISPLAYS its own enrollment QR (built by QrEncoder) so the phone
+             controller scans it. Shown with the LAN connection info below it. -->
+        <TextView
+            android:id="@+id/label_pair_qr"
+            style="@style/SettingLabel"
+            android:text="@string/label_pair_qr"
+            android:layout_marginTop="24dp" />
+
+        <ImageView
+            android:id="@+id/image_pair_qr"
+            android:layout_width="220dp"
+            android:layout_height="220dp"
+            android:layout_gravity="center_horizontal"
+            android:background="@color/white"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:contentDescription="@string/label_pair_qr" />
+
+        <TextView
+            android:id="@+id/text_pair_uri"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="11sp"
+            android:paddingTop="8dp"
+            android:gravity="center_horizontal" />
+
+        <!-- §4.1 mode 2 (fallback, default OFF): register as HOME/launcher via a
+             default-disabled activity-alias, toggled here at runtime with
+             PackageManager.setComponentEnabledSetting. Never on by default. -->
+        <CheckBox
+            android:id="@+id/input_set_as_home"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="@string/action_scan_pair" />
+            android:textColor="@color/white"
+            android:text="@string/label_set_as_home" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/hint_set_as_home"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingBottom="8dp" />
 
         <Button
             android:id="@+id/btn_save"

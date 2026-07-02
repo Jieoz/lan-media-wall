@@ -2,10 +2,15 @@
     <string name="app_name">LAN Media Wall</string>
     <string name="settings_title">Player Setup</string>
 
+    <!-- §4.2/§7 first-boot notice: stopped-state rule + LAN-only warning. -->
+    <string name="first_boot_notice">After installing, open this app once manually — otherwise Android won\'t deliver the boot broadcast and it won\'t auto-start after a reboot. LAN use only: do not expose this player to the public internet.</string>
+    <!-- §2 zero-config status line: LAN IP / device_id / group. -->
+    <string name="device_info_fmt">LAN IP: %1$s\nDevice ID: %2$s\nGroup: %3$s</string>
+
     <string name="label_device_name">Device name</string>
     <string name="hint_device_name">e.g. Lobby Left Screen</string>
-    <string name="label_broker_host">Broker host / IP</string>
-    <string name="hint_broker_host">192.168.1.10</string>
+    <string name="label_broker_host">Broker host / IP (optional)</string>
+    <string name="hint_broker_host">Leave empty for auto-discovery</string>
     <string name="label_broker_port">Broker port</string>
     <string name="hint_broker_port">8770</string>
     <string name="label_use_wss">Use secure WebSocket (WSS)</string>
@@ -16,11 +21,13 @@
     <string name="label_always_thumbs">Always send thumbnails</string>
     <string name="action_save">Save and start</string>
     <string name="action_settings">Settings</string>
-    <string name="action_scan_pair">Scan pairing QR</string>
-    <string name="scan_pair_hint">Point the camera at the pairing QR</string>
-    <string name="scan_pair_denied">Camera permission denied</string>
-    <string name="scan_pair_applied">Pairing applied</string>
-    <string name="scan_pair_invalid">Not a valid pairing QR</string>
+    <string name="err_broker_port">Broker port must be 1–65535</string>
+
+    <!-- §1 configuration reversal: this box shows its own pairing QR. -->
+    <string name="label_pair_qr">Pairing QR — scan with the controller</string>
+    <!-- §4.1 mode 2: set as home / launcher toggle (default off). -->
+    <string name="label_set_as_home">Set as home screen (kiosk fallback)</string>
+    <string name="hint_set_as_home">Off by default. Turn on only if boot auto-start fails on this box; you\'ll then pick this app as the default launcher once.</string>
 
     <string name="notif_channel_name">Media Wall Player</string>
     <string name="notif_title">LAN Media Wall</string>
