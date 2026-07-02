@@ -29,3 +29,19 @@
 **对 `bk` 提案的补充**:支持 windows_player 的 `bk` 增量字段。但需在 §17.4 写清 `bk` 的派生 identity 随拓扑变化(broker 拓扑→`"broker"`;p2p/cohost→协调端的 `controller:<id>`),否则零 PSK 端在 p2p 下仍验不了协调端帧。
 
 **请上游确认**:(1) controller 作为可信操作端保留 PSK 是否可接受(我已据此实现,全绿不阻塞);(2) `bk` 定义是否补上"派生 identity 随拓扑变化"。
+
+---
+
+## [端到端修复批次 20260702] P0-A 扫码依赖 / P0-B 图片加载库 / P0-C dwell 默认值 — 我的默认(待确认)
+
+### 1. [P0-A][flutter_controller] 消费 enroll QR:先做零依赖「粘贴链接」,扫码作可选增强
+现状:遥控端只有生成 QR(`qr_flutter`),无摄像头扫码/无消费 enroll 链接的入口 → 配对闭不了环。
+我的默认(已实现,不阻塞):在 `InviteScreen` 顶部加「添加设备(扫描/粘贴其二维码链接)」——一个 `TextField`+「从剪贴板粘贴」+「添加」。粘贴 `lmw://pair?host=...&id=...&name=...` → `PairUri.tryParse` → `WallState.addDeviceFromPairUri` → `Discovery.addManual(AnnounceInfo)` → 复用既有 `_evaluateTopology`→`_enterP2p` 直连路径(**没有新造配对逻辑**)。此路径零新增依赖,必然可编译可用。
+**未加摄像头扫码**:加 `mobile_scanner` 之类需要平台通道 + 相机权限,且我无法在本容器验证它在目标平台(尤其桌面/旧 Android)可编译。**请上游确认是否要引入扫码依赖**;要的话建议 `mobile_scanner`,并在 CI 增加桌面/Android 编译校验。当前「粘贴链接」已闭环,不阻塞。
+
+### 2. [P0-B][android_player] 图片渲染:用 Android 原生 `BitmapFactory`,不引入 Glide
+现状:图片和视频都走 ExoPlayer → 静态图放不出。
+我的默认(已实现):`type=="image"` 走原生 `BitmapFactory.decodeFile/Stream` 加载到覆盖在 TextureView 之上的 `ImageView`(布局新增 `player_image`),`type=="video"` 保持 ExoPlayer。切图片时暂停并隐藏 video、显示 image 层;切视频时反之。**未引入 Glide**——静态整屏图 + 已缓存本地文件用原生解码足够,零新增依赖、可跑在 4.4。若上游希望用 Glide(超大图降采样/动图)请示下,我再换。
+
+### 3. [P0-C] 图片 dwell 默认时长常量 = 5000ms(spec 未定义缺省)
+`duration_ms` 缺失时两端统一用 `DEFAULT_IMAGE_DWELL_MS = 5000`(Android/Windows 各定义一处常量)。控制端 UI 对图片强制要求填 `duration_ms`,故正常投放不会命中默认;默认仅为健壮性兜底。**请上游确认 5000ms 是否合适**,或是否要写进 spec §6.1。不阻塞。

@@ -2,14 +2,17 @@ package com.jieoz.lanmediawall.player.media
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.view.TextureView
+import android.widget.ImageView
 import com.google.android.exoplayer2.MediaItem as ExoMediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.ExoPlayer
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -30,11 +33,16 @@ class PlayerController(context: Context) {
 
     @Volatile private var player: ExoPlayer? = null
     @Volatile private var textureView: TextureView? = null
+    @Volatile private var imageView: ImageView? = null
     @Volatile private var lastError: String? = null
     private val thumbSeq = AtomicInteger(0)
 
     /** Called when ExoPlayer reports an unrecoverable error (watchdog hook). */
     @Volatile var onPlayerError: ((String) -> Unit)? = null
+
+    /** Called once when a non-looping video reaches its end (STATE_ENDED), so
+     *  the service can auto-advance the playlist (§6.3 carousel). */
+    @Volatile var onVideoEnded: (() -> Unit)? = null
 
     fun init() {
         runOnMain {
@@ -46,6 +54,12 @@ class PlayerController(context: Context) {
                 override fun onPlayerError(error: PlaybackException) {
                     lastError = error.errorCodeName
                     onPlayerError?.invoke(error.errorCodeName)
+                }
+
+                override fun onPlaybackStateChanged(state: Int) {
+                    // §6.3: a finished non-looping video hands control back so the
+                    // service advances. REPEAT_MODE_ONE loops never reach ENDED.
+                    if (state == Player.STATE_ENDED) onVideoEnded?.invoke()
                 }
             })
             player = p
@@ -60,10 +74,16 @@ class PlayerController(context: Context) {
         }
     }
 
+    /** Attach the ImageView used to draw `type=="image"` playlist items (§6.1). */
+    fun attachImageView(view: ImageView) {
+        runOnMain { imageView = view }
+    }
+
     fun detachSurface() {
         runOnMain {
             player?.clearVideoTextureView(textureView)
             textureView = null
+            imageView = null
         }
     }
 
@@ -71,6 +91,7 @@ class PlayerController(context: Context) {
     fun loadPaused(uri: String, seekMs: Long = 0, loop: Boolean = false) {
         runOnMain {
             val p = player ?: return@runOnMain
+            hideImage()
             p.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             p.setMediaItem(ExoMediaItem.fromUri(uri))
             p.playWhenReady = false
@@ -83,6 +104,7 @@ class PlayerController(context: Context) {
     fun loadAndPlay(uri: String, seekMs: Long = 0, loop: Boolean = false) {
         runOnMain {
             val p = player ?: return@runOnMain
+            hideImage()
             p.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             p.setMediaItem(ExoMediaItem.fromUri(uri))
             p.prepare()
@@ -94,10 +116,43 @@ class PlayerController(context: Context) {
     fun play() = runOnMain { player?.playWhenReady = true }
     fun pause() = runOnMain { player?.playWhenReady = false }
 
+    /**
+     * §6.1 image item: decode a local file (or file:// path) and show it on the
+     * ImageView above the video surface, pausing + hiding the video so a still
+     * actually appears (ExoPlayer can't render one). No-op if the ImageView
+     * isn't attached yet (no kiosk Activity foregrounded).
+     */
+    fun showImage(path: String) = runOnMain {
+        val iv = imageView ?: return@runOnMain
+        val file = File(path.removePrefix("file://"))
+        val bmp = try {
+            BitmapFactory.decodeFile(file.absolutePath)
+        } catch (e: Exception) {
+            lastError = "image-decode:${e.javaClass.simpleName}"
+            null
+        }
+        if (bmp == null) {
+            onPlayerError?.invoke("image-decode-failed")
+            return@runOnMain
+        }
+        player?.playWhenReady = false
+        iv.setImageBitmap(bmp)
+        iv.visibility = ImageView.VISIBLE
+    }
+
+    /** Hide the image layer (called when switching back to video). */
+    fun hideImage() = runOnMain {
+        imageView?.let {
+            it.visibility = ImageView.GONE
+            it.setImageDrawable(null)
+        }
+    }
+
     fun stop() = runOnMain {
         val p = player ?: return@runOnMain
         p.stop()
         p.clearMediaItems()
+        hideImage()
     }
 
     fun seekTo(ms: Long) = runOnMain { player?.seekTo(ms) }

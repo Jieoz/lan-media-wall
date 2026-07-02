@@ -135,6 +135,30 @@ class WallState extends ChangeNotifier {
 
   Uint8List? thumbOf(String deviceId) => _thumbs[deviceId];
 
+  /// 消费被控端出示的 enroll 配对 URI（§15 反向）：被控端(TV 盒/Windows)无摄像头，
+  /// **出示** `lmw://pair?host=<自身IP>&port=<p2p>&id=<device_id>&name=<名>&mode=open`，
+  /// 由遥控端扫码/粘贴消费。本方法解析该 URI，把该端登记进发现清单——等价于一次
+  /// 成功的 UDP 发现，随后 [_evaluateTopology] 自动对其建立 p2p 直连(§14.5)，
+  /// 走的是与自动发现完全相同的一条入组路径，不新造配对逻辑。
+  ///
+  /// 返回解析出的设备名(用于 UI 提示)；URI 非法或缺 host 时返回 null。
+  String? addDeviceFromPairUri(String raw) {
+    final uri = PairUri.tryParse(raw);
+    if (uri == null || uri.connHost.isEmpty) return null;
+    // enroll URI 的 `id` 即被控端 device_id；缺失时用 host:port 兜底成稳定键。
+    final deviceId = (uri.id != null && uri.id!.isNotEmpty)
+        ? uri.id!
+        : '${uri.connHost}:${uri.port}';
+    final name =
+        (uri.name != null && uri.name!.isNotEmpty) ? uri.name! : deviceId;
+    _discovery.addManual(AnnounceInfo(
+      deviceId: deviceId,
+      deviceName: name,
+      ip: uri.connHost,
+    ));
+    return name;
+  }
+
   DeviceStatus? deviceById(String id) {
     for (final d in _wall.devices) {
       if (d.deviceId == id) return d;

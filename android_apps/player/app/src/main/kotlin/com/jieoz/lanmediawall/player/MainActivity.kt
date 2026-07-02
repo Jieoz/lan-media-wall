@@ -73,6 +73,9 @@ class MainActivity : AppCompatActivity() {
         val ctl = PlayerController(applicationContext).also { it.init() }
         ctl.currentVolumePercent = settings.volume
         ctl.attachSurface(binding.videoSurface)
+        // §6.1: the image layer for type=="image" playlist items. Without this
+        // PlayerController.showImage() is a no-op (imageView stays null).
+        ctl.attachImageView(binding.playerImage)
         playerController = ctl
         instance = this
 

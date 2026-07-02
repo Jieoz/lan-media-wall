@@ -65,6 +65,10 @@ except Exception:  # pragma: no cover
 
 VALID_STATES = {"playing", "paused", "idle", "buffering", "downloading"}
 
+# §6.3: default per-image dwell when a playlist item omits duration_ms (kept in
+# sync with the Android player's DEFAULT_IMAGE_DWELL_MS).
+DEFAULT_IMAGE_DWELL_MS = 5000
+
 
 class Player:
     def __init__(self, cfg: config_mod.Config, *, cohost: Optional[bool] = None):
@@ -111,6 +115,9 @@ class Player:
         self._errors: List[str] = []
 
         self._play_task: Optional[asyncio.Task] = None
+        # §6.3 carousel: pending "hold this image for duration_ms, then advance"
+        # timer. Cancelled by any new prepare/play_at/advance/stop.
+        self._dwell_task: Optional[asyncio.Task] = None
         self._cache_dirty = asyncio.Event()
 
         # OS-coupled subsystems (created in start())
@@ -458,6 +465,7 @@ class Player:
         seek_ms = int(payload.get("seek_ms", 0))
         pl = self._resolve_playlist(pid)
         ready = False
+        self._cancel_dwell()  # §6.3: a new session voids any pending dwell
         if pl is not None:
             items = pl.get("items", [])
             if 0 <= start_index < len(items):
@@ -466,7 +474,11 @@ class Player:
                 self.index = start_index
                 if self.downloader.is_ready(item["item_id"]):
                     path = str(self.downloader.ready_path(item["item_id"]))
-                    await self._mpv("play_paused", path, seek_ms=seek_ms)
+                    # §6.1: an image has no decoder to prime — it's shown at the
+                    # sync instant (play_at). A video primes paused so play_at
+                    # just flips pause off.
+                    if item.get("type") != "image":
+                        await self._mpv("play_paused", path, seek_ms=seek_ms)
                     self.play_state = "buffering"
                     ready = True
                 else:
@@ -500,21 +512,36 @@ class Player:
         if path is None:
             self._errors.append("play_at-no-source")
             return
-        # cancel any pending scheduled start
+        # cancel any pending scheduled start / image dwell
         if self._play_task and not self._play_task.done():
             self._play_task.cancel()
+        self._cancel_dwell()
         self._persist_last_task(pid, start_index, seek_ms)
         self._play_task = asyncio.create_task(
             self._scheduled_start(str(path), seek_ms, play_at, item))
 
     async def _scheduled_start(self, path: str, seek_ms: int, play_at: int,
                                item: Dict[str, Any]) -> None:
-        """§8.2 fold play_at (master clock) → local target, prime paused, then
-        unpause at the exact local instant."""
-        # ensure file is loaded & paused at seek (idempotent if prepare did it)
+        """§8.2 fold play_at (master clock) → local target, then start. A video
+        is primed paused and unpaused at the instant; an image is shown at the
+        instant and its dwell armed so the carousel advances (§6.3)."""
+        if item.get("type") == "image":
+            await self._await_local(self.clock.to_local(play_at))
+            await self._mpv("show_image", path)
+            self.play_state = "playing"
+            self._arm_dwell(item)
+            return
+        # video: ensure file is loaded & paused at seek (idempotent if prepare
+        # did it), then unpause at the exact local instant.
         await self._mpv("play_paused", path, seek_ms=seek_ms)
-        local_target = self.clock.to_local(play_at)
-        # busy-wait the final stretch for sub-100ms accuracy; coarse-sleep first
+        await self._await_local(self.clock.to_local(play_at))
+        await self._mpv("set_pause", False)
+        self.play_state = "playing"
+        log.info("play_at fired: now=%d offset=%d", now_ms(), self.clock.offset_ms)
+
+    async def _await_local(self, local_target: int) -> None:
+        """Busy-wait the final stretch for sub-100ms accuracy; coarse-sleep
+        first (§8.2)."""
         while True:
             remaining = local_target - now_ms()
             if remaining <= 0:
@@ -526,10 +553,6 @@ class Player:
                 while local_target - now_ms() > 0:
                     pass
                 break
-        await self._mpv("set_pause", False)
-        self.play_state = "playing"
-        log.info("play_at fired: target_local=%d now=%d offset=%d",
-                 local_target, now_ms(), self.clock.offset_ms)
 
     # --- §9.3 controls -----------------------------------------------
     async def _h_pause(self, payload, env) -> None:
@@ -554,6 +577,7 @@ class Player:
             return
         if self._play_task and not self._play_task.done():
             self._play_task.cancel()
+        self._cancel_dwell()
         await self._mpv("stop")
         self._apply_idle_screen()
         self.play_state = "idle"
@@ -575,6 +599,7 @@ class Player:
         items = self.playlist.get("items", [])
         if not items:
             return
+        self._cancel_dwell()  # §6.3: never let dwell timers stack
         loop = bool(self.playlist.get("loop", False))
         new_index = self.index + delta
         if new_index < 0 or new_index >= len(items):
@@ -585,12 +610,64 @@ class Player:
         self.index = new_index
         item = items[new_index]
         path = self.downloader.ready_path(item["item_id"]) or item.get("url")
-        if path:
+        if not path:
+            return
+        # §6.1: an image is shown + its dwell armed; a video is loaded and the
+        # eof watch loop auto-advances it on end.
+        if item.get("type") == "image":
+            await self._mpv("show_image", str(path))
+            self.play_state = "playing"
+            self._arm_dwell(item)
+        else:
             await self._mpv("loadfile", str(path), "replace")
             await self._mpv("set_pause", False)
             self.play_state = "playing"
-            self._persist_last_task(self.playlist.get("playlist_id"),
-                                    new_index, 0)
+        self._persist_last_task(self.playlist.get("playlist_id"),
+                                new_index, 0)
+
+    # --- §6.3 automatic progression (image dwell + video eof) --------
+    def _cancel_dwell(self) -> None:
+        if self._dwell_task and not self._dwell_task.done():
+            self._dwell_task.cancel()
+        self._dwell_task = None
+
+    def _arm_dwell(self, item: Dict[str, Any]) -> None:
+        """Hold the current image for its duration_ms (default
+        DEFAULT_IMAGE_DWELL_MS) then step forward (§6.3)."""
+        self._cancel_dwell()
+        dwell = item.get("duration_ms") or DEFAULT_IMAGE_DWELL_MS
+        self._dwell_task = asyncio.create_task(self._dwell_then_advance(int(dwell)))
+
+    async def _dwell_then_advance(self, dwell_ms: int) -> None:
+        try:
+            await asyncio.sleep(max(0, dwell_ms) / 1000.0)
+        except asyncio.CancelledError:
+            return
+        await self._advance(+1)
+
+    async def eof_watch_loop(self) -> None:
+        """§6.3: a non-looping video that reaches its end has no external nudge
+        to advance — mpv holds the last frame (--keep-open=yes). Poll
+        `eof-reached` while a video plays and step forward once when it flips.
+        Images use --image-display-duration=inf and never reach eof, so they're
+        driven solely by the dwell timer."""
+        seen_eof = False
+        while True:
+            await asyncio.sleep(0.5)
+            if self.play_state != "playing" or self.mpv is None:
+                seen_eof = False
+                continue
+            item = self._current_item()
+            if item is None or item.get("type") == "image":
+                seen_eof = False
+                continue
+            snap = await self._mpv("snapshot") or {}
+            if snap.get("eof"):
+                if not seen_eof:
+                    seen_eof = True
+                    await self._advance(+1)
+            else:
+                seen_eof = False
 
     async def _h_set_volume(self, payload, env) -> None:
         if not self._targets_me(payload):
@@ -685,10 +762,16 @@ class Player:
         if not path:
             self._apply_idle_screen()
             return
-        await self._mpv("loadfile", str(path), "replace")
-        await self._mpv("seek_abs_ms", int(task.get("seek_ms", 0)))
+        self._cancel_dwell()
         await self._mpv("set_volume", int(task.get("volume", self.volume)))
         await self._mpv("set_mute", bool(task.get("muted", self.muted)))
+        if item.get("type") == "image":
+            await self._mpv("show_image", str(path))
+            self.play_state = "playing"
+            self._arm_dwell(item)
+            return
+        await self._mpv("loadfile", str(path), "replace")
+        await self._mpv("seek_abs_ms", int(task.get("seek_ms", 0)))
         await self._mpv("set_pause", False)
         self.play_state = "playing"
 
@@ -732,6 +815,7 @@ class Player:
             asyncio.create_task(self.status_loop(), name="status"),
             asyncio.create_task(self.thumbnail_loop(), name="thumb"),
             asyncio.create_task(self.kiosk_loop(), name="kiosk"),
+            asyncio.create_task(self.eof_watch_loop(), name="eof"),
         ]
         try:
             await asyncio.gather(*tasks)

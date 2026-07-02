@@ -22,6 +22,7 @@ class _InviteScreenState extends State<InviteScreen> {
   final _group = TextEditingController(text: 'lobby');
   final _host = TextEditingController();
   final _invitee = TextEditingController();
+  final _enroll = TextEditingController();
   bool _hostLoaded = false;
 
   @override
@@ -29,7 +30,25 @@ class _InviteScreenState extends State<InviteScreen> {
     _group.dispose();
     _host.dispose();
     _invitee.dispose();
+    _enroll.dispose();
     super.dispose();
+  }
+
+  /// 消费被控端出示的 enroll 链接：粘贴/输入 `lmw://pair?...` → 解析 → 登记设备。
+  void _addFromEnroll(WallState state) {
+    final raw = _enroll.text.trim();
+    if (raw.isEmpty) return;
+    final name = state.addDeviceFromPairUri(raw);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    if (name == null) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('链接无效：需形如 lmw://pair?host=...&id=...')));
+      return;
+    }
+    _enroll.clear();
+    setState(() {});
+    messenger.showSnackBar(SnackBar(content: Text('已添加设备「$name」，正在连接…')));
   }
 
   @override
@@ -59,6 +78,19 @@ class _InviteScreenState extends State<InviteScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          _AddDeviceSection(
+            controller: _enroll,
+            onAdd: () => _addFromEnroll(state),
+            onPaste: () async {
+              final data = await Clipboard.getData(Clipboard.kTextPlain);
+              final txt = data?.text?.trim() ?? '';
+              if (txt.isNotEmpty) {
+                _enroll.text = txt;
+                setState(() {});
+              }
+            },
+          ),
+          const SizedBox(height: 20),
           _ModeBanner(mode: state.authMode),
           const SizedBox(height: 12),
           TextField(
@@ -142,6 +174,71 @@ class _InviteScreenState extends State<InviteScreen> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// 添加设备:粘贴/输入被控端出示的 enroll 链接(`lmw://pair?...`)→ 登记为 p2p 目标。
+/// 这是配对闭环里遥控端**消费**被控端二维码的零依赖路径(§15 反向)。
+class _AddDeviceSection extends StatelessWidget {
+  const _AddDeviceSection({
+    required this.controller,
+    required this.onAdd,
+    required this.onPaste,
+  });
+  final TextEditingController controller;
+  final VoidCallback onAdd;
+  final VoidCallback onPaste;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.add_link),
+                const SizedBox(width: 8),
+                Text('添加设备(扫描/粘贴其二维码链接)',
+                    style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '被控端(TV 盒/Windows)开机会出示自己的 lmw:// 二维码。'
+              '把链接粘贴到这里点「添加」即可把它加进设备墙。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              minLines: 1,
+              maxLines: 2,
+              decoration: InputDecoration(
+                labelText: 'lmw://pair?host=...&id=...',
+                prefixIcon: const Icon(Icons.qr_code_scanner),
+                suffixIcon: IconButton(
+                  tooltip: '从剪贴板粘贴',
+                  icon: const Icon(Icons.content_paste),
+                  onPressed: onPaste,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('添加'),
+                onPressed: onAdd,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

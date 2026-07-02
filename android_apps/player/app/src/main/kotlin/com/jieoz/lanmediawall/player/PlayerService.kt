@@ -88,6 +88,9 @@ class PlayerService : Service() {
     private val errors = java.util.concurrent.ConcurrentLinkedDeque<String>()
 
     private val scheduledStart = AtomicReference<Job?>(null)
+    /** §6.3 carousel: pending "hold this image for duration_ms, then advance"
+     *  timer. Cancelled by any new prepare/play_at/advance/stop. */
+    private val dwellTimer = AtomicReference<Job?>(null)
     private var deviceIp = "0.0.0.0"
 
     val controllerRef: PlayerController? get() = MainActivity.playerController
@@ -555,6 +558,7 @@ class PlayerService : Service() {
         val seekMs = payload["seek_ms"].asLongOrNull() ?: 0L
         val pl = resolvePlaylist(pid)
         var ready = false
+        dwellTimer.getAndSet(null)?.cancel() // §6.3: a new session voids any dwell
         if (pl != null && startIndex in pl.items.indices) {
             val item = pl.items[startIndex]
             playlist = pl
@@ -565,7 +569,12 @@ class PlayerService : Service() {
                 readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
                 val path = readyFile?.absolutePath
                 if (path != null) {
-                    controllerRef?.loadPaused(path, seekMs, pl.loop)
+                    // §6.1: an image has no decoder to prime — it's shown at the
+                    // sync instant (play_at → scheduledStart). A video primes
+                    // paused so play_at just flips playWhenReady on.
+                    if (item.type != "image") {
+                        controllerRef?.loadPaused(path, seekMs, singleLoop(pl))
+                    }
                     playState = "buffering"
                     ready = true
                 }
@@ -599,17 +608,37 @@ class PlayerService : Service() {
         readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
         val source = readyFile?.absolutePath ?: item.url
         scheduledStart.getAndSet(null)?.cancel()
+        dwellTimer.getAndSet(null)?.cancel() // §6.3: new session voids any dwell
         persistLastTask(pid!!, startIndex, seekMs)
-        val job = scope.launch { scheduledStart(source, seekMs, playAt, pl.loop) }
+        val job = scope.launch { scheduledStart(source, seekMs, playAt, pl, item) }
         scheduledStart.set(job)
     }
 
-    private suspend fun scheduledStart(uri: String, seekMs: Long, playAt: Long, loop: Boolean) {
+    private suspend fun scheduledStart(uri: String, seekMs: Long, playAt: Long,
+                                       pl: Playlist, item: MediaItem) {
         val ctl = controllerRef ?: return
-        // prime paused at seek (idempotent if prepare already did it)
-        ctl.loadPaused(uri, seekMs, loop)
-        val localTarget = clock.toLocal(playAt) // §8.2 fold master → local
-        // coarse sleep, then tight spin the last few ms for ±50–100ms accuracy
+        if (item.type == "image") {
+            // §6.1/§6.3: nothing to prime — wait for the sync instant, then show
+            // the still and start its dwell so the carousel advances.
+            awaitLocal(clock.toLocal(playAt))
+            ctl.showImage(uri)
+            playState = "playing"
+            MainActivity.instance?.hideIdle()
+            armDwell(item)
+            return
+        }
+        // video: prime paused at seek (idempotent if prepare already did it),
+        // arm end-of-video auto-advance, then unpause at the sync instant.
+        ctl.onVideoEnded = { onCurrentEnded() }
+        ctl.loadPaused(uri, seekMs, singleLoop(pl))
+        awaitLocal(clock.toLocal(playAt)) // §8.2 fold master → local
+        ctl.play()
+        playState = "playing"
+        MainActivity.instance?.hideIdle()
+    }
+
+    /** §8.2: coarse-sleep, then tight-spin the last few ms for ±50–100ms sync. */
+    private suspend fun awaitLocal(localTarget: Long) {
         while (scope.isActive) {
             val remaining = localTarget - System.currentTimeMillis()
             if (remaining <= 0) break
@@ -620,9 +649,6 @@ class PlayerService : Service() {
                 break
             }
         }
-        ctl.play()
-        playState = "playing"
-        MainActivity.instance?.hideIdle()
     }
 
     // --- §9.3 controls -----------------------------------------------
@@ -654,6 +680,7 @@ class PlayerService : Service() {
     private fun hStop(payload: Json.Obj) {
         if (!targetsMe(payload)) return
         scheduledStart.getAndSet(null)?.cancel()
+        dwellTimer.getAndSet(null)?.cancel()
         controllerRef?.stop()
         playState = "idle"
         persistLastTaskNull()
@@ -662,8 +689,20 @@ class PlayerService : Service() {
 
     private fun hAdvance(payload: Json.Obj, delta: Int) {
         if (!targetsMe(payload)) return
+        advance(delta)
+    }
+
+    /**
+     * §6.3 carousel step. Shared by external next/prev and the automatic
+     * progressors (image dwell timer, video end-of-media). Moves [index] by
+     * [delta] (wrapping when the playlist loops), then plays the new item:
+     * an image is shown + its dwell armed; a video is loaded and auto-advances
+     * on end. Any pending dwell is cancelled first so timers never stack.
+     */
+    private fun advance(delta: Int) {
         val pl = playlist ?: return
         if (pl.items.isEmpty()) return
+        dwellTimer.getAndSet(null)?.cancel()
         var newIndex = index + delta
         if (newIndex < 0 || newIndex >= pl.items.size) {
             if (pl.loop) newIndex = ((newIndex % pl.items.size) + pl.items.size) % pl.items.size
@@ -674,11 +713,40 @@ class PlayerService : Service() {
         val readyFile = downloader.readyPath(item.itemId)
         readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
         val source = readyFile?.absolutePath ?: item.url
-        controllerRef?.loadAndPlay(source, 0, pl.loop)
+        val ctl = controllerRef
+        if (item.type == "image") {
+            ctl?.showImage(source)
+            armDwell(item)
+        } else {
+            ctl?.onVideoEnded = { onCurrentEnded() }
+            ctl?.loadAndPlay(source, 0, singleLoop(pl))
+        }
         playState = "playing"
         persistLastTask(pl.playlistId, newIndex, 0)
         MainActivity.instance?.hideIdle()
     }
+
+    /** §6.3: hold the current image for its duration_ms (default
+     *  [DEFAULT_IMAGE_DWELL_MS]) then step forward. */
+    private fun armDwell(item: MediaItem) {
+        val dwell = item.durationMs?.takeIf { it > 0 } ?: DEFAULT_IMAGE_DWELL_MS
+        val job = scope.launch {
+            delay(dwell)
+            if (isActive) advance(+1)
+        }
+        dwellTimer.getAndSet(job)?.cancel()
+    }
+
+    /** §6.3: a non-looping video finished (ExoPlayer STATE_ENDED) → step
+     *  forward. Fired on the main thread, so hop to a coroutine for the I/O. */
+    private fun onCurrentEnded() {
+        scope.launch { advance(+1) }
+    }
+
+    /** §6.3 loop semantics: only a *single-item* looping playlist maps to
+     *  ExoPlayer's REPEAT_MODE_ONE. A multi-item loop must reach STATE_ENDED so
+     *  we can advance + wrap; REPEAT_MODE_ONE would freeze it on item 0. */
+    private fun singleLoop(pl: Playlist): Boolean = pl.loop && pl.items.size == 1
 
     private fun hSetVolume(payload: Json.Obj) {
         if (!targetsMe(payload)) return
@@ -796,6 +864,7 @@ class PlayerService : Service() {
         playlist = pl
         index = task.index
         updateCacheProtection(pl)
+        dwellTimer.getAndSet(null)?.cancel()
         val item = pl.items[task.index]
         val readyFile = downloader.readyPath(item.itemId)
         readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
@@ -803,7 +872,13 @@ class PlayerService : Service() {
         settings.volume = task.volume
         settings.muted = task.muted
         ctl?.currentVolumePercent = task.volume
-        ctl?.loadAndPlay(source, task.seekMs, pl.loop)
+        if (item.type == "image") {
+            ctl?.showImage(source)
+            armDwell(item)
+        } else {
+            ctl?.onVideoEnded = { onCurrentEnded() }
+            ctl?.loadAndPlay(source, task.seekMs, singleLoop(pl))
+        }
         ctl?.setVolume(task.volume)
         ctl?.setMuted(task.muted)
         playState = "playing"
@@ -816,6 +891,8 @@ class PlayerService : Service() {
         private const val NOTIF_ID = 1001
 
         private val VALID_STATES = setOf("playing", "paused", "idle", "buffering", "downloading")
+        /** §6.3: default per-image dwell when a playlist item omits duration_ms. */
+        private const val DEFAULT_IMAGE_DWELL_MS = 5000L
         private val ACKABLE = setOf(
             "prepare", "pause", "resume", "stop", "next", "prev",
             "set_volume", "set_mute", "set_audio_master", "assign_group",

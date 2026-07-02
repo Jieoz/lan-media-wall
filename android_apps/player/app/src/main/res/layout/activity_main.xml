@@ -12,6 +12,18 @@
         android:layout_height="match_parent"
         android:layout_gravity="center" />
 
+    <!-- Image surface (§6.1 type=="image"). ExoPlayer can't render a still, so
+         image playlist items draw here, above the video surface. Hidden while
+         video plays; shown (video paused) while an image is on screen. -->
+    <ImageView
+        android:id="@+id/player_image"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/black"
+        android:scaleType="fitCenter"
+        android:visibility="gone"
+        android:contentDescription="@string/idle_text" />
+
     <!-- Idle / stop placeholder: pure black with a faint label. Shown above
          the surface when nothing plays so the desktop is never visible (§11). -->
     <FrameLayout

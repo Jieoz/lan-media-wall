@@ -1,0 +1,14 @@
+python_dirs: [broker, windows_player]
+pytest_suites:
+  - [broker/tests]
+  - [windows_player/tests]
+  - [broker/tests, windows_player/tests]
+kotlin_src: android_apps/player/app/src/main/kotlin
+android_res: android_apps/player/app/src/main/res
+required_wired:
+  - {symbol: showImage, defined_in: "**/PlayerController.kt", called_in: "**/PlayerService.kt"}
+  - {symbol: onVideoEnded, defined_in: "**/PlayerController.kt", called_in: "**/PlayerService.kt"}
+  - {symbol: attachImageView, defined_in: "**/PlayerController.kt", called_in: "**/MainActivity.kt"}
+dart_dirs: [remote_flutter]
+contract_keys:
+  - {key: key_mode, files: ["broker/broker.py", "windows_player/main.py"]}

@@ -1,4 +1,4 @@
-"""mpv control via JSON IPC (§9, §11).
+r"""mpv control via JSON IPC (§9, §11).
 
 We drive a real mpv.exe over its JSON IPC channel:
   - Windows: named pipe  \\.\pipe\lmw-mpv   (--input-ipc-server=...)

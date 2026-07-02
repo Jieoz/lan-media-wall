@@ -99,6 +99,17 @@ class Discovery {
     onDevices?.call(devices);
   }
 
+  /// 手动登记一台被控端(扫码/粘贴其 enroll `lmw://` URI，§15 反向)。
+  /// 等价于一次成功的 UDP 发现：并入清单、持久化、通知 —— 随后 [WallState]
+  /// 的拓扑评估会自动对其建立 p2p 直连。deviceId 为空时忽略。
+  void addManual(AnnounceInfo info) {
+    if (info.deviceId.isEmpty) return;
+    _devices[info.deviceId] = info;
+    _log('手动添加设备 ${info.deviceName}(${info.ip})');
+    _persist();
+    onDevices?.call(devices);
+  }
+
   Future<void> _loadCached() async {
     try {
       final prefs = await SharedPreferences.getInstance();
