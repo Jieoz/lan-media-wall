@@ -82,10 +82,12 @@ jobs:
             echo "android/ already present — skipping scaffold."
           fi
 
-      # mobile_scanner needs CAMERA permission + minSdkVersion 21. android/ is
-      # generated fresh above (not in the repo), so these can't live in a static
-      # manifest/gradle — inject them here, idempotently. §15 扫码入口的落地依赖。
-      - name: Inject camera permission + minSdk for mobile_scanner
+      # mobile_scanner needs CAMERA permission + minSdkVersion 21, and its
+      # transitive CameraX 1.3.1 (androidx.camera:camera-core 等) requires
+      # compileSdk >= 34. android/ is generated fresh above (not in the repo),
+      # so none of these can live in a static manifest/gradle — inject them
+      # here, idempotently. §15 扫码入口的落地依赖。
+      - name: Inject camera permission + minSdk + compileSdk for mobile_scanner
         working-directory: remote_flutter
         shell: bash
         run: |
@@ -100,18 +102,38 @@ jobs:
           fi
           # minSdkVersion 21：Flutter 新脚手架用 build.gradle(.kts) 里的
           # `minSdk = flutter.minSdkVersion` 占位；mobile_scanner 3.5 要求 21。
-          # 覆盖为字面量 21（幂等：已是 21 就跳过）。兼容 Groovy/KTS 两种写法。
+          # compileSdk 35：CameraX 1.3.1（mobile_scanner 传递依赖）的 AAR
+          # metadata 要求 compileSdk >= 34，脚手架默认的 flutter.compileSdkVersion
+          # 在旧 Flutter runner 上可能仍解析成 33，导致
+          # `:mobile_scanner:checkReleaseAarMetadata` 失败。这里统一覆盖为字面量
+          # 35（>=34），兼容 Groovy/KTS 两种写法，并打印 patch 后的行用于日志核对。
           for GRADLE in android/app/build.gradle android/app/build.gradle.kts; do
             [ -f "$GRADLE" ] || continue
+            # --- minSdk -> 21（幂等：已是 21 就跳过覆盖） ---
             if grep -Eq 'minSdk(Version)?\s*[= ]\s*21' "$GRADLE"; then
-              echo "$GRADLE already minSdk 21"; continue
+              echo "$GRADLE already minSdk 21"
+            else
+              # Groovy: `minSdkVersion flutter.minSdkVersion` / `minSdk flutter.minSdkVersion`
+              sed -i -E 's#(minSdk(Version)?)[[:space:]]+flutter\.minSdkVersion#\1 21#' "$GRADLE"
+              # KTS: `minSdk = flutter.minSdkVersion`
+              sed -i -E 's#(minSdk[[:space:]]*=[[:space:]]*)flutter\.minSdkVersion#\121#' "$GRADLE"
+              echo "patched $GRADLE minSdk -> 21"
             fi
-            # Groovy: `minSdkVersion flutter.minSdkVersion` / `minSdk flutter.minSdkVersion`
-            sed -i -E 's#(minSdk(Version)?)[[:space:]]+flutter\.minSdkVersion#\1 21#' "$GRADLE"
-            # KTS: `minSdk = flutter.minSdkVersion`
-            sed -i -E 's#(minSdk[[:space:]]*=[[:space:]]*)flutter\.minSdkVersion#\121#' "$GRADLE"
-            echo "patched $GRADLE minSdk -> 21"
-            grep -nE 'minSdk' "$GRADLE" || true
+            # --- compileSdk -> 35（幂等：已 >=34 的字面量就跳过覆盖） ---
+            if grep -Eq 'compileSdk(Version)?\s*[= ]\s*(3[4-9]|[4-9][0-9])' "$GRADLE"; then
+              echo "$GRADLE already compileSdk >= 34"
+            else
+              # Groovy: `compileSdkVersion flutter.compileSdkVersion` / `compileSdk flutter.compileSdkVersion`
+              sed -i -E 's#(compileSdk(Version)?)[[:space:]]+flutter\.compileSdkVersion#\1 35#' "$GRADLE"
+              # Groovy 旧写法可能是字面量 `compileSdkVersion 33` / `compileSdk 33`
+              sed -i -E 's#(compileSdk(Version)?)[[:space:]]+[0-9]+#\1 35#' "$GRADLE"
+              # KTS: `compileSdk = flutter.compileSdkVersion` 或 `compileSdk = 33`
+              sed -i -E 's#(compileSdk[[:space:]]*=[[:space:]]*)flutter\.compileSdkVersion#\135#' "$GRADLE"
+              sed -i -E 's#(compileSdk[[:space:]]*=[[:space:]]*)[0-9]+#\135#' "$GRADLE"
+              echo "patched $GRADLE compileSdk -> 35"
+            fi
+            echo "--- $GRADLE minSdk/compileSdk after patch ---"
+            grep -nE 'minSdk|compileSdk' "$GRADLE" || true
           done
 
       - name: Pub get

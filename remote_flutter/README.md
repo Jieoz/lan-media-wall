@@ -18,8 +18,9 @@ LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播
 - **入组三层入口（§15，均汇流到 `addDeviceFromPairUri` 同一路径）**：
   1. **自动发现**：UDP `announce` 到的设备直接进设备墙；
   2. **扫码**：`mobile_scanner` 真·摄像头扫被控端出示的 `lmw://pair?...` 二维码
-     （需 Android `CAMERA` 权限 + `minSdkVersion 21`，由 CI 生成 `android/` 后注入，
-     见 `.github/workflows/flutter-build.yml`）；
+     （需 Android `CAMERA` 权限 + `minSdkVersion 21` + `compileSdk 35`——后者是
+     mobile_scanner 传递依赖 CameraX 1.3.1 的 AAR metadata 要求 `>=34`；三者均由
+     CI 生成 `android/` 后注入，见 `.github/workflows/flutter-build.yml`）；
   3. **手填 / 粘贴**：邀请页粘贴 `lmw://pair` 链接或手填协调端 host。
 - **设备墙即时可见性（§14.5）**：发现 / 扫码 / 手填的设备**立即以占位卡出现**，
   显示接入态（已发现 / 连接中 / 已连接 / 失败+原因），用 `device_id` 去重，WS 回传的
