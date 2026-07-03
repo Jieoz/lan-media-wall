@@ -19,7 +19,7 @@ dependencies:
   # (Dart >=3.0 / Flutter >=3.10) 的最后一条线；4.x/5.x/6.x 需 Flutter 3.19+/
   # Dart 3.3+，会顶穿上面的 environment 约束。要求 Android minSdkVersion 21
   # ——由 CI 在 `flutter create` 生成 android/ 后注入（见 flutter-build.yml）。
-  mobile_scanner: ^3.5.7
+  mobile_scanner: 3.4.0
 
 dev_dependencies:
   flutter_test:
