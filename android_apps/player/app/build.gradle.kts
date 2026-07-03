@@ -15,8 +15,8 @@ android {
         // the target 1688 外贸盒. targetSdk stays high for modern-OS behavior.
         minSdk = 19
         targetSdk = 34
-        versionCode = 15
-        versionName = "1.5.0"
+        versionCode = 16
+        versionName = "1.6.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // §6: on minSdk 19 the merged dex can exceed the 65k method limit
         // (exoplayer2 + appcompat + okhttp + coroutines). Pre-21 has no native
@@ -26,8 +26,14 @@ android {
 
     buildTypes {
         release {
-            // No shrinking: the player is a kiosk app, keep it simple + debuggable.
-            isMinifyEnabled = false
+            // §6.2: R8 shrink+DCE is REQUIRED on this minSdk-19 kiosk build.
+            // Without it the un-minified app spills past the 64K method limit
+            // into a 3-dex legacy-multidex APK whose 8.4MB primary dex fails
+            // install-time dexopt on cheap 4.4 外贸盒 (INSTALL_FAILED_DEXOPT ->
+            // "安装文件出错"). Shrinking collapses it to a single small dex,
+            // which installs cleanly AND removes the pre-21 MultiDex.install()
+            // dependency. resource shrinking off (keeps it simple).
+            isMinifyEnabled = true
             // CI has no production keystore. Sign release with the standard debug
             // key so the shipped release APK is actually installable (an unsigned
             // release APK cannot be sideloaded). A real keystore, when wired via
