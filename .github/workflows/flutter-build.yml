@@ -102,7 +102,7 @@ jobs:
           fi
           # minSdkVersion 21：Flutter 新脚手架用 build.gradle(.kts) 里的
           # `minSdk = flutter.minSdkVersion` 占位；mobile_scanner 3.5 要求 21。
-          # compileSdk 35：CameraX 1.3.1（mobile_scanner 传递依赖）的 AAR
+          # compileSdk  36：CameraX 1.3.1（mobile_scanner 传递依赖）的 AAR
           # metadata 要求 compileSdk >= 34，脚手架默认的 flutter.compileSdkVersion
           # 在旧 Flutter runner 上可能仍解析成 33，导致
           # `:mobile_scanner:checkReleaseAarMetadata` 失败。这里统一覆盖为字面量
@@ -119,18 +119,18 @@ jobs:
               sed -i -E 's#(minSdk[[:space:]]*=[[:space:]]*)flutter\.minSdkVersion#\121#' "$GRADLE"
               echo "patched $GRADLE minSdk -> 21"
             fi
-            # --- compileSdk -> 35（幂等：已 >=34 的字面量就跳过覆盖） ---
-            if grep -Eq 'compileSdk(Version)?\s*[= ]\s*(3[4-9]|[4-9][0-9])' "$GRADLE"; then
+            # --- compileSdk -> 36（幂等：已 >=34 的字面量就跳过覆盖） ---
+            if grep -Eq 'compileSdk(Version)?\s*[= ]\s*(3[6-9]|[4-9][0-9])' "$GRADLE"; then
               echo "$GRADLE already compileSdk >= 34"
             else
               # Groovy: `compileSdkVersion flutter.compileSdkVersion` / `compileSdk flutter.compileSdkVersion`
-              sed -i -E 's#(compileSdk(Version)?)[[:space:]]+flutter\.compileSdkVersion#\1 35#' "$GRADLE"
+              sed -i -E 's#(compileSdk(Version)?)[[:space:]]+flutter\.compileSdkVersion#\1 36#' "$GRADLE"
               # Groovy 旧写法可能是字面量 `compileSdkVersion 33` / `compileSdk 33`
-              sed -i -E 's#(compileSdk(Version)?)[[:space:]]+[0-9]+#\1 35#' "$GRADLE"
+              sed -i -E 's#(compileSdk(Version)?)[[:space:]]+[0-9]+#\1 36#' "$GRADLE"
               # KTS: `compileSdk = flutter.compileSdkVersion` 或 `compileSdk = 33`
-              sed -i -E 's#(compileSdk[[:space:]]*=[[:space:]]*)flutter\.compileSdkVersion#\135#' "$GRADLE"
-              sed -i -E 's#(compileSdk[[:space:]]*=[[:space:]]*)[0-9]+#\135#' "$GRADLE"
-              echo "patched $GRADLE compileSdk -> 35"
+              sed -i -E 's#(compileSdk[[:space:]]*=[[:space:]]*)flutter\.compileSdkVersion#\136#' "$GRADLE"
+              sed -i -E 's#(compileSdk[[:space:]]*=[[:space:]]*)[0-9]+#\136#' "$GRADLE"
+              echo "patched $GRADLE compileSdk -> 36"
             fi
             echo "--- $GRADLE minSdk/compileSdk after patch ---"
             grep -nE 'minSdk|compileSdk' "$GRADLE" || true
