@@ -217,13 +217,25 @@ class PlayerService : Service() {
             ?.let { Envelope.hexToBytes(it) }
         discovery = when (plan) {
             is TransportSelector.Plan.Client -> {
-                if (!settings.isConfigured) return // nothing trustworthy to advertise
+                // §7: advertise on 8772 **whether or not we're configured**. A
+                // configured player points peers at its paired broker; an
+                // *unconfigured* player that discovered a broker (mode B) still
+                // must be visible to the controller AND relay the broker it found,
+                // so it advertises the endpoint it actually connected to (parsed
+                // from plan.url) rather than the empty configured host. Removing
+                // the old `if (!isConfigured) return` is the fix for "两台互不发现"
+                // when a broker exists but this box was never paired.
+                val hint = if (settings.isConfigured) {
+                    "${settings.brokerHost}:${settings.brokerPort}"
+                } else {
+                    brokerHintFromWsUrl(plan.url)
+                }
                 Discovery(
                     psk = settings.psk,
                     deviceId = settings.deviceId,
                     deviceName = settings.deviceName,
                     ip = deviceIp,
-                    brokerHint = "${settings.brokerHost}:${settings.brokerPort}",
+                    brokerHint = hint,
                 )
             }
             is TransportSelector.Plan.P2pServer -> Discovery(
@@ -238,6 +250,18 @@ class PlayerService : Service() {
                 deviceKey = deviceKey,
             )
         }.also { it.start() }
+    }
+
+    /**
+     * Strip a `ws(s)://host:port` down to the `host:port` broker_hint an
+     * `announce` carries (§7). Falls back to the raw string if it doesn't look
+     * like a URL. Used so an unconfigured client relays the broker it actually
+     * discovered/connected to, not the empty configured host.
+     */
+    private fun brokerHintFromWsUrl(url: String): String {
+        val noScheme = url.substringAfter("://", url)
+        // drop any trailing path/query, keep host:port only.
+        return noScheme.substringBefore('/').substringBefore('?')
     }
 
     @Volatile private var started = false

@@ -15,6 +15,15 @@ LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播
   `shared_preferences`。
 - **网络**：WS(S) 长连接 + 指数退避重连（1s→30s，§1）；HMAC-SHA256 信封签名/验签（§3）；
   UDP `8772` 设备发现（`discover` 广播 + `announce` 接收，带签名校验，§7）。
+- **入组三层入口（§15，均汇流到 `addDeviceFromPairUri` 同一路径）**：
+  1. **自动发现**：UDP `announce` 到的设备直接进设备墙；
+  2. **扫码**：`mobile_scanner` 真·摄像头扫被控端出示的 `lmw://pair?...` 二维码
+     （需 Android `CAMERA` 权限 + `minSdkVersion 21`，由 CI 生成 `android/` 后注入，
+     见 `.github/workflows/flutter-build.yml`）；
+  3. **手填 / 粘贴**：邀请页粘贴 `lmw://pair` 链接或手填协调端 host。
+- **设备墙即时可见性（§14.5）**：发现 / 扫码 / 手填的设备**立即以占位卡出现**，
+  显示接入态（已发现 / 连接中 / 已连接 / 失败+原因），用 `device_id` 去重，WS 回传的
+  `DeviceStatus` 覆盖占位——不再"正在添加却看不到设备"、不再静默吞掉连接失败。
 
 ## 目录结构
 
@@ -29,8 +38,11 @@ lib/
     discovery.dart          # UDP 8772 discover/announce + 设备清单持久化
   state/
     wall_state.dart         # ChangeNotifier:设备墙状态/连接态/缩略图/出站命令
+  p2p/
+    p2p_coordinator.dart    # 无 broker 时遥控端兼任协调端:多 WS 直连、逐台接入态上报
   ui/
-    wall_screen.dart        # 设备墙
+    wall_screen.dart        # 设备墙(合并发现/已连的统一视图 + 占位卡 + 接入态)
+    invite_screen.dart      # 邀请/添加设备:扫码(mobile_scanner)/粘贴/手填三层入口
     control_panel.dart      # 控制面板
     settings_screen.dart    # 设置 + 诊断日志
 test/

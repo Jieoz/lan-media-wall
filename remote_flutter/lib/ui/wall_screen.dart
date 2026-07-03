@@ -14,7 +14,8 @@ class WallScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<WallState>();
-    final devices = state.devices;
+    // §14.5：渲染合并后的统一视图（发现/添加的设备即以占位卡出现），修 Bug 2。
+    final devices = state.wallDevices;
     return Scaffold(
       appBar: AppBar(
         title: const Text('设备墙'),
@@ -177,28 +178,35 @@ class _EmptyHint extends StatelessWidget {
 
 class _DeviceCell extends StatelessWidget {
   const _DeviceCell({required this.device});
-  final DeviceStatus device;
+  final WallDevice device;
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<WallState>();
-    final thumb = state.thumbOf(device.deviceId);
-    final cur = device.current;
     final theme = Theme.of(context);
+    final status = device.status;
+    final thumb = state.thumbOf(device.deviceId);
+    final cur = status?.current;
+    // online 灯：已连接绿；连接中橙；失败红；仅发现灰。
+    final dot = switch (device.phase) {
+      LinkPhase.connected => Colors.green,
+      LinkPhase.connecting => Colors.orange,
+      LinkPhase.failed => Colors.red,
+      LinkPhase.discovered => Colors.grey,
+    };
     return Card(
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 缩略图区
+          // 缩略图区（占位设备无缩略图 → 显示接入态图标 + 文案）。
           Expanded(
             child: Container(
               color: Colors.black,
               alignment: Alignment.center,
               child: thumb != null
                   ? Image.memory(thumb, fit: BoxFit.contain, gaplessPlayback: true)
-                  : const Icon(Icons.image_not_supported_outlined,
-                      color: Colors.white24, size: 36),
+                  : _PlaceholderArt(phase: device.phase),
             ),
           ),
           Padding(
@@ -208,51 +216,120 @@ class _DeviceCell extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.circle,
-                        size: 10,
-                        color: device.online ? Colors.green : Colors.grey),
+                    Icon(Icons.circle, size: 10, color: dot),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        device.deviceName ?? device.deviceId,
+                        device.deviceName,
                         style: theme.textTheme.titleSmall,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    _StateChip(state: device.state),
+                    // 有状态 → 播放态芯片；占位 → 接入相位芯片。
+                    status != null
+                        ? _StateChip(state: status.state)
+                        : _PhaseChip(phase: device.phase),
                   ],
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  cur?.name.isNotEmpty == true ? cur!.name : '—',
-                  style: theme.textTheme.bodySmall,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                _Progress(current: cur),
-                const SizedBox(height: 2),
-                Row(
-                  children: [
-                    Icon(device.muted ? Icons.volume_off : Icons.volume_up,
-                        size: 14),
-                    const SizedBox(width: 4),
-                    Text('${device.volume}',
-                        style: theme.textTheme.bodySmall),
-                    if (device.audioMaster) ...[
-                      const SizedBox(width: 6),
-                      const Icon(Icons.campaign, size: 14),
+                if (status != null) ...[
+                  Text(
+                    cur?.name.isNotEmpty == true ? cur!.name : '—',
+                    style: theme.textTheme.bodySmall,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  _Progress(current: cur),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Icon(status.muted ? Icons.volume_off : Icons.volume_up,
+                          size: 14),
+                      const SizedBox(width: 4),
+                      Text('${status.volume}',
+                          style: theme.textTheme.bodySmall),
+                      if (status.audioMaster) ...[
+                        const SizedBox(width: 6),
+                        const Icon(Icons.campaign, size: 14),
+                      ],
+                      const Spacer(),
+                      Text(status.groupId,
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: theme.hintColor)),
                     ],
-                    const Spacer(),
-                    Text(device.groupId,
-                        style: theme.textTheme.labelSmall
-                            ?.copyWith(color: theme.hintColor)),
+                  ),
+                ] else ...[
+                  // 占位：显示 IP + 接入态（失败时红字给原因），修「静默吞掉」。
+                  Text(
+                    device.ip.isNotEmpty ? device.ip : device.phase.label,
+                    style: theme.textTheme.bodySmall,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (device.phase == LinkPhase.failed &&
+                      device.error != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      device.error!,
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: Colors.red),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ],
-                ),
+                ],
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 占位卡的中央图形：按接入相位给不同图标/动画。
+class _PlaceholderArt extends StatelessWidget {
+  const _PlaceholderArt({required this.phase});
+  final LinkPhase phase;
+
+  @override
+  Widget build(BuildContext context) {
+    if (phase == LinkPhase.connecting) {
+      return const SizedBox(
+        width: 28,
+        height: 28,
+        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38),
+      );
+    }
+    final icon = switch (phase) {
+      LinkPhase.failed => Icons.error_outline,
+      LinkPhase.connected => Icons.cast_connected,
+      _ => Icons.devices_other,
+    };
+    final color = phase == LinkPhase.failed ? Colors.redAccent : Colors.white24;
+    return Icon(icon, color: color, size: 36);
+  }
+}
+
+/// 接入相位芯片（占位设备用；已连回状态后换成播放态 [_StateChip]）。
+class _PhaseChip extends StatelessWidget {
+  const _PhaseChip({required this.phase});
+  final LinkPhase phase;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (phase) {
+      LinkPhase.connected => Colors.green,
+      LinkPhase.connecting => Colors.orange,
+      LinkPhase.failed => Colors.red,
+      LinkPhase.discovered => Colors.grey,
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(phase.label, style: TextStyle(fontSize: 10, color: color)),
     );
   }
 }

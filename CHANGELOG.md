@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.7.0] — 2026-07-03
+
+### Added
+- **Flutter 遥控端真·摄像头扫码入组 (§15)**: 邀请页新增“扫码添加”，用 `mobile_scanner` 扫被控端展示的 `lmw://pair?...`，与粘贴链接/手填 IP 共用 `addDeviceFromPairUri` 入组路径。
+- **设备墙即时可见性 (§14.5)**: 发现/扫码/手填的设备立即以占位卡出现，显示“已发现/连接中/已连接/失败+原因”，WS 回传 `DeviceStatus` 后覆盖占位，不再静默吞连接失败。
+- **未配置被控端 broker 发现广播**: Android player 即使未配置但已通过局域网发现 broker，也常驻 8772 announce 并广播实际连上的 broker hint，修复“有 broker 但两台互不发现”。
+
+### Fixed
+- **Android 4.4 安装链路补齐**: R8 规则去掉 ExoPlayer/OkHttp 宽 keep，保留窄入口 + dontwarn，恢复 DCE；补传统 PNG launcher mipmap，避免 API 19 矢量图标/图标空白问题。
+
+### Verified
+- release_readiness_review: PASS（py_compile 25 files；broker 84 passed；windows_player 137 passed；联跑 221 passed；Kotlin R 引用/required_wired/contract checks pass）。
+- Android/Flutter/Windows/Broker 编译验收走 GitHub Actions 云 CI。
 
 ## [v1.4.0] — 2026-07-02
 
@@ -75,3 +88,5 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 [v1.0.2]: https://github.com/Jieoz/lan-media-wall/releases/tag/v1.0.2
 [v1.0.1]: https://github.com/Jieoz/lan-media-wall/releases/tag/v1.0.1
 [v1.0.0]: https://github.com/Jieoz/lan-media-wall/releases/tag/v1.0.0
+
+[v1.7.0]: https://github.com/Jieoz/lan-media-wall/releases/tag/v1.7.0

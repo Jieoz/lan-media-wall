@@ -8,6 +8,10 @@ import 'handshake.dart';
 import 'wall_aggregator.dart';
 import 'ws_link.dart';
 
+/// 一条 p2p 直连的生命周期态（§14.5 可见性）：遥控端拨号 → 握手 → 就绪 / 失败。
+/// 供 UI 把「连接中 / 已连接 / 失败(原因)」直接画在设备卡上，不再静默吞掉。
+enum PeerLinkState { connecting, connected, failed }
+
 /// 一个被控端的拨号目标。
 class P2pPeer {
   const P2pPeer({
@@ -79,6 +83,10 @@ class P2pCoordinator {
   /// 连接的对端数量变化（用于 UI“已连 N 台”展示）。
   void Function(int connectedCount)? onPeers;
 
+  /// 单台对端连接态变化（§14.5 可见性）：connecting/connected/failed，
+  /// failed 时 [reason] 给出原因（超时/拒绝/握手失败）。UI 据此画每张卡的状态。
+  void Function(String deviceId, PeerLinkState state, String? reason)? onPeerState;
+
   /// 诊断日志。
   void Function(String line)? onLog;
 
@@ -111,11 +119,14 @@ class P2pCoordinator {
 
   void _dial(P2pPeer peer) {
     if (_disposed) return;
+    // §14.5 可见性：拨号即上报 connecting，UI 立刻显示「连接中」。
+    _emitPeerState(peer.deviceId, PeerLinkState.connecting, null);
     final WsLink link;
     try {
       link = _linkFactory(peer.uri);
     } catch (e) {
       _log('拨号 ${peer.deviceId}(${peer.uri}) 失败: $e');
+      _emitPeerState(peer.deviceId, PeerLinkState.failed, '拨号失败: $e');
       return;
     }
     _links[peer.deviceId] = link;
@@ -128,10 +139,12 @@ class P2pCoordinator {
     link.ready.then((_) {
       if (_links[peer.deviceId] != link) return;
       _log('已连接被控端 ${peer.deviceName ?? peer.deviceId}(${peer.uri})');
+      _emitPeerState(peer.deviceId, PeerLinkState.connected, null);
       _sendHello(peer.deviceId);
       _emitPeers();
     }).catchError((Object e) {
       _log('握手失败 ${peer.deviceId}: $e');
+      _emitPeerState(peer.deviceId, PeerLinkState.failed, '握手失败: $e');
       _onLinkDone(peer.deviceId);
     });
   }
@@ -158,13 +171,19 @@ class P2pCoordinator {
 
   void _onLinkError(String deviceId, Object e) {
     _log('连接错误 $deviceId: $e');
+    _emitPeerState(deviceId, PeerLinkState.failed, '连接错误: $e');
   }
 
   void _onLinkDone(String deviceId) {
     _log('连接关闭 $deviceId');
+    final wasConnected = _links.containsKey(deviceId);
     _subs.remove(deviceId)?.cancel();
     _links.remove(deviceId);
     aggregator.markOffline(deviceId);
+    // 曾连上又断开 → 失败态（掉线）；从未连上的（拨号即失败）已在 _dial 上报。
+    if (wasConnected) {
+      _emitPeerState(deviceId, PeerLinkState.failed, '连接断开');
+    }
     _emitWall();
     _emitPeers();
   }
@@ -323,6 +342,9 @@ class P2pCoordinator {
   }
 
   void _emitPeers() => onPeers?.call(connectedCount);
+
+  void _emitPeerState(String deviceId, PeerLinkState state, String? reason) =>
+      onPeerState?.call(deviceId, state, reason);
 
   void _log(String line) => onLog?.call(line);
 

@@ -19,6 +19,44 @@ class _Keys {
   static const controllerId = 'settings.controller_id';
 }
 
+/// 一台设备在墙上的接入态（§14.5 可见性）。发现/添加即以占位卡出现，
+/// 随连接推进更新，失败带原因——不再等 state 快照才可见、不再静默。
+enum LinkPhase { discovered, connecting, connected, failed }
+
+extension LinkPhaseLabel on LinkPhase {
+  String get label => switch (this) {
+        LinkPhase.discovered => '已发现',
+        LinkPhase.connecting => '连接中',
+        LinkPhase.connected => '已连接',
+        LinkPhase.failed => '失败',
+      };
+}
+
+/// 墙面 UI 的统一设备视图项：把「发现/手动添加的占位」与「WS 已连回传的
+/// [DeviceStatus]」合并成一张卡。[status] 为 null 表示尚无状态快照（占位），
+/// [phase] 给出接入进度，[error] 在失败时给出原因。
+class WallDevice {
+  const WallDevice({
+    required this.deviceId,
+    required this.deviceName,
+    required this.phase,
+    this.status,
+    this.ip = '',
+    this.error,
+  });
+
+  final String deviceId;
+  final String deviceName;
+  final LinkPhase phase;
+
+  /// 已连回传的完整状态；占位阶段为 null。
+  final DeviceStatus? status;
+  final String ip;
+  final String? error;
+
+  bool get isPlaceholder => status == null;
+}
+
 /// 当前拓扑（§14）。
 enum Topology { dedicated, cohosted, p2p }
 
@@ -67,6 +105,11 @@ class WallState extends ChangeNotifier {
   ConnState _conn = ConnState.disconnected;
   int _p2pPeers = 0;
 
+  /// §14.5 可见性：每台 device_id 的接入进度与失败原因（p2p 直连回调驱动；
+  /// broker 模式下由 wall 快照的 online 推断）。与 _discovered/_wall 合并成 [wallDevices]。
+  final Map<String, LinkPhase> _linkPhase = {};
+  final Map<String, String> _linkError = {};
+
   /// 当前 broker 接入目标（用于避免发现重复触发时反复重连）。
   String _brokerTarget = '';
 
@@ -86,6 +129,44 @@ class WallState extends ChangeNotifier {
   bool get connected =>
       isP2p ? _p2pPeers > 0 : _conn == ConnState.connected;
   List<String> get logLines => List.unmodifiable(_log);
+
+  /// §14.5 墙面统一设备视图（修 Bug 2「添加/发现却看不到设备」）：
+  ///  - 先放所有 WS 已回传状态的设备（[DeviceStatus] 覆盖占位，用 device_id 去重）；
+  ///  - 再补上「已发现/手动添加但尚未回传状态」的设备，以占位卡出现，带接入态；
+  ///  - 每台都带 [LinkPhase]（发现/连接中/已连接/失败）与失败原因，不再静默。
+  ///
+  /// 这样粘贴二维码 / UDP 发现 / 手填 IP 的设备**立即可见**，不必等 state 快照。
+  List<WallDevice> get wallDevices {
+    final out = <WallDevice>[];
+    final seen = <String>{};
+    // 1. WS 已回传状态的设备优先，DeviceStatus 覆盖占位。
+    for (final d in _wall.devices) {
+      seen.add(d.deviceId);
+      // broker 模式无逐台直连回调：online 即视为已连接，否则回落到记录的相位。
+      final phase = _linkPhase[d.deviceId] ??
+          (d.online ? LinkPhase.connected : LinkPhase.discovered);
+      out.add(WallDevice(
+        deviceId: d.deviceId,
+        deviceName: d.deviceName ?? d.deviceId,
+        phase: d.online ? LinkPhase.connected : phase,
+        status: d,
+        error: _linkError[d.deviceId],
+      ));
+    }
+    // 2. 发现/手动添加但还没状态快照的 → 占位卡。
+    for (final a in _discovered) {
+      if (seen.contains(a.deviceId)) continue;
+      seen.add(a.deviceId);
+      out.add(WallDevice(
+        deviceId: a.deviceId,
+        deviceName: a.deviceName.isNotEmpty ? a.deviceName : a.deviceId,
+        phase: _linkPhase[a.deviceId] ?? LinkPhase.discovered,
+        ip: a.ip,
+        error: _linkError[a.deviceId],
+      ));
+    }
+    return out;
+  }
 
   /// 由当前连接信息生成一张配对 URI（§15 + §17.4）。
   ///  - broker 模式：用当前 broker host/port。
@@ -215,6 +296,7 @@ class WallState extends ChangeNotifier {
     _p2p = P2pCoordinator(codec: _codec, controllerId: controllerId)
       ..onWall = _onWall
       ..onPeers = _onP2pPeers
+      ..onPeerState = _onPeerState
       ..onLog = _pushLog;
 
     await _discovery.start();
@@ -400,6 +482,21 @@ class WallState extends ChangeNotifier {
 
   void _onP2pPeers(int count) {
     _p2pPeers = count;
+    notifyListeners();
+  }
+
+  /// §14.5 可见性：p2p 直连逐台上报接入态 → 更新占位卡的相位与失败原因。
+  void _onPeerState(String deviceId, PeerLinkState state, String? reason) {
+    _linkPhase[deviceId] = switch (state) {
+      PeerLinkState.connecting => LinkPhase.connecting,
+      PeerLinkState.connected => LinkPhase.connected,
+      PeerLinkState.failed => LinkPhase.failed,
+    };
+    if (reason != null && reason.isNotEmpty) {
+      _linkError[deviceId] = reason;
+    } else {
+      _linkError.remove(deviceId);
+    }
     notifyListeners();
   }
 

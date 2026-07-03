@@ -82,6 +82,38 @@ jobs:
             echo "android/ already present — skipping scaffold."
           fi
 
+      # mobile_scanner needs CAMERA permission + minSdkVersion 21. android/ is
+      # generated fresh above (not in the repo), so these can't live in a static
+      # manifest/gradle — inject them here, idempotently. §15 扫码入口的落地依赖。
+      - name: Inject camera permission + minSdk for mobile_scanner
+        working-directory: remote_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          # CAMERA 权限：仅在缺失时插到 <manifest> 开标签之后（幂等）。
+          if ! grep -q 'android.permission.CAMERA' "$MANIFEST"; then
+            sed -i 's#\(<manifest[^>]*>\)#\1\n    <uses-permission android:name="android.permission.CAMERA" />#' "$MANIFEST"
+            echo "injected CAMERA permission"
+          else
+            echo "CAMERA permission already present"
+          fi
+          # minSdkVersion 21：Flutter 新脚手架用 build.gradle(.kts) 里的
+          # `minSdk = flutter.minSdkVersion` 占位；mobile_scanner 3.5 要求 21。
+          # 覆盖为字面量 21（幂等：已是 21 就跳过）。兼容 Groovy/KTS 两种写法。
+          for GRADLE in android/app/build.gradle android/app/build.gradle.kts; do
+            [ -f "$GRADLE" ] || continue
+            if grep -Eq 'minSdk(Version)?\s*[= ]\s*21' "$GRADLE"; then
+              echo "$GRADLE already minSdk 21"; continue
+            fi
+            # Groovy: `minSdkVersion flutter.minSdkVersion` / `minSdk flutter.minSdkVersion`
+            sed -i -E 's#(minSdk(Version)?)[[:space:]]+flutter\.minSdkVersion#\1 21#' "$GRADLE"
+            # KTS: `minSdk = flutter.minSdkVersion`
+            sed -i -E 's#(minSdk[[:space:]]*=[[:space:]]*)flutter\.minSdkVersion#\121#' "$GRADLE"
+            echo "patched $GRADLE minSdk -> 21"
+            grep -nE 'minSdk' "$GRADLE" || true
+          done
+
       - name: Pub get
         working-directory: remote_flutter
         run: flutter pub get

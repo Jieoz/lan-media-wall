@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -35,9 +36,14 @@ class _InviteScreenState extends State<InviteScreen> {
   }
 
   /// 消费被控端出示的 enroll 链接：粘贴/输入 `lmw://pair?...` → 解析 → 登记设备。
-  void _addFromEnroll(WallState state) {
-    final raw = _enroll.text.trim();
-    if (raw.isEmpty) return;
+  void _addFromEnroll(WallState state) => _enroll.text.trim().isEmpty
+      ? null
+      : _consume(state, _enroll.text.trim(), clearField: true);
+
+  /// 三层入口（自动发现/扫码/手填）汇流到同一入组路径：解析 `lmw://pair?...`
+  /// → [WallState.addDeviceFromPairUri]（= 一次成功的 UDP 发现）。扫码/粘贴/手填
+  /// 都走这里，不各造一套配对逻辑。
+  void _consume(WallState state, String raw, {bool clearField = false}) {
     final name = state.addDeviceFromPairUri(raw);
     final messenger = ScaffoldMessenger.of(context);
     messenger.clearSnackBars();
@@ -46,9 +52,18 @@ class _InviteScreenState extends State<InviteScreen> {
           content: Text('链接无效：需形如 lmw://pair?host=...&id=...')));
       return;
     }
-    _enroll.clear();
+    if (clearField) _enroll.clear();
     setState(() {});
     messenger.showSnackBar(SnackBar(content: Text('已添加设备「$name」，正在连接…')));
+  }
+
+  /// 打开真·摄像头扫码页（§15 扫码入口）；扫到 `lmw://pair?...` 后复用 [_consume]。
+  Future<void> _scan(WallState state) async {
+    final raw = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(builder: (_) => const _ScanPage()),
+    );
+    if (!mounted || raw == null || raw.trim().isEmpty) return;
+    _consume(state, raw.trim());
   }
 
   @override
@@ -81,6 +96,7 @@ class _InviteScreenState extends State<InviteScreen> {
           _AddDeviceSection(
             controller: _enroll,
             onAdd: () => _addFromEnroll(state),
+            onScan: () => _scan(state),
             onPaste: () async {
               final data = await Clipboard.getData(Clipboard.kTextPlain);
               final txt = data?.text?.trim() ?? '';
@@ -185,10 +201,12 @@ class _AddDeviceSection extends StatelessWidget {
   const _AddDeviceSection({
     required this.controller,
     required this.onAdd,
+    required this.onScan,
     required this.onPaste,
   });
   final TextEditingController controller;
   final VoidCallback onAdd;
+  final VoidCallback onScan;
   final VoidCallback onPaste;
 
   @override
@@ -210,17 +228,28 @@ class _AddDeviceSection extends StatelessWidget {
             const SizedBox(height: 4),
             const Text(
               '被控端(TV 盒/Windows)开机会出示自己的 lmw:// 二维码。'
-              '把链接粘贴到这里点「添加」即可把它加进设备墙。',
+              '三种方式都能把它加进设备墙:直接扫码、粘贴链接、或手填 IP。',
               style: TextStyle(fontSize: 12),
             ),
             const SizedBox(height: 8),
+            // 入口一:真·摄像头扫码（§15）。醒目主按钮。
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('扫码添加'),
+                onPressed: onScan,
+              ),
+            ),
+            const SizedBox(height: 8),
+            // 入口二:粘贴 lmw:// 链接兜底。
             TextField(
               controller: controller,
               minLines: 1,
               maxLines: 2,
               decoration: InputDecoration(
                 labelText: 'lmw://pair?host=...&id=...',
-                prefixIcon: const Icon(Icons.qr_code_scanner),
+                prefixIcon: const Icon(Icons.content_paste_go),
                 suffixIcon: IconButton(
                   tooltip: '从剪贴板粘贴',
                   icon: const Icon(Icons.content_paste),
@@ -260,6 +289,85 @@ class _ModeBanner extends StatelessWidget {
         leading: Icon(icon),
         title: Text('鉴权模式：${mode.label}'),
         subtitle: Text(desc),
+      ),
+    );
+  }
+}
+
+/// 真·摄像头扫码页（§15 扫码入口）：用 mobile_scanner 打开后置摄像头，扫到第一个
+/// 含 `lmw://pair` 的二维码即 pop 回其原始文本，交由 [_InviteScreenState._consume]
+/// 复用与「粘贴/发现」完全相同的入组路径。摄像头权限由 CI 注入的 CAMERA 声明支撑
+/// （见 .github/workflows/flutter-build.yml），运行时由 mobile_scanner 触发授权弹窗。
+class _ScanPage extends StatefulWidget {
+  const _ScanPage();
+
+  @override
+  State<_ScanPage> createState() => _ScanPageState();
+}
+
+class _ScanPageState extends State<_ScanPage> {
+  final MobileScannerController _controller = MobileScannerController();
+  bool _handled = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_handled) return;
+    for (final b in capture.barcodes) {
+      final raw = b.rawValue?.trim();
+      if (raw == null || raw.isEmpty) continue;
+      // 只接受配对 URI，避免误扫其它二维码。大小写无关地匹配 scheme。
+      if (raw.toLowerCase().startsWith('lmw://pair')) {
+        _handled = true;
+        Navigator.of(context).pop(raw);
+        return;
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('扫描设备二维码'),
+        actions: [
+          IconButton(
+            tooltip: '手电筒',
+            icon: const Icon(Icons.flash_on),
+            onPressed: () => _controller.toggleTorch(),
+          ),
+          IconButton(
+            tooltip: '切换摄像头',
+            icon: const Icon(Icons.cameraswitch),
+            onPressed: () => _controller.switchCamera(),
+          ),
+        ],
+      ),
+      body: Stack(
+        alignment: Alignment.center,
+        children: [
+          MobileScanner(controller: _controller, onDetect: _onDetect),
+          // 取景提示框 + 文案。
+          Container(
+            width: 240,
+            height: 240,
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.white70, width: 2),
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          const Positioned(
+            bottom: 40,
+            child: Text(
+              '对准被控端屏幕上的 lmw:// 配对二维码',
+              style: TextStyle(color: Colors.white, fontSize: 14),
+            ),
+          ),
+        ],
       ),
     );
   }

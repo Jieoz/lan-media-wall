@@ -1,7 +1,7 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-version: 1.0.0+1
+version: 1.7.0+17
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -15,6 +15,11 @@ dependencies:
   provider: ^6.1.1
   shared_preferences: ^2.2.2
   qr_flutter: ^4.1.0
+  # 真·摄像头扫码（§15 三层入口之「扫码」）。3.5.x 是兼容本工程 SDK 下限
+  # (Dart >=3.0 / Flutter >=3.10) 的最后一条线；4.x/5.x/6.x 需 Flutter 3.19+/
+  # Dart 3.3+，会顶穿上面的 environment 约束。要求 Android minSdkVersion 21
+  # ——由 CI 在 `flutter create` 生成 android/ 后注入（见 flutter-build.yml）。
+  mobile_scanner: ^3.5.7
 
 dev_dependencies:
   flutter_test:

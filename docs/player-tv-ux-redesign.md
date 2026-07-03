@@ -44,7 +44,12 @@
 ## 6. minSdk / 目标设备(已锁定,2026-07 Jay 决策)
 - **锁定 minSdk=19 (Android 4.4.2)**。采购渠道(1688 外贸盒)拒绝确认系统版本/插头,换设备不确定性太高,Jay 决定按现有 4.4 硬件做软件,不再纠结换盒。
 - **用途单一**:纯内网 kiosk 组播播放,**只放 1080p H.264**(老芯片够解,H.265/4K 不在范围)。
-- **Jay 卡在"安装装不上"的根因 = 现 minSdk=24**,APK 在 4.4 报 INSTALL_FAILED_OLDER_SDK。降到 19 重编即可安装。
+- **"安装装不上"根因不止 minSdk**(2026-07 复盘更新):
+  - 最初诊断 = `minSdk=24` → 4.4 报 `INSTALL_FAILED_OLDER_SDK`。降到 19 是**必要但不充分**的第一步。
+  - 降 minSdk 后仍装不上("文件出错/解析包出错/装包图标不显示"),实测还需处理三件事,已全部落地:
+    1. **legacy multidex + 主 dex 过大**:4.4 装机阶段 dexopt/LinearAlloc 撑爆。开 `multiDexEnabled` + pre-21 multidex loader,并**靠 R8 shrink 把主 dex 压回单 dex**(见下)。
+    2. **R8 shrink 被宽 keep 废掉**:`proguard-rules.pro` 原有 `-keep class …exoplayer2.**/okhttp3.** { *; }` 全量保留,DCE 失效、几千未用类进主 dex。改为**窄 keep + `-dontwarn`**(库自带 consumer 规则),R8 真正裁剪未用的 ExoPlayer(DASH/HLS/RTSP/cast)与 okhttp(cache/ws/tls) 子模块。
+    3. **矢量 launcher 图标 4.4 无法栅格化**:见 §6.1 图标暗坑——补传统 PNG mipmap 兜底(`scripts/gen_legacy_icons.py` 生成 m/h/xh/xxh/xxxdpi),密度目录优先级高于 `mipmap-anydpi`,4.4 才有图标(解释"装包图标不显示")。
 - 技术栈降级链(必做):
   | 层 | 降级 |
   |---|---|
@@ -60,7 +65,7 @@
 | 暗坑 | 后果 | 处理 |
 |---|---|---|
 | **APK 签名必须含 v1(JAR)签名** | v2-only 签名在 <7.0 装不上("应用未安装") | minSdk 19 时 AGP 默认带 v1;确认 signingConfig 未关 v1,CI 产物核对 |
-| **启动图标只有 adaptive-icon** | 4.4 无 adaptive icon,图标空白 | 补传统 PNG mipmap(mdpi/hdpi/xhdpi)兜底 |
+| **启动图标只有 adaptive-icon / 矢量** | 4.4 无 adaptive icon、且 <21 无法栅格化 `<vector>` launcher 图标,图标空白甚至"文件出错" | **已落地**:`scripts/gen_legacy_icons.py` 生成传统 PNG mipmap(mdpi48/hdpi72/xhdpi96/xxhdpi144/xxxhdpi192),密度目录优先级高于 `mipmap-anydpi`,4.4 取 PNG |
 | **UDP 发现要 MulticastLock** | WiFi 下 4.4 过滤广播/组播,announce 收不到(有线不受影响) | PlayerService 取 WifiManager.createMulticastLock().acquire(),停止时 release |
 | **networkSecurityConfig XML** | API24+ 才认,4.4 直接忽略 | 无害;4.4 默认允许明文,纯 WS/HTTP 正常 |
 | **WSS/HTTPS 现代证书** | 4.4 老 TLS 握不动现代证书 | 内网走**纯 WS + HTTP**,绕开(见 §5) |
