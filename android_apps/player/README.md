@@ -97,6 +97,41 @@ WSS toggle), group id, PSK, and the always-collect-thumbnails flag. Saved
 settings mark the device configured; subsequent boots go straight to the
 fullscreen player and the BootReceiver brings it up automatically.
 
+**Zero-config broker (v1.8).** The broker host defaults to **empty**, not a
+hard-coded `192.168.1.10`. Transport selection keys off `Settings.hasBroker`
+(`brokerHost.isNotBlank()`), *not* `isConfigured`: a box with a blank broker —
+whether never set up or saved through the zero-config path — auto-discovers a
+broker on the LAN and, if none answers, becomes the P2P WS server so the
+controller can scan its QR and dial in directly. `save()` persists the host
+unconditionally (trimmed, including empty) so an operator can *clear* a bad
+broker and fall back to auto-discovery. `192.168.1.10` survives only as the
+input-field hint. The old default was a trap: a blank field silently kept the
+phantom host, `isConfigured` flipped true, and the box dead-dialed a broker
+nobody runs (the "连接断开" after scanning).
+
+**Diagnostics & self-check on the settings screen (v1.8).** Grouped at the top
+so a single screenshot tells the whole story (redesign §2 "一眼可核对"):
+
+- **Connection phase** — `ConnState` (a process-static breadcrumb the service
+  publishes, mirroring `KioskState`) surfaces `STARTING / DISCOVERING /
+  CONNECTING_BROKER / CONNECTED_BROKER / P2P_WAITING / P2P_CONNECTED /
+  DISCONNECTED (+reason)`. The screen polls it every second; `PlayerService`'s
+  status loop reconciles it against the live link so a silent drop/reconnect is
+  reflected instead of a stale "已连接".
+- **Hardware self-check** — real `MemTotal` (parsed from `/proc/meminfo`) plus
+  `/data` free/total (`StatFs`), via `SystemInfo`. Pure display, never blocks
+  setup; lets Jay judge cheap-box hardware remotely from a screenshot.
+- **Junk/miner warning** — `SystemInfo.scanBloatware()` flags known preinstalled
+  PCDN-miner / background-daemon packages (`SystemInfo.KNOWN_BLOATWARE`, an
+  extensible constant) and advises manual disable. It never uninstalls or kills
+  (4.4 permissions + risk) — visible warning only.
+
+**Reset connection config (v1.8).** A "重置连接配置" button (`Settings.reset
+Connection()`) wipes the broker endpoint, port, WSS flag, group, and key
+material back to the unconfigured zero-config state, restarts the service to
+re-select a transport, and re-shows the pairing QR — self-recovery without adb.
+Device identity (device_id/name) and cached media are deliberately kept.
+
 ## Kiosk / Device Owner notes
 
 Full lockdown (Lock Task without the "screen pinned" prompt, blocking the

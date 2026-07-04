@@ -7,15 +7,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.text.InputType
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.EditText
-import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -47,7 +43,6 @@ class MainActivity : AppCompatActivity() {
 
     /** Hidden kiosk-exit backdoor matcher (top-left taps + D-pad sequence). */
     private val exitGesture = ExitGestureDetector()
-    @Volatile private var pinDialogShowing = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -195,15 +190,16 @@ class MainActivity : AppCompatActivity() {
     /**
      * Catch every touch before children consume it so the top-left hot-zone tap
      * counter works even over the video surface. The hot-zone is the top-left
-     * 1/6 of width × height (§debug backdoor). 7 taps within 3s → PIN prompt.
+     * 1/6 of width × height (§debug backdoor). 7 taps within 3s → exit the kiosk.
+     * Per Jay's decision the gesture is the whole gate now — no PIN prompt.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN && !pinDialogShowing) {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             val hotW = binding.root.width / 6f
             val hotH = binding.root.height / 6f
             if (ev.x <= hotW && ev.y <= hotH) {
                 if (exitGesture.onHotZoneTap(System.currentTimeMillis())) {
-                    promptExitPin()
+                    exitKiosk()
                 }
             }
         }
@@ -213,39 +209,16 @@ class MainActivity : AppCompatActivity() {
     /**
      * D-pad backdoor for remote-only boxes: UP UP DOWN DOWN (§debug backdoor).
      * Swallow the arrow keys so they never leak to the player while matching.
+     * A completed sequence exits the kiosk directly (no PIN).
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-            if (!pinDialogShowing && exitGesture.onKey(keyCode, System.currentTimeMillis())) {
-                promptExitPin()
+            if (exitGesture.onKey(keyCode, System.currentTimeMillis())) {
+                exitKiosk()
             }
             return true // consume arrows in kiosk
         }
         return super.onKeyDown(keyCode, event)
-    }
-
-    /** Show the PIN dialog; correct PIN → [exitKiosk], wrong → toast, no exit. */
-    private fun promptExitPin() {
-        if (pinDialogShowing) return
-        pinDialogShowing = true
-        val input = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            hint = getString(R.string.kiosk_pin_hint)
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.kiosk_pin_title)
-            .setView(input)
-            .setCancelable(true)
-            .setPositiveButton(R.string.kiosk_pin_ok) { _, _ ->
-                if (input.text.toString() == settings.kioskExitPin) {
-                    exitKiosk()
-                } else {
-                    Toast.makeText(this, R.string.kiosk_pin_wrong, Toast.LENGTH_SHORT).show()
-                }
-            }
-            .setNegativeButton(R.string.kiosk_pin_cancel, null)
-            .setOnDismissListener { pinDialogShowing = false }
-            .show()
     }
 
     /**

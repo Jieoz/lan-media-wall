@@ -35,11 +35,34 @@
 
     <string name="idle_text">局域网媒体墙</string>
 
-    <!-- §调试后门:隐藏的退出 kiosk PIN 弹窗(左上角连点 7 下 / 方向键
-         上 上 下 下)。让操作者在设备上离开锁定的 kiosk。 -->
-    <string name="kiosk_pin_title">退出 kiosk</string>
-    <string name="kiosk_pin_hint">输入 PIN</string>
-    <string name="kiosk_pin_ok">解锁</string>
-    <string name="kiosk_pin_cancel">取消</string>
-    <string name="kiosk_pin_wrong">PIN 错误</string>
+    <!-- §2 硬件自检:真实内存 + /data 容量,截图即可判断盒子够不够格。 -->
+    <string name="label_hardware">硬件自检</string>
+    <string name="hw_mem_fmt">内存 (MemTotal):%1$s</string>
+    <string name="hw_storage_fmt">/data 存储:可用 %1$s / 共 %2$s</string>
+    <string name="hw_unknown">读取失败</string>
+    <string name="hw_mb_fmt">%1$d MB</string>
+
+    <!-- §junk:部分盒子预装的挖矿/后台守护包。仅提示,不自动卸载/杀进程。 -->
+    <string name="label_bloatware">检测到的垃圾 / 挖矿应用</string>
+    <string name="bloatware_none">未检测到。</string>
+    <string name="bloatware_advice">这些应用可能偷跑流量/抢占 CPU。建议到系统设置里手动禁用(本应用不会自动卸载):</string>
+
+    <!-- §2 连接状态:传输层在干什么,让连不上时能自诊断,而非只有"连接断开"。 -->
+    <string name="label_conn_status">连接状态</string>
+    <string name="conn_starting">启动中…</string>
+    <string name="conn_discovering">正在局域网内查找协调者…</string>
+    <string name="conn_connecting_broker_fmt">正在连接 broker %1$s…</string>
+    <string name="conn_connected_broker_fmt">已连接 broker %1$s</string>
+    <string name="conn_p2p_waiting_fmt">P2P 服务已就绪 %1$s —— 等待遥控端扫码接入</string>
+    <string name="conn_p2p_connected">遥控端已接入(P2P)</string>
+    <string name="conn_disconnected_fmt">连接断开(%1$s)—— 重连中…</string>
+    <string name="conn_disconnected">连接断开 —— 重连中…</string>
+
+    <!-- §9 自救:清空 broker 配置,回到零配置 / 扫码配对。 -->
+    <string name="action_reset_conn">重置连接配置</string>
+    <string name="reset_conn_confirm_title">重置连接配置?</string>
+    <string name="reset_conn_confirm_msg">将清空 broker 地址、密钥与分组,让本盒回到自动发现 / 扫码配对状态。设备身份与已缓存媒体会保留。</string>
+    <string name="reset_conn_done">连接配置已重置 —— 重新显示配对二维码。</string>
+    <string name="action_confirm">确认</string>
+    <string name="action_cancel">取消</string>
 </resources>

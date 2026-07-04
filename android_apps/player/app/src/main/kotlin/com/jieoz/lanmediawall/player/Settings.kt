@@ -51,9 +51,27 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_GROUP_ID, "default") ?: "default"
         set(value) { prefs.edit().putString(KEY_GROUP_ID, value).apply() }
 
+    /**
+     * Broker address (§2 zero-config). Default is **empty** — a fresh box has no
+     * broker and must be free to auto-discover one or fall back to the p2p server
+     * (§14.3). The old `"192.168.1.10"` default was a trap: an operator who saved
+     * first-boot setup with the (optional) broker field blank kept that phantom
+     * host, `markConfigured()` flipped isConfigured=true, and the box then
+     * dead-dialed a broker nobody runs — never entering p2p, so the controller's
+     * scanned enroll QR (which points at THIS box as a p2p server) got "连接断开".
+     * `192.168.1.10` now lives only as the input-field hint. See [hasBroker].
+     */
     var brokerHost: String
-        get() = prefs.getString(KEY_BROKER_HOST, "192.168.1.10") ?: "192.168.1.10"
+        get() = prefs.getString(KEY_BROKER_HOST, "") ?: ""
         set(value) { prefs.edit().putString(KEY_BROKER_HOST, value).apply() }
+
+    /**
+     * True when a real broker endpoint has been set (non-blank host). Transport
+     * selection keys off THIS, not [isConfigured]: a box configured for the
+     * zero-config path (blank broker) must still probe/P2P-fallback rather than
+     * dial a phantom broker. See [com.jieoz.lanmediawall.player.PlayerService].
+     */
+    val hasBroker: Boolean get() = brokerHost.isNotBlank()
 
     var brokerPort: Int
         get() = prefs.getInt(KEY_BROKER_PORT, 8770)
@@ -121,19 +139,6 @@ class Settings(context: Context) {
             com.jieoz.lanmediawall.player.cache.CacheEviction.DEFAULT_MAX_BYTES)
         set(value) { prefs.edit().putLong(KEY_CACHE_MAX_BYTES, value).apply() }
 
-    /**
-     * PIN that unlocks the hidden kiosk-exit backdoor (on-device debugging, see
-     * [ExitGestureDetector] + MainActivity). Plain prefs by design: this only
-     * gates *local* egress from the kiosk (stopLockTask + jump to Settings) — it
-     * carries no network-auth weight, so encrypting it would add cost for no
-     * threat-model benefit. Default [DEFAULT_KIOSK_EXIT_PIN]; change it here or
-     * via prefs before shipping a wall. See README §kiosk-exit.
-     */
-    var kioskExitPin: String
-        get() = prefs.getString(KEY_KIOSK_EXIT_PIN, DEFAULT_KIOSK_EXIT_PIN)
-            ?: DEFAULT_KIOSK_EXIT_PIN
-        set(value) { prefs.edit().putString(KEY_KIOSK_EXIT_PIN, value).apply() }
-
     val brokerWsUrl: String
         get() {
             val scheme = if (useWss) "wss" else "ws"
@@ -178,6 +183,29 @@ class Settings(context: Context) {
         }
     }
 
+    /**
+     * §9 "重置连接配置": wipe the broker endpoint + config flags so the box
+     * returns to the **unconfigured, zero-config** state (auto-discover → p2p
+     * fallback → show its enroll QR again). Lets an operator self-recover from a
+     * bad/stale broker without adb. Deliberately keeps device identity
+     * (device_id / device_name) and media cache — this only resets *how the box
+     * connects*, not *who it is* or *what it cached*. Key material is cleared too
+     * so a re-pair starts clean (a fresh QR scan re-establishes it).
+     */
+    fun resetConnection() {
+        prefs.edit()
+            .remove(KEY_CONFIGURED)
+            .remove(KEY_BROKER_HOST)
+            .remove(KEY_BROKER_PORT)
+            .remove(KEY_USE_WSS)
+            .remove(KEY_GROUP_ID)
+            .remove(KEY_PSK)
+            .remove(KEY_KEY_MODE)
+            .remove(KEY_DEVICE_KEY)
+            .remove(KEY_BROKER_KEY)
+            .apply()
+    }
+
     companion object {
         private const val PREFS = "lmw_settings"
 
@@ -196,7 +224,6 @@ class Settings(context: Context) {
         private const val KEY_MUTED = "muted"
         private const val KEY_ALWAYS_THUMBS = "always_thumbs"
         private const val KEY_CACHE_MAX_BYTES = "cache_max_bytes"
-        private const val KEY_KIOSK_EXIT_PIN = "kiosk_exit_pin"
 
         const val DEFAULT_PSK = "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY"
 
@@ -207,8 +234,5 @@ class Settings(context: Context) {
          * hard-coded "1.0.0"). BuildConfig is generated (buildConfig=true).
          */
         val APP_VERSION: String = com.jieoz.lanmediawall.player.BuildConfig.VERSION_NAME
-
-        /** Default PIN for the kiosk-exit backdoor (see [kioskExitPin]). */
-        const val DEFAULT_KIOSK_EXIT_PIN = "246813"
     }
 }

@@ -3,8 +3,8 @@ package com.jieoz.lanmediawall.player
 /**
  * Pure, Android-free matcher for the hidden kiosk-exit backdoor triggers (§debug
  * backdoor). Extracted so the timing/sequence logic is unit-testable on the JVM
- * — [MainActivity] feeds it real touch/key events, this decides when to prompt
- * for the PIN.
+ * — [MainActivity] feeds it real touch/key events, this decides when a match
+ * completes and the kiosk exits directly (no PIN, per operator request v1.8).
  *
  * Two independent channels so both touch boxes and remote-only boxes can escape:
  *  - **Tap channel**: N quick taps in the screen's top-left hot-zone within a

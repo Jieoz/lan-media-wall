@@ -40,6 +40,35 @@
             android:textSize="13sp"
             android:paddingBottom="12dp" />
 
+        <!-- §2 一眼可核对: connection status + hardware self-check + junk-package
+             warning, grouped at the top so a screenshot tells the whole story. -->
+        <TextView style="@style/SettingLabel" android:text="@string/label_conn_status" />
+        <TextView
+            android:id="@+id/text_conn_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/accent"
+            android:textSize="13sp"
+            android:paddingBottom="8dp" />
+
+        <TextView style="@style/SettingLabel" android:text="@string/label_hardware" />
+        <TextView
+            android:id="@+id/text_hardware"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="13sp"
+            android:paddingBottom="8dp" />
+
+        <TextView style="@style/SettingLabel" android:text="@string/label_bloatware" />
+        <TextView
+            android:id="@+id/text_bloatware"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="13sp"
+            android:paddingBottom="12dp" />
+
         <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
         <EditText
             android:id="@+id/input_device_name"
@@ -142,6 +171,15 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:text="@string/action_save" />
+
+        <!-- §9 self-recovery: clear broker config back to zero-config / QR
+             pairing without adb. Sits below Save; confirms before wiping. -->
+        <Button
+            android:id="@+id/btn_reset_conn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/action_reset_conn" />
 
     </LinearLayout>
 </ScrollView>

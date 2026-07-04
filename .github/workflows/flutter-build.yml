@@ -100,6 +100,21 @@ jobs:
           else
             echo "CAMERA permission already present"
           fi
+          # 应用名（§3）：`flutter create --project-name remote_flutter` 生成的
+          # android:label 就是 "remote_flutter"，装到手机上显示这个内部名。改包名
+          # 会波及 Dart import，副作用大；这里只把 <application android:label> 改成
+          # 正式中文名（幂等：把任何现值替换成目标值）。只动 android/ 脚手架，不碰
+          # pubspec name / Dart 代码。
+          APP_LABEL="媒体墙遥控"
+          if grep -q 'android:label=' "$MANIFEST"; then
+            sed -i "s#android:label=\"[^\"]*\"#android:label=\"$APP_LABEL\"#" "$MANIFEST"
+            echo "set android:label -> $APP_LABEL"
+          else
+            sed -i "s#\(<application\)#\1 android:label=\"$APP_LABEL\"#" "$MANIFEST"
+            echo "injected android:label -> $APP_LABEL"
+          fi
+          echo "--- android:label / <application> after patch ---"
+          grep -nE 'android:label|<application' "$MANIFEST" || true
           # minSdkVersion 21：Flutter 新脚手架用 build.gradle(.kts) 里的
           # `minSdk = flutter.minSdkVersion` 占位；mobile_scanner 3.5 要求 21。
           # compileSdk  36：CameraX 1.3.1（mobile_scanner 传递依赖）的 AAR
@@ -147,7 +162,7 @@ jobs:
       # below when keystore secrets are present.
       - name: Build release APKs (split per ABI)
         working-directory: remote_flutter
-        run: flutter build apk --release --split-per-abi
+        run: flutter build apk --release --split-per-abi --build-name=1.8.0 --build-number=18
 
       - name: Upload release APKs
         uses: actions/upload-artifact@v4
@@ -191,7 +206,7 @@ jobs:
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-          flutter build apk --release --split-per-abi || {
+          flutter build apk --release --split-per-abi --build-name=1.8.0 --build-number=18 || {
             echo "::warning::Signed release build failed (likely signingConfig not wired into the generated Gradle). Unsigned release APKs already uploaded."
             exit 0
           }

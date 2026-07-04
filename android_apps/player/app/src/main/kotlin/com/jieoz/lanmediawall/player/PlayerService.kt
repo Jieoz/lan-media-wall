@@ -142,11 +142,20 @@ class PlayerService : Service() {
             ?.let { Envelope.hexToBytes(it) }
         val hasKeyMaterial = Envelope.hasUsableKey(settings.psk) || deviceKey != null
 
-        // a configured player trusts its paired broker (no probe needed); an
-        // unconfigured one probes the LAN for a coordinator (§14.5).
-        val announces = if (settings.isConfigured) {
+        // a player with a real (paired) broker host trusts it (no probe needed);
+        // a box with a blank broker — whether never configured OR "configured"
+        // via the zero-config path (§2, broker left empty) — probes the LAN for a
+        // coordinator and falls back to the p2p server if none answers (§14.5).
+        // Keying off hasBroker (not isConfigured) is the fix for a box that saved
+        // setup with an empty broker and used to dead-dial a phantom host.
+        val hasBroker = settings.hasBroker
+        val announces = if (hasBroker) {
+            ConnState.set(ConnState.Phase.CONNECTING_BROKER,
+                "${settings.brokerHost}:${settings.brokerPort}")
             emptyList()
         } else {
+            // §2: no broker configured → tell the UI we're probing the LAN.
+            ConnState.set(ConnState.Phase.DISCOVERING)
             DiscoveryProbe(
                 psk = settings.psk,
                 deviceId = settings.deviceId,
@@ -158,7 +167,8 @@ class PlayerService : Service() {
 
         val plan = TransportSelector.select(
             TransportSelector.Config(
-                isConfigured = settings.isConfigured,
+                // "configured" for transport = has a real broker to dial.
+                isConfigured = hasBroker,
                 brokerHost = settings.brokerHost,
                 brokerPort = settings.brokerPort,
                 useWss = settings.useWss,
@@ -171,31 +181,44 @@ class PlayerService : Service() {
         val brokerKey = settings.brokerKeyHex.takeIf { it.isNotBlank() }
             ?.let { Envelope.hexToBytes(it) }
         val newLink: CoordinatorLink = when (plan) {
-            is TransportSelector.Plan.Client -> BrokerClient(
-                url = plan.url,
-                psk = settings.psk,
-                deviceId = settings.deviceId,
-                clock = clock,
-                onConnect = { onCoordinatorConnected() },
-                onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
-                initialKeyMode = plan.keyMode,
-                deviceKey = deviceKey,
-                brokerKey = brokerKey,
-            )
-            is TransportSelector.Plan.P2pServer -> P2pServer(
-                psk = settings.psk,
-                deviceId = settings.deviceId,
-                groupId = settings.groupId,
-                clock = clock,
-                // §14.3: a controller dialing in is now watching → open the
-                // thumbnail gate (§6.4). We are the coordinator; no hello to send.
-                onConnect = { controllerPresent = true },
-                onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
-                initialAuthMode = plan.authMode,
-                initialKeyMode = plan.keyMode,
-                deviceKey = deviceKey,
-                listenPort = plan.listenPort,
-            )
+            is TransportSelector.Plan.Client -> {
+                // if we probe-discovered a broker (no configured host), reflect
+                // the endpoint we're actually dialing.
+                ConnState.set(ConnState.Phase.CONNECTING_BROKER,
+                    brokerHintFromWsUrl(plan.url))
+                BrokerClient(
+                    url = plan.url,
+                    psk = settings.psk,
+                    deviceId = settings.deviceId,
+                    clock = clock,
+                    onConnect = { onCoordinatorConnected() },
+                    onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+                    initialKeyMode = plan.keyMode,
+                    deviceKey = deviceKey,
+                    brokerKey = brokerKey,
+                )
+            }
+            is TransportSelector.Plan.P2pServer -> {
+                // §14.3: no broker — we're the p2p server waiting for a controller.
+                ConnState.set(ConnState.Phase.P2P_WAITING, "$deviceIp:${plan.listenPort}")
+                P2pServer(
+                    psk = settings.psk,
+                    deviceId = settings.deviceId,
+                    groupId = settings.groupId,
+                    clock = clock,
+                    // §14.3: a controller dialing in is now watching → open the
+                    // thumbnail gate (§6.4). We are the coordinator; no hello to send.
+                    onConnect = {
+                        controllerPresent = true
+                        ConnState.set(ConnState.Phase.P2P_CONNECTED)
+                    },
+                    onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+                    initialAuthMode = plan.authMode,
+                    initialKeyMode = plan.keyMode,
+                    deviceKey = deviceKey,
+                    listenPort = plan.listenPort,
+                )
+            }
         }
         link = newLink
         newLink.start()
@@ -217,15 +240,15 @@ class PlayerService : Service() {
             ?.let { Envelope.hexToBytes(it) }
         discovery = when (plan) {
             is TransportSelector.Plan.Client -> {
-                // §7: advertise on 8772 **whether or not we're configured**. A
-                // configured player points peers at its paired broker; an
-                // *unconfigured* player that discovered a broker (mode B) still
-                // must be visible to the controller AND relay the broker it found,
-                // so it advertises the endpoint it actually connected to (parsed
-                // from plan.url) rather than the empty configured host. Removing
-                // the old `if (!isConfigured) return` is the fix for "两台互不发现"
-                // when a broker exists but this box was never paired.
-                val hint = if (settings.isConfigured) {
+                // §7: advertise on 8772 **whether or not we have a broker**. A
+                // box with a paired broker points peers at it; a box with a blank
+                // broker that nonetheless discovered one (mode B) still must be
+                // visible to the controller AND relay the broker it found, so it
+                // advertises the endpoint it actually connected to (parsed from
+                // plan.url) rather than the empty configured host. Keying off
+                // hasBroker (not isConfigured) is the fix for "两台互不发现" when a
+                // broker exists but this box's broker field was never filled.
+                val hint = if (settings.hasBroker) {
                     "${settings.brokerHost}:${settings.brokerPort}"
                 } else {
                     brokerHintFromWsUrl(plan.url)
@@ -354,6 +377,7 @@ class PlayerService : Service() {
      *  coordinator and sends `welcome` from [P2pServer] instead, so this is only
      *  wired for the client path. */
     private fun onCoordinatorConnected() {
+        ConnState.set(ConnState.Phase.CONNECTED_BROKER, ConnState.detail)
         val payload = jsonObj {
             put("role", "player")
             put("device_id", settings.deviceId)
@@ -380,10 +404,39 @@ class PlayerService : Service() {
     private suspend fun statusLoop() {
         while (scope.isActive) {
             try {
+                reconcileConnPhase()
                 sendStatus()
             } catch (_: Exception) {
             }
             delay(1500) // §5: every 1–2s
+        }
+    }
+
+    /**
+     * §2 diagnostics: keep [ConnState] honest between the connect/onConnect
+     * transitions. A [BrokerClient] reconnects silently with backoff, so poll its
+     * live state here — a link that was up but is now down flips the phase to
+     * DISCONNECTED so the settings page shows the drop instead of a stale
+     * "已连接"; a silent reconnect flips it back to the matching connected phase.
+     */
+    private fun reconcileConnPhase() {
+        val l = link ?: return
+        val up = l.isConnected
+        val p = ConnState.phase
+        val isP2p = l is P2pServer
+        if (up) {
+            if (p == ConnState.Phase.DISCONNECTED) {
+                ConnState.set(
+                    if (isP2p) ConnState.Phase.P2P_CONNECTED else ConnState.Phase.CONNECTED_BROKER,
+                    ConnState.detail,
+                )
+            }
+        } else {
+            // p2p down just means "still waiting for a controller"; a broker
+            // client being down is a real drop worth surfacing.
+            if (!isP2p && p == ConnState.Phase.CONNECTED_BROKER) {
+                ConnState.set(ConnState.Phase.DISCONNECTED, ConnState.detail)
+            }
         }
     }
 

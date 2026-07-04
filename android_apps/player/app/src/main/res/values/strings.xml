@@ -35,11 +35,37 @@
 
     <string name="idle_text">LAN Media Wall</string>
 
-    <!-- §debug backdoor: hidden kiosk-exit PIN dialog (top-left 7-tap / D-pad
-         UP UP DOWN DOWN). Lets an operator leave the locked kiosk on-device. -->
-    <string name="kiosk_pin_title">Exit kiosk</string>
-    <string name="kiosk_pin_hint">Enter PIN</string>
-    <string name="kiosk_pin_ok">Unlock</string>
-    <string name="kiosk_pin_cancel">Cancel</string>
-    <string name="kiosk_pin_wrong">Wrong PIN</string>
+    <!-- §2 hardware self-check: real RAM + /data capacity, so an operator can
+         judge whether cheap box hardware is good enough from a screenshot. -->
+    <string name="label_hardware">Hardware self-check</string>
+    <string name="hw_mem_fmt">RAM (MemTotal): %1$s</string>
+    <string name="hw_storage_fmt">/data storage: %1$s free / %2$s total</string>
+    <string name="hw_unknown">unavailable</string>
+    <string name="hw_mb_fmt">%1$d MB</string>
+
+    <!-- §junk: known miner/daemon packages preinstalled on some boxes. Warning
+         only — we never uninstall/kill; operator disables them manually. -->
+    <string name="label_bloatware">Detected junk / miner packages</string>
+    <string name="bloatware_none">None detected.</string>
+    <string name="bloatware_advice">These packages can steal bandwidth/CPU. Consider disabling them in system settings (we don\'t remove them automatically):</string>
+
+    <!-- §2 connection status: what the transport is doing, so a failure to reach
+         the wall is self-diagnosable instead of a bare "connection lost". -->
+    <string name="label_conn_status">Connection status</string>
+    <string name="conn_starting">Starting…</string>
+    <string name="conn_discovering">Searching LAN for a coordinator…</string>
+    <string name="conn_connecting_broker_fmt">Connecting to broker %1$s…</string>
+    <string name="conn_connected_broker_fmt">Connected to broker %1$s</string>
+    <string name="conn_p2p_waiting_fmt">P2P server ready at %1$s — waiting for the controller to scan the QR</string>
+    <string name="conn_p2p_connected">Controller connected (P2P)</string>
+    <string name="conn_disconnected_fmt">Disconnected (%1$s) — reconnecting…</string>
+    <string name="conn_disconnected">Disconnected — reconnecting…</string>
+
+    <!-- §9 self-recovery: wipe broker config back to zero-config / QR pairing. -->
+    <string name="action_reset_conn">Reset connection config</string>
+    <string name="reset_conn_confirm_title">Reset connection config?</string>
+    <string name="reset_conn_confirm_msg">Clears the broker address, key, and group so this box returns to auto-discovery / QR pairing. Device identity and cached media are kept.</string>
+    <string name="reset_conn_done">Connection config reset — showing the pairing QR again.</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="action_cancel">Cancel</string>
 </resources>

@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.8.0] — 2026-07-04
+
+### Fixed
+- **未配置被控端不再死连示例 broker (§2)**: `Settings.brokerHost` 默认从硬编码 `192.168.1.10` 改为**空串**;传输选择改以 `hasBroker`(`brokerHost.isNotBlank()`)为准而非 `isConfigured`——broker 留空的盒子先自动发现、发现不到就进 P2P 服务端等遥控端扫码,修复扫码后一直「连接断开」。`SettingsActivity.save()` 无条件写 host(含空、已 trim),使坏 broker 可被清空回自动发现。`192.168.1.10` 仅保留为输入框占位提示。
+
+### Added
+- **连接自诊断 (§8)**: 新增进程内 `ConnState`(仿 `KioskState`),`PlayerService` 发布 `STARTING/DISCOVERING/CONNECTING_BROKER/CONNECTED_BROKER/P2P_WAITING/P2P_CONNECTED/DISCONNECTED(+原因)`;设置页每秒刷新,status loop 对账 live link,断线/重连不再显示过期状态。
+- **硬件自检 (§5)**: 设置页显示真实 `MemTotal`(读 `/proc/meminfo`)+ `/data` 可用/总容量(`StatFs`),远程截图即可判断盒子硬件。纯展示。
+- **挖矿/垃圾包提示 (§6)**: `SystemInfo.scanBloatware` 检测已知预装包(`com.youku.taitan.tv`/`com.youku.cloud.dog` 等,列表常量可扩展),提示手动禁用;不自动卸载/杀进程。
+- **重置连接配置 (§9)**: 设置页新增按钮,`Settings.resetConnection()` 清空 broker/端口/WSS/分组/密钥回到未配置态并重启服务重选传输、重显配对二维码;保留设备身份与缓存,免 adb 自救。
+- **批量装机脚本 (§7)**: `scripts/deploy_player.sh` 遍历 root 盒子推 APK 到 `/data/app` → chmod → reboot 采纳 → 校验版本,绕开假容量闪存的 `INSTALL_FAILED_INVALID_INSTALL_LOCATION`,支持多设备循环与 `SKIP_REBOOT`/`BOOT_TIMEOUT` 等环境变量。
+
+### Changed
+- **退出 kiosk 取消 PIN (§4)**: 暗键手势(左上 7 连击 / 遥控 ↑↑↓↓)命中后**直接退出**,移除 PIN 弹窗与 `kioskExitPin`/`DEFAULT_KIOSK_EXIT_PIN` 等死代码。手势本身不变。
+- **控制端应用名 (§3)**: `flutter-build.yml` 在生成 android/ 后把 `android:label` 注入为**媒体墙遥控**(不动 pubspec name / Dart import,副作用最小)。
+- **版本对齐 1.8.0 (§2)**: player `versionName 1.8.0 / versionCode 18`;controller `pubspec 1.8.0+18`,并在 `flutter build apk` 传 `--build-name=1.8.0 --build-number=18` 确保进入最终 APK。
+
+### Verified
+- `python3 -m py_compile broker/*.py windows_player/*.py` 通过;`pytest -q broker/tests windows_player/tests` = **221 passed**(broker 84 + windows_player 137)。Dart 端 `remote_flutter/test` 走云 CI。
+- Android 源码级引用完整性自检:新增 `R.string`/`R.id`/binding id、`ConnState`/`SystemInfo`/`resetConnection`/`hasBroker`/`deviceIp`/`brokerHintFromWsUrl`/`isConnected` 均已定义;color/style 资源齐全。
+- Android/Flutter 编译走 GitHub Actions 云 CI(ARM 容器不跑 gradle/flutter)。
+
 ## [v1.7.0] — 2026-07-03
 
 ### Added
