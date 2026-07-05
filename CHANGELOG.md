@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.10.5] — 2026-07-05
+
+### Fixed (CRITICAL — 一张图都推不出去的真根因)
+- **扫码直连盒子后「推送并播放」零反应**: 真机确认盒子在设备列表里、WS 连上、status/thumb_meta 持续上报,但盒子日志**从无 `RX prepare`**,控制端诊断显示 **`p2p prepare → 0 台`**。根因:`P2pCoordinator.startSync` 用 `GroupExpander.expand('group:<gid>')` 算推送目标,`d.groupId == gid` 严格相等匹配,group_id 任何细微漂移(前后空格/大小写)都会让目标集为空 → 一条 prepare 都不发。
+  - 修复①:`GroupExpander` group 比较 `trim().toLowerCase()`,空 gid 视为通配。
+  - 修复②(兜底,决定性):`startSync` 若按 group 算出的 targets 为空、但确有已连接被控端,则直接把**全部已直连设备**作为目标——扫码直连一台盒子绝不该因 group 匹配细节而"推图完全没反应"。
+  - 修复③:`startSync` 打印决定性诊断 `gid / connected / 各设备 group_id / targets`,下次一眼定位。
+- **控制端诊断日志无法复制**: 设置页「诊断日志」新增「复制全部」按钮(一键复制到剪贴板 + SnackBar 回执),单行改 `SelectableText` 可长按选中复制。
+
 ## [v1.10.4] — 2026-07-05
 
 ### Fixed (CRITICAL — 真机验证驱动)

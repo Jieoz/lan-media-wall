@@ -312,11 +312,25 @@ class P2pCoordinator {
     final prepareId = uuid4();
     final devices =
         aggregator.snapshot(serverTime: clock.serverTime()).devices;
-    final targets = GroupExpander.expand(
+    var targets = GroupExpander.expand(
       'group:$groupId',
       devices: devices,
       connected: connectedIds,
     ).toSet();
+    // §诊断:targets 为空是"点了推送盒子没反应"的头号原因。把决定 targets 的三个
+    // 值原样打出来,一眼看出到底是 groupId 对不上、还是 connected 不含它。
+    _log('startSync gid="$groupId" '
+        'connected=${connectedIds.toList()} '
+        'devices=${devices.map((d) => "${d.deviceId}@grp=\"${d.groupId}\"").toList()} '
+        '→ targets=${targets.toList()}');
+    // §兜底(单遥控端直连场景):若按 group 匹配算不出目标,但确实有已连接的被控端,
+    // 就把"当前所有已直连的设备"作为目标——扫码直连一台盒子却因 group_id 漂移
+    // (空串/大小写/前后空格)被过滤,是绝不该让"推图完全没反应"的。宁可多发给已连的,
+    // 也不要静默 0 台。真机上"列表里有、连上了、却推不动"正是被这一层救回。
+    if (targets.isEmpty && connectedIds.isNotEmpty) {
+      targets = connectedIds.toSet();
+      _log('startSync group 匹配为空 → 回退到全部已连接 ${targets.length} 台: ${targets.toList()}');
+    }
     handshake.begin(
       prepareId: prepareId,
       groupId: groupId,

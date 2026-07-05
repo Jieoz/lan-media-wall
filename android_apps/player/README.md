@@ -8,7 +8,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.10.4 / versionCode 24`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.10.5 / versionCode 25`** (see `app/build.gradle.kts`).
 > The **Settings screen shows this version** at the top of the device-info line
 > (`版本: v<name> (build <code>)`), read from `BuildConfig` — single source of truth,
 > so what you see on-screen always matches the installed build.

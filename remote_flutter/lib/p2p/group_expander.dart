@@ -43,10 +43,15 @@ class GroupExpander {
     if (to.startsWith('player:')) {
       raw = [to.substring('player:'.length)];
     } else if (to.startsWith('group:')) {
-      final gid = to.substring('group:'.length);
+      final gid = to.substring('group:'.length).trim().toLowerCase();
       raw = [
         for (final d in devices)
-          if (d.groupId == gid && d.deviceId.isNotEmpty) d.deviceId,
+          // group 比较容忍前后空格 + 大小写差异(真机上 group_id 常因这些细节漂移,
+          // 导致"default" vs "default " vs "Default" 匹配失败 → 推图静默 0 台)。
+          // gid 为空时视为通配(匹配所有设备),避免"未指定组"被当成"匹配空组"。
+          if ((gid.isEmpty || d.groupId.trim().toLowerCase() == gid) &&
+              d.deviceId.isNotEmpty)
+            d.deviceId,
       ];
     } else {
       // all / broker / 其它 → 全体

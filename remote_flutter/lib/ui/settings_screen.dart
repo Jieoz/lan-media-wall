@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../net/broker_client.dart';
@@ -121,7 +122,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () => _save(state),
           ),
           const SizedBox(height: 24),
-          Text('诊断日志', style: Theme.of(context).textTheme.titleMedium),
+          Row(
+            children: [
+              Text('诊断日志', style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              TextButton.icon(
+                icon: const Icon(Icons.copy, size: 18),
+                label: const Text('复制全部'),
+                onPressed: () async {
+                  final text = state.logLines.join('\n');
+                  await Clipboard.setData(ClipboardData(text: text));
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('已复制 ${state.logLines.length} 行日志到剪贴板')),
+                    );
+                  }
+                },
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
           _LogView(lines: state.logLines),
         ],
@@ -164,7 +183,7 @@ class _LogView extends StatelessWidget {
               itemCount: lines.length,
               itemBuilder: (context, i) {
                 final line = lines[lines.length - 1 - i];
-                return Text(line,
+                return SelectableText(line,
                     style: const TextStyle(
                         fontFamily: 'monospace', fontSize: 12));
               },

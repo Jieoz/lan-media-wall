@@ -3,7 +3,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.10.3+23`**(`pubspec.yaml`)。CI 用 `flutter build apk --build-name=1.10.3 --build-number=23` 把版本号烧进 APK(pubspec 的版本在 flutter 构建时不一定自动进包,靠这两个参数兜底)。发版流程见根 README。
+> **当前版本 `1.10.5+25`**(`pubspec.yaml`)。CI 用 `flutter build apk --build-name=1.10.5 --build-number=25` 把版本号烧进 APK(pubspec 的版本在 flutter 构建时不一定自动进包,靠这两个参数兜底)。发版流程见根 README。
+>
+> **推图目标匹配修复(v1.10.5,关键)**:扫码直连一台盒子后点「②推送并播放」却毫无反应、盒子日志零 `RX prepare`、控制端诊断日志显示 `p2p prepare → 0 台`——根因是 `startSync` 按 group 算出的目标集为空(group_id 细微漂移/匹配过严)。三重修复:(1) `GroupExpander` 的 group 比较改为容忍前后空格+大小写,空 gid 视为通配;(2) `startSync` 增加兜底——group 匹配为空但确有已连接被控端时,直接把**全部已直连设备**作为推送目标,绝不静默 0 台;(3) `startSync` 打印 `gid / connected / 各设备 group_id / targets` 决定性诊断行。诊断日志页新增「复制全部」按钮 + 单行可选中复制。
 >
 > **播放编排两个按钮(去歧义,v1.10.3)**:`①仅下发缓存 (不播)` = 只把媒体推到各盒子本地缓存、不播放;`②推送并播放` = 下发列表+预缓存+等全员就绪后统一起播(这就是"推送并播放")。「预缓存就绪 N/M」= M 台目标里有 N 台已把本次列表全部缓存校验完成;盒子未收到 prepare 时不会下载,故会一直停在 0/M。
 
