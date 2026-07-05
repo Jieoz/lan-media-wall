@@ -176,7 +176,7 @@ jobs:
       # below when keystore secrets are present.
       - name: Build release APKs (split per ABI)
         working-directory: remote_flutter
-        run: flutter build apk --release --split-per-abi --build-name=1.8.0 --build-number=18
+        run: flutter build apk --release --split-per-abi --build-name=1.9.0 --build-number=19
 
       - name: Upload release APKs
         uses: actions/upload-artifact@v4
@@ -220,7 +220,7 @@ jobs:
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-          flutter build apk --release --split-per-abi --build-name=1.8.0 --build-number=18 || {
+          flutter build apk --release --split-per-abi --build-name=1.9.0 --build-number=19 || {
             echo "::warning::Signed release build failed (likely signingConfig not wired into the generated Gradle). Unsigned release APKs already uploaded."
             exit 0
           }

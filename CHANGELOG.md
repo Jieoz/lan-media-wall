@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.9.0] — 2026-07-05
+
+### Added
+- **分组增删改 (group CRUD)**: broker/controller 支持 `update_group`/`delete_group`,遥控端可重命名分组、解散分组回收成员到未分组池;registry 落地 CRUD 并广播拓扑变更。
+- **设备远程配置 (`configure_device`)**: 遥控端下发 `configure_device` 直接改被控端运行参数(broker host/端口/分组/WSS/密钥),免 adb 上盒子,配合已有的自诊断与重置连接。
+- **本地文件上传到媒体库**: controller 通过 broker 媒体库(HTTP PUT/GET,带 Range 断点续传)推本地文件,盒子从 broker 拉取带缓存续传 + sha256 校验;不再强依赖 NAS。
+- **预缓存栅栏 (prefetch barrier)**: `prepare` 新增 prefetch 语义与更长的 barrier 超时,多屏在真正 `play_at` 前先把媒体拉全,减少首帧不同步。
+- **横屏 UI 重构**: 遥控端设备墙横屏布局重排,适配横向大屏操作。
+
+### Changed
+- **版本对齐 1.9.0**: player `versionName 1.9.0 / versionCode 19`;controller `pubspec 1.9.0+19`,`flutter build apk` 传 `--build-name=1.9.0 --build-number=19`。修复 v1.9.0 tag 内部版本号仍烧成 1.8.0 的漂移。
+
+### Verified
+- broker + windows_player 全套 pytest 绿(含新增 `test_group_mgmt`/`test_media_server`/`test_configure_and_barrier`)。
+- 四端(broker/flutter/android/windows)云编译走同一 tag SHA,GitHub Actions 全绿方视为发布。
+- README 同步门槛 `scripts/check_readme_sync.sh` 通过:模块代码改动均有对应 README 更新。
+
 ## [v1.8.0] — 2026-07-04
 
 ### Fixed

@@ -8,6 +8,11 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.4** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21).
 
+> **Current build: `versionName 1.9.0 / versionCode 19`** (see `app/build.gradle.kts`).
+> `versionCode` MUST increment on every release — it's how Android decides "this is
+> newer". Bumping `versionName` alone can cause the update to be rejected as the same
+> version. See the release checklist in the root README.
+
 ## What it does
 
 - **§1–§3 transport + auth** — one long-lived WebSocket to the broker over
