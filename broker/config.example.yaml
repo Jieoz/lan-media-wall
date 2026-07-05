@@ -41,6 +41,18 @@ ws_port: 8770
 wss_port: 8771          # used only when certs/cert.pem + certs/key.pem exist
 discovery_port: 8772    # UDP discover/announce
 
+# §20.1 media library (local-upload mode B). The broker exposes a small HTTP
+# endpoint so controllers can upload local files, which players then fetch over
+# the normal cache_prefetch path. Set media_port: 0 to disable the endpoint.
+media_port: 8773
+media_dir: "media"                 # where uploaded files are stored (by sha256)
+media_max_bytes: 524288000         # 500 MB per-file upload cap (413 over this)
+
+# §21.2 prefetch barrier: when a prepare is flagged prefetch:true, wait this long
+# for ALL group members to finish caching + report ready before starting whoever
+# is ready. Distinct from (and much longer than) ready_timeout_ms below.
+prefetch_barrier_timeout_ms: 120000
+
 # Where the device registry is persisted.
 state_path: "state.json"
 certs_dir: "certs"

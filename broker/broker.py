@@ -19,6 +19,7 @@ import websockets
 import clock
 import discovery as discovery_mod
 import envelope
+import media_server as media_mod
 import pairing
 import registry as registry_mod
 import router
@@ -36,6 +37,13 @@ DEFAULTS = {
     "ws_port": 8770,
     "wss_port": 8771,
     "discovery_port": 8772,
+    # §20.1 media library (local-upload mode B). 0 disables the HTTP endpoint.
+    "media_port": 8773,
+    "media_dir": "media",
+    "media_max_bytes": 500 * 1024 * 1024,  # 500 MB (contract §4.9)
+    # §21.2 prefetch barrier: how long to wait for all members to cache+ready
+    # before starting whoever is ready. Distinct from the short ready_timeout.
+    "prefetch_barrier_timeout_ms": 120000,
     "state_path": "state.json",
     "certs_dir": "certs",
     "buffer_ms": sync_mod.DEFAULT_BUFFER_MS,
@@ -158,6 +166,7 @@ class Hub:
         self._wall_dirty = True
         self._cooldowns: Dict[str, float] = {}          # ip -> until epoch s
         self.discovery: Optional[discovery_mod.Discovery] = None
+        self.media: Optional[media_mod.MediaServer] = None
 
     # ---- controller presence (gates thumbnail collection, §6.4) ----------
     def controllers_online(self) -> bool:
@@ -326,6 +335,10 @@ class Hub:
             "set_mute": self._on_route_to_players,
             "set_audio_master": self._on_route_to_players,
             "assign_group": self._on_assign_group,
+            "configure_device": self._on_configure_device,
+            "create_group": self._on_create_group,
+            "update_group": self._on_update_group,
+            "delete_group": self._on_delete_group,
             "set_schedule": self._on_route_to_players,
             "ota_check": self._on_route_to_players,
             "ota_apply": self._on_route_to_players,
@@ -432,9 +445,17 @@ class Hub:
                                      list(members))
             return
 
+        # §21.2 prefetch barrier: when the controller flags this prepare as a
+        # cache-gated start (`prefetch:true`), use the long barrier timeout so
+        # members have time to finish downloading before we start whoever's
+        # ready. Otherwise the short §9 ready timeout applies.
+        barrier = bool(p.get("prefetch"))
+        timeout_ms = (self.cfg.get("prefetch_barrier_timeout_ms")
+                      if barrier else None)
         # Fan the prepare out to members and open a ready-collection session.
         self.sync.start(env["msg_id"], group_id, playlist_id, members,
-                        start_index=start_index, seek_ms=seek_ms)
+                        start_index=start_index, seek_ms=seek_ms,
+                        timeout_ms=timeout_ms)
         fwd = self.make_env("prepare", p, f"group:{group_id}")
         await self.fanout_players(f"group:{group_id}", fwd)
 
@@ -543,6 +564,85 @@ class Hub:
                     await target.send_env(fwd)
                 except Exception:
                     pass
+
+    # ---- device config + group management (§18/§19) ---------------------
+    async def _on_configure_device(self, conn: ClientConn, env: dict) -> None:
+        """§19: unified per-device config. Persists device_name/group_id in the
+        registry and forwards the payload to the target player so it can apply
+        local prefs (volume/muted). group_id here is equivalent to assign_group."""
+        if conn.role != "controller":
+            return
+        p = env["payload"]
+        device_id = p.get("device_id")
+        if not device_id:
+            return
+        dev = self.reg.get(device_id)
+        if dev is not None:
+            name = p.get("device_name")
+            if name:
+                dev.device_name = name
+            group_id = p.get("group_id")
+            if group_id:
+                self.reg.assign_group(device_id, group_id)
+            else:
+                self.reg.save()
+            self.mark_wall_dirty()
+        # Forward to the player so it applies local prefs / new group.
+        target = self.players.get(device_id)
+        if target is not None:
+            fwd = self.make_env("configure_device", p, f"player:{device_id}")
+            try:
+                await target.send_env(fwd)
+            except Exception:
+                pass
+
+    async def _on_create_group(self, conn: ClientConn, env: dict) -> None:
+        """§18.1: create an empty group (idempotent)."""
+        if conn.role != "controller":
+            return
+        p = env["payload"]
+        group_id = p.get("group_id")
+        if not group_id:
+            return
+        self.reg.create_group(group_id, name=p.get("name"), sync=p.get("sync"))
+        self.mark_wall_dirty()
+
+    async def _on_update_group(self, conn: ClientConn, env: dict) -> None:
+        """§18.2: update an existing group's name/sync."""
+        if conn.role != "controller":
+            return
+        p = env["payload"]
+        group_id = p.get("group_id")
+        if not group_id:
+            return
+        if self.reg.update_group(group_id, name=p.get("name"),
+                                 sync=p.get("sync")):
+            self.mark_wall_dirty()
+
+    async def _on_delete_group(self, conn: ClientConn, env: dict) -> None:
+        """§18.3: delete a group; members fall back to reassign_to."""
+        if conn.role != "controller":
+            return
+        p = env["payload"]
+        group_id = p.get("group_id")
+        if not group_id or group_id == registry_mod.DEFAULT_GROUP:
+            return
+        reassign_to = p.get("reassign_to") or registry_mod.DEFAULT_GROUP
+        reassigned = self.reg.delete_group(group_id, reassign_to=reassign_to)
+        # Notify each affected player of its new group.
+        for device_id in reassigned:
+            target = self.players.get(device_id)
+            if target is None:
+                continue
+            fwd = self.make_env(
+                "assign_group",
+                {"device_id": device_id, "group_id": reassign_to},
+                f"player:{device_id}")
+            try:
+                await target.send_env(fwd)
+            except Exception:
+                pass
+        self.mark_wall_dirty()
 
     # ---- thumbnails (§6.4) ----------------------------------------------
     async def _on_thumb_meta(self, conn: ClientConn, env: dict) -> None:
@@ -682,6 +782,20 @@ async def run(cfg: dict, *, hub: Optional["Hub"] = None,
     else:
         log.info("no certs in %s -> WSS disabled", cfg["certs_dir"])
 
+    # §20.1 media library HTTP endpoint (local-upload mode B). 0 disables.
+    media_port = cfg.get("media_port", 0)
+    if media_port and media_port > 0:
+        hub.media = media_mod.MediaServer(
+            cfg.get("media_dir", "media"),
+            port=media_port,
+            max_bytes=cfg.get("media_max_bytes", media_mod.DEFAULT_MAX_BYTES),
+        )
+        try:
+            await hub.media.start()
+        except OSError as exc:
+            hub.media = None
+            log.warning("media library disabled: %s", exc)
+
     if cfg.get("enable_discovery"):
         hub.discovery = discovery_mod.Discovery(
             hub.psk, hub.on_announce, cfg["discovery_port"],
@@ -720,6 +834,9 @@ async def run(cfg: dict, *, hub: Optional["Hub"] = None,
             await s.wait_closed()
         if hub.discovery:
             hub.discovery.stop()
+        if hub.media:
+            hub.media.stop()
+            await hub.media.wait_closed()
     return hub
 
 

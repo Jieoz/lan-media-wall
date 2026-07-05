@@ -77,7 +77,8 @@ class SyncManager:
 
     def start(self, session_id: str, group_id: str, playlist_id: str,
               expected: Set[str], *, start_index: int = 0, seek_ms: int = 0,
-              now_ms: Optional[int] = None) -> SyncSession:
+              now_ms: Optional[int] = None,
+              timeout_ms: Optional[int] = None) -> SyncSession:
         now_ms = now_ms if now_ms is not None else server_now_ms()
         session = SyncSession(
             session_id=session_id,
@@ -87,7 +88,9 @@ class SyncManager:
             seek_ms=seek_ms,
             expected=set(expected),
             created_ms=now_ms,
-            timeout_ms=self.timeout_ms,
+            # §21.2 prefetch barrier: callers pass a longer timeout so players
+            # have time to finish caching before we start whoever is ready.
+            timeout_ms=timeout_ms if timeout_ms is not None else self.timeout_ms,
         )
         self._sessions[session_id] = session
         self._by_group[group_id] = session_id

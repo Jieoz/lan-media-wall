@@ -456,3 +456,119 @@ device_key = HMAC_SHA256(PSK, identity).digest()        # 32 bytes
 - `device_key` 是 32 字节**二进制** HMAC 输出,作为下一层 HMAC 的 key 直接使用(不要 hexencode 后再当 key)。
 - broker 扇出/下行帧 `from="broker"`,用 `HMAC(PSK,"broker")` 派生的 key 签名;各端验 broker 帧时按 `from="broker"` 派生验签。
 - **泄露隔离的契约符合性证据(每端必须有此负向测试)**:用 identity-A 派生的 key 去签一个 `from=identity-B` 的帧,接收方验签**必须失败丢弃**。
+
+---
+
+# v1.4 增补 — 分组管理 / 设备配置 / 本地媒体上传 / 预缓存栅栏
+
+> **v1.4 仍是向后兼容的加法**,`v` 保持声明为 `1`,实现可声明 minor=4。
+> 面向控制端(遥控端)重做(见 `docs/controller-ux-redesign.md`)补齐四类能力:
+> **① 显式分组管理(新建/删/改)**、**② 设备配置(改名/设组)**、
+> **③ 本地媒体上传(A 手机临时 HTTP / B broker 媒体库)**、**④ 预缓存栅栏(全员就绪才起播)**。
+> 旧端(v1.1–1.3)无需改动;不认识新 `type` 的端按 §10 "unknown type 忽略" 处理。
+
+## 18. 分组管理 (group management) — 补齐"不能新建组"
+
+v1.3 及之前只有 `assign_group`(改设备的组),组只能被动地随成员出现;**无法从零新建一个空组**。
+v1.4 引入显式分组管理命令(controller→broker),broker 侧落到注册表 group meta 并持久化,
+随后在 §5.2 `wall` 快照的 `groups[]` 中反映。
+
+### 18.1 `create_group` (controller→broker)
+```json
+{"type":"create_group","payload":{"group_id":"hall-2","name":"二号厅","sync":true}}
+```
+- `group_id`(必填):稳定标识,建议 ASCII slug;已存在则视为 no-op(幂等)或按 `update_group` 语义更新 meta。
+- `name`(可选):显示名,缺省用 `group_id`。
+- `sync`(可选,默认 `true`):组内同步模式,见 §6.3 / §9。
+- broker 处理:`registry.set_group_meta(group_id, name=, sync=)` → 标记 wall dirty → 下一帧 `wall` 含该空组(`members:[]`)。
+
+### 18.2 `update_group` (controller→broker)
+```json
+{"type":"update_group","payload":{"group_id":"hall-2","name":"二号大厅","sync":false}}
+```
+- 只更新给出的字段(`name`/`sync`);未给的保持不变。`group_id` 不可改(改名走 `name`,换 id 请新建+迁移成员)。
+
+### 18.3 `delete_group` (controller→broker)
+```json
+{"type":"delete_group","payload":{"group_id":"hall-2","reassign_to":"default"}}
+```
+- 删除组 meta;组内成员**回落**到 `reassign_to`(缺省 `default`,即 §4 的 `DEFAULT_GROUP`)。
+- `default` 组不可删除(broker 忽略对 `default` 的删除请求)。
+- broker 处理:把成员 `assign_group` 到 `reassign_to` → 删 meta → 通知受影响 players 新组 → wall dirty。
+
+## 19. 设备配置 (configure_device) — 补齐"不能设置盒子配置"
+
+统一的 per-device 配置命令,替代/补充零散的 `assign_group`。controller→broker→player。
+```json
+{"type":"configure_device","payload":{
+  "device_id":"and-hall-03",
+  "device_name":"二号厅右屏",   // 可选:改显示名
+  "group_id":"hall-2",         // 可选:设分组(等价 assign_group,统一入口)
+  "volume":70,                 // 可选:持久音量偏好
+  "muted":false                // 可选
+}}
+```
+- 只处理 payload 中出现的字段;缺省字段不动。
+- broker 处理:更新注册表(`device_name`/`group_id` 持久化)→ 转发给目标 player(`to:"player:<id>"`)
+  让其应用本地偏好(如 `volume`/`muted`)→ wall dirty。
+- `group_id` 与 `assign_group` 语义一致;`assign_group` 保留(向后兼容),`configure_device` 是超集统一入口。
+
+## 20. 本地媒体上传 (A + B) — 补齐"图片视频不能上传本地"
+
+**播放模型不变**:被控端始终从**本地缓存**播放(§6.2 `cache_prefetch` 下载+`sha256`校验+断点续传)。
+"上传"= 让控制端本地文件在**分发窗口**变成被控端可 GET 的 URL,下载完控制端即可离线。
+两条路,由控制端按当前拓扑自动择一(§14.5):
+
+### 20.1 模式 B — broker 媒体库 (broker/cohosted 模式主路径)
+- broker 额外监听一个 **HTTP 媒体端口**(默认 `8773`,与 WS `8770`/WSS `8771`/UDP `8772` 并列),提供:
+  - **上传**:`PUT /media/<sha256>.<ext>`(或 `POST /media` 带 sha256 query),body = 文件二进制。
+    - broker 校验落盘内容的 `sha256` 与文件名/参数一致,不一致 `400` 拒绝。
+    - 幂等:同 `sha256` 已存在则直接 `200`(秒传,不重复写)。
+    - 大小上限默认 **500MB**(可配 `media_max_bytes`),超限 `413`。
+  - **下载(静态服务)**:`GET /media/<sha256>.<ext>`,支持 `Range`(断点续传,被控端 §6.2 依赖)。
+- 上传成功后,该文件的可 GET URL = `http://<broker_host>:<media_port>/media/<sha256>.<ext>`,
+  写进 media item 的 `url`,随 `playlist`/`cache_prefetch` 下发。被控端零改动复用现有下载链路。
+- 媒体端点**不承载控制语义**,不参与 §2 信封/§3 签名;鉴权(如需)由部署侧在反代层加。内网默认开放。
+
+### 20.2 模式 A — 控制端临时 HTTP (p2p / 无 broker 兜底)
+- 无 broker 时,控制端本机起一个**临时 HTTP 服务**(仅分发窗口存活),对选中的本地文件提供:
+  - `GET /m/<item_id>`(或 `/media/<sha256>`),支持 `Range`。
+- media item 的 `url` 指向控制端 LAN IP:`http://<controller_ip>:<ephemeral_port>/m/<item_id>`。
+- 被控端从控制端 GET 到本地缓存 + `sha256` 校验(链路与模式 B 完全一致,只是源是手机)。
+- **全员 `cache=ready` 后**(§21 栅栏)才广播 `play_at`;起播后控制端可关服务/离线,被控端放本地缓存。
+
+### 20.3 media item 的 url 回填 (§6.1 扩展)
+- §6.1 的 `url` 语义扩展:除 `http://nas.local/...` 外,现也可为**上传回填**的 broker 媒体库 URL(模式 B)
+  或控制端临时 HTTP URL(模式 A)。`sha256`/`size`/`duration_ms` 语义不变,仍用于完整性校验与图片停留。
+- 控制端**必须**为本地上传的 item 计算并填 `sha256` 与 `size`(被控端据此校验缓存完整)。
+
+## 21. 预缓存栅栏 (prefetch barrier) — "等所有设备下载完成再统一从头起播"
+
+保证一组设备**全部缓存就绪后同一时刻从头起播**,而不是各自下载完各自乱起播。
+
+### 21.1 就绪定义强化 (§9.1 `ready` 的语义收紧)
+- §9.1 `prepare`→`ready` 中,player 回 `ready:true` 的**前置条件收紧**为:
+  目标 playlist 的**所有 item** `cache=ready`(下载完 + `sha256` 校验通过)且预加载/seek 到位。
+- 未就绪(仍在 `downloading`/校验中)→ player **不回 `ready`**(或回 `ready:false` 带 `reason:"caching"`),
+  待缓存完成后再回 `ready:true`。broker/协调端据此收齐。
+
+### 21.2 栅栏与超时 (broker 模式)
+- broker 收齐组内所有(在线)成员的 `ready:true` → 广播 `play_at`(§9.2),全员同一 `play_at` 从 `start_index=0` 起播。
+- 超时:等待上限默认 **120s**(可配 `prefetch_barrier_timeout_ms`,区别于 §9 的短 `ready_timeout_ms`)。
+  到时对**已就绪者**起播,并在设备墙/日志**明确标出未就绪台**(不静默)。
+- 控制端 UI 在栅栏期间显示每台下载进度(来自 §5.1 `status.cache`)与就绪计数(如 "3/5 已就绪")。
+
+### 21.3 栅栏与 p2p 模式
+- p2p 下由控制端(兼任协调端,§14.3)本地编排同一栅栏:fan `prepare` → 收齐各直连被控端 `ready:true`
+  (或 120s 超时)→ 算 `play_at = controller_now + buffer_ms` → 发给各被控端。逻辑与 broker 模式一致,只是执行方是控制端。
+
+## 22. §9.3 命令表增补 (v1.4)
+| type | payload 关键字段 | 语义 |
+|---|---|---|
+| `create_group` | `group_id`,`name?`,`sync?` | 新建空分组 (§18.1) |
+| `update_group` | `group_id`,`name?`,`sync?` | 改组名/同步模式 (§18.2) |
+| `delete_group` | `group_id`,`reassign_to?` | 删组,成员回落 (§18.3) |
+| `configure_device` | `device_id`,`device_name?`,`group_id?`,`volume?`,`muted?` | 设备配置统一入口 (§19) |
+
+> 以上 group 管理与 configure_device 均为 controller→broker(configure_device 再转发 player);
+> 媒体上传走 §20 的 HTTP 媒体端口,不经 WS 信封。

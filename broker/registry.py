@@ -200,6 +200,55 @@ class Registry:
             meta.update({k: v for k, v in kv.items() if v is not None})
             self._save_locked()
 
+    # ---- explicit group management (§18) ---------------------------------
+    def create_group(self, group_id: str, *, name: Optional[str] = None,
+                     sync: Optional[bool] = None) -> bool:
+        """Create an empty group (§18.1). Idempotent: if it already exists,
+        the given meta fields are merged (no-op when nothing to change).
+        Returns True if a new group was created, False if it already existed."""
+        with self._lock:
+            existed = group_id in self._groups
+            meta = self._groups.setdefault(group_id, {})
+            if name is not None:
+                meta["name"] = name
+            if sync is not None:
+                meta["sync"] = sync
+            self._save_locked()
+            return not existed
+
+    def update_group(self, group_id: str, *, name: Optional[str] = None,
+                     sync: Optional[bool] = None) -> bool:
+        """Update an existing group's meta (§18.2). Only provided fields change.
+        Returns False if the group does not exist (and is not auto-created)."""
+        with self._lock:
+            if group_id not in self._groups and group_id not in {
+                    d.group_id for d in self._devices.values()}:
+                return False
+            meta = self._groups.setdefault(group_id, {})
+            if name is not None:
+                meta["name"] = name
+            if sync is not None:
+                meta["sync"] = sync
+            self._save_locked()
+            return True
+
+    def delete_group(self, group_id: str, *,
+                     reassign_to: str = DEFAULT_GROUP) -> List[str]:
+        """Delete a group (§18.3); members fall back to `reassign_to`.
+        The DEFAULT_GROUP cannot be deleted. Returns the list of device_ids
+        that were reassigned (so the caller can notify those players)."""
+        with self._lock:
+            if group_id == DEFAULT_GROUP:
+                return []
+            reassigned: List[str] = []
+            for dev in self._devices.values():
+                if dev.group_id == group_id:
+                    dev.group_id = reassign_to
+                    reassigned.append(dev.device_id)
+            self._groups.pop(group_id, None)
+            self._save_locked()
+            return reassigned
+
     def groups_snapshot(self) -> List[Dict[str, Any]]:
         """Build the §5.2 groups array from current membership + meta."""
         with self._lock:
