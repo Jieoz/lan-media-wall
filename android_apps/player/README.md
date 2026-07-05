@@ -5,7 +5,8 @@ behaviorally **on par with the Windows player** (`../../windows_player/`) — sa
 protocol, same roles, different playback kernel (Media3 instead of mpv).
 
 Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec.md)
-**v1.1**.
+**v1.4** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
+prefetch barrier §21).
 
 ## What it does
 
@@ -33,6 +34,14 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
   `ready` (echoes `prepare_id` + `group_id`, per v1.1) → `play_at`, started at
   the exact local instant (coarse sleep + final-ms spin for ±50–100ms). Plus
   pause/resume/stop/next/prev/set_volume/set_mute/set_audio_master/assign_group.
+- **§19 configure_device (v1.4)** — one message sets this device's display name
+  / group / volume (targeted by `device_id`, omitted fields untouched), applied
+  to the live player and persisted so it survives reboot.
+- **§21 prefetch barrier (v1.4)** — under `prepare(prefetch:true)` an uncached
+  item does **not** answer `ready:false` immediately; a coroutine defers, awaits
+  the download+verify to finish, then sends `ready:true` (falling back to
+  `ready:false` after the 120s barrier timeout) so a synced group starts only
+  once everyone is cached.
 - **§11 kiosk + watchdog** — fullscreen immersive (system bars hidden, re-
   asserted), screen kept on, BOOT_COMPLETED autostart, optional Lock Task Mode
   (when Device Owner), idle/stop shows pure black overlay (never the desktop),

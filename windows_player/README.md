@@ -22,6 +22,8 @@ the player side of [`../protocol_spec.md`](../protocol_spec.md) v1.
 | §10 | `ack`, `resume_last` (local last-task persistence) | `main.py`, `config.py` |
 | §11 | mpv borderless-fullscreen-ontop, black/placeholder when idle, taskbar hidden | `mpv_controller.py`, `kiosk_win.py` |
 | §11 | watchdog: restart mpv within 5s on crash/hang + resume_last | `watchdog.py` |
+| §19 (v1.4) | `configure_device` → set display name / group / volume for this device, persisted | `main.py`, `config.py` |
+| §21 (v1.4) | prefetch-barrier `prepare(prefetch:true)`: don't answer `ready:false` when uncached — defer, await cache complete, then `ready:true` (120s timeout → `ready:false`) | `main.py` |
 
 ## Architecture
 
@@ -97,7 +99,9 @@ pytest tests/ -q
 Covers the pure logic that must be exactly right: HMAC sign/verify +
 replay/staleness/dedup, clock offset (min-rtt) + `play_at` folding, download
 Range math + sha256 + cache-state rendering, thumbnail scaling, and state
-persistence. mpv/win32 paths are import-guarded so the suite runs on any OS.
+persistence. `test_configure_and_barrier.py` covers the v1.4 `configure_device`
+targeting/persistence and the §21 prefetch barrier (defer → ready-on-cache →
+timeout). mpv/win32 paths are import-guarded so the suite runs on any OS.
 
 ## Platform notes
 

@@ -7,19 +7,21 @@ aggregation, and command fan-out.
 
 This implements the broker-side responsibilities of
 [`../protocol_spec.md`](../protocol_spec.md) (§2–§10, plus the v1.2 additions
-§13–§15 and the v1.3 derived keys §17). That spec is the contract — field names
-and semantics here follow it exactly.
+§13–§15, the v1.3 derived keys §17, and the v1.4 group CRUD §18 / device config
+§19 / media library §20 / prefetch barrier §21). That spec is the contract —
+field names and semantics here follow it exactly.
 
 ## Modules
 
 | File | Responsibility |
 |---|---|
-| `broker.py` | asyncio entry point + WS/WSS server, connection lifecycle, dispatch, auth-mode gating |
+| `broker.py` | asyncio entry point + WS/WSS server, connection lifecycle, dispatch, auth-mode gating; §18 group CRUD + §19 configure_device dispatch; §21 prefetch-barrier timeout |
 | `envelope.py` | envelope build/parse, HMAC sign/verify, auth-mode + derived-key helpers, msg_id dedup, ts window (§2/§3/§13/§17) |
-| `registry.py` | device table, grouping, `state.json` persistence (§4/§5) |
+| `registry.py` | device table, explicit group create/update/delete + assignment, `state.json` persistence (§4/§5/§18/§19) |
+| `media_server.py` | **v1.4** broker media library over HTTP (stdlib asyncio, no deps): `PUT/GET /media/<sha256>` with sha256-guarded upload, dedup, and Range resumable download (§20.1) |
 | `router.py` | fan-out resolution by the `to` field (§2/§9.3) |
 | `clock.py` | master clock + time-sync ack + NTP offset/rtt math (§8) |
-| `sync.py` | three-phase prepare→ready→play_at state machine (§9) |
+| `sync.py` | three-phase prepare→ready→play_at state machine, with the §21 long prefetch-barrier timeout (§9/§21) |
 | `discovery.py` | UDP 8772 discover/announce, self-announce + discover replies (§7/§14.5) |
 | `pairing.py` | `lmw://pair?...` URI builder + terminal QR; derived per-endpoint codes (§15/§17.4) |
 
@@ -28,6 +30,27 @@ and semantics here follow it exactly.
 - `8770` WS (always on)
 - `8771` WSS (enabled automatically when `certs/cert.pem` + `certs/key.pem` exist)
 - `8772` UDP discovery (on by default; `enable_discovery: false` to disable)
+- `8773` HTTP media library (v1.4; `media_port`, on when a cache dir is configured — see below)
+
+## v1.4 — group CRUD, device config, media library, prefetch barrier (§18–§21)
+
+- **Explicit group management (§18)**: beyond `assign_group`, the broker handles
+  `create_group` / `update_group` / `delete_group` from controllers, persisted in
+  `state.json`. Deleting a group reassigns its members to `default` rather than
+  orphaning them.
+- **Device configuration (§19)**: `configure_device` sets a player's display
+  name / group / volume in one message, targeted by `device_id`; the broker
+  applies registry-side effects and forwards it to the player, which persists the
+  change locally.
+- **Media library (§20.1)**: `media_server.py` serves a content-addressed store
+  at `/media/<sha256>`. Controllers `PUT` a local file (mode B upload); the
+  broker verifies the body's sha256 against the URL, dedups identical content,
+  and serves `GET` with HTTP Range so players resume interrupted downloads. Pure
+  stdlib asyncio — no extra dependency, safe for the Synology Docker target.
+- **Prefetch barrier (§21)**: for a synced start the controller may send
+  `prepare(prefetch:true)`; the broker widens the `ready` collection timeout
+  (barrier timeout, default 120s) so every member finishes downloading +
+  verifying before `play_at`, instead of firing at the short 2s `ready_timeout_ms`.
 
 ## v1.2 — auth modes, topology, pairing (§13–§15)
 
@@ -151,11 +174,16 @@ mount a shared folder to `/data`.
 
 ```bash
 python3 -m pytest tests/ -q        # unit tests (envelope/clock/sync/router/
-                                    # registry/auth_modes/pairing/announce/gating)
+                                    # registry/auth_modes/pairing/announce/gating/
+                                    # group_mgmt §18–§19/media_server §20.1) — 99 tests
 python3 tests/smoke_local.py       # end-to-end (auth_mode=required): hello/
                                     # welcome, status/wall, time_sync,
                                     # prepare→ready→play_at
 ```
+
+`test_media_server.py` drives a real loopback socket against the asyncio media
+server (upload → sha256 guard → dedup → Range download); it resets the event
+loop after each `asyncio.run` so it never pollutes the legacy-loop tests.
 
 ## Behavior notes
 

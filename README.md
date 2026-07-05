@@ -48,6 +48,11 @@
 | 一键重置连接(v1.8) | 设置页「重置连接配置」清空 broker/密钥/分组,让盒子回到未配置态重走自动发现 / 扫码配对,免 adb 自救 |
 | 批量装机(v1.8) | `scripts/deploy_player.sh` 遍历 root 盒子推 APK 到 `/data/app` 重启采纳,绕开假容量闪存的 `INSTALL_FAILED_INVALID_INSTALL_LOCATION`,支持多设备循环 |
 | 遥控端应用名(v1.8) | 装到手机上显示正式中文名**媒体墙遥控**(CI 在 `flutter create` 生成 `AndroidManifest.xml` 后注入 `android:label`,不改 pubspec 包名/Dart import) |
+| 横屏平板控制台(v1.9) | 遥控端 UI 按横屏平板为主场景重构:≥900dp 双栏并置(**左设备墙 \| 右编排**),窄屏降级底部导航。设备墙卡显示缩略图/相位/缓存态,内置分组增删改与「配置盒子」(改显示名/设组/设音量),编排栏一体化选组→编列表→预缓存进度→同步起播/传输/音量/出声台 |
+| 零配置发现修复(v1.9) | 修复遥控端「绑完 socket 就干等、从不主动广播」导致的自动发现失效:启动即广播 discover 并**周期重发**,同时补发**子网定向广播**(如 `192.168.1.255`,绕开部分 AP 丢弃全局广播),被控端开箱即被发现 |
+| 本地媒体上传(v1.9) | 遥控端可直接选手机/平板本地图片视频下发:有 broker 走**模式 B**(PUT 到 broker 媒体库,`/media/<sha256>` 断点续传 + sha256 去重校验),无 broker(p2p)走**模式 A**(遥控端起临时 HTTP 服务供各屏拉取)。sha256 流式摘要,不整文件进内存 |
+| 预缓存栅栏(v1.9) | 同步起播前的「全员缓存好再一起从头播」栅栏:`prepare(prefetch:true)` 下被控端**不立刻回 ready:false**,而是后台等下载+校验完成再回 `ready:true`(默认 120s 超时降级),避免个别屏没缓存完就黑屏/追帧。Windows + Android 两端一致 |
+| 盒子远程配置(v1.9) | `configure_device` 一条命令改被控端**显示名 / 分组 / 音量**,仅对目标 device_id 生效、缺省字段不动、改动持久化重启保留。Windows + Android 两端一致 |
 | 运维(Phase 2) | OTA 远程更新 / 远程重启 / 断电恢复上次任务 / 定时编排 |
 
 完整通信协议见 [`protocol_spec.md`](./protocol_spec.md)。
