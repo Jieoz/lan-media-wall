@@ -148,6 +148,11 @@ class MainActivity : AppCompatActivity() {
      */
     private fun tryLockTask() {
         if (KioskState.suspended) return
+        // Lock Task 全家(startLockTask/stopLockTask/isInLockTaskMode/lockTaskModeState/
+        // setLockTaskPackages)都是 API 21+。在 4.4(API 19)盒子上 dalvik 一旦解析到这些
+        // 方法就抛 NoSuchMethodError(Error 非 Exception,catch(Exception) 拦不住)。4.4 本来
+        // 也不该进 Lock Task,直接整体跳过 → 走软 kiosk(HOME + 吞返回 + 常驻FGS + immersive)。
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -233,12 +238,23 @@ class MainActivity : AppCompatActivity() {
      */
     private fun openSettings() {
         KioskState.suspended = true
-        try { stopLockTask() } catch (_: Exception) {}
-        startActivity(
-            Intent(this, SettingsActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-            },
-        )
+        // §KitKat 崩溃根因:stopLockTask() 是 API 21+ 方法,在 4.4 上 dalvik 解析该
+        // 方法时抛 NoSuchMethodError —— 那是 **Error 不是 Exception**,catch(Exception)
+        // 拦不住,于是 openSettings 直接 crash、进程被 Force finish,表现为"上上下下退出软件"。
+        // Lock Task 本就只在 Device Owner + API 21+ 才会 startLockTask(),4.4 从没进过,
+        // 所以这里必须版本守卫 + catch Throwable 双保险。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try { stopLockTask() } catch (_: Throwable) {}
+        }
+        try {
+            startActivity(
+                Intent(this, SettingsActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                },
+            )
+        } catch (_: Throwable) {
+            // 设置页拉起失败也绝不让 kiosk 崩溃退出。
+        }
         // 不 finish():播放 Activity 留在栈底,主页键/返回都能回到它。
     }
 

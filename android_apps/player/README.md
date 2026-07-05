@@ -8,7 +8,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.10.3 / versionCode 23`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.10.4 / versionCode 24`** (see `app/build.gradle.kts`).
 > The **Settings screen shows this version** at the top of the device-info line
 > (`版本: v<name> (build <code>)`), read from `BuildConfig` — single source of truth,
 > so what you see on-screen always matches the installed build.
@@ -187,6 +187,19 @@ These can't be exercised in a headless CI/container and need a device:
 - OEM background-activity-start / autostart restrictions vary by vendor.
 - `EncryptedSharedPreferences` needs a working Keystore (falls back to plain
   prefs if unavailable, logged — acceptable degradation).
+
+## CRITICAL: fix crash-on-exit + real default-HOME on KitKat (1.10.4)
+
+- **上上下下不再崩溃退出软件(真正修好)。** v1.10.3 把退出改成 `openSettings()`,但里面
+  的 `stopLockTask()` 是 API 21+ 方法,4.4 盒子上 dalvik 解析即抛 **`NoSuchMethodError`
+  ——那是 `Error` 不是 `Exception`**,`catch(Exception)` 拦不住 → openSettings 崩溃、进程被
+  `Force finishing` → 表现为"上上下下退出软件"。现加 `SDK_INT >= LOLLIPOP` 版本守卫 +
+  `catch(Throwable)` 双保险,并对 `tryLockTask()` 整条 Lock Task 链(start/stop/
+  isInLockTaskMode/lockTaskModeState/setLockTaskPackages)在 4.4 上整体早返回跳过。
+- **遥控主页键真正回到播放墙。** 仅 manifest 启用 `HomeAlias` 不够——4.4 框架保留 preferred-HOME
+  关联。provision 脚本新增:禁用 OEM(youku)桌面后,用 `cmd package set-home-activity`(高版本)
+  或 `pm clear-preferred-activity`(4.4 回退,让唯一启用的 CATEGORY_HOME 目标=我们被自动选中)
+  把播放端设为默认 HOME。设置页「设为主页」开关随之默认勾选。
 
 ## D-pad→Settings, HOME key→wall, kiosk-exit no longer kills the app (1.10.3)
 

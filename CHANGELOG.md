@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.10.4] — 2026-07-05
+
+### Fixed (CRITICAL — 真机验证驱动)
+- **上上下下键崩溃退出软件的真根因**: v1.10.3 的 `openSettings()` 调用 `stopLockTask()`(API 21+),4.4 盒子上 dalvik 解析该方法即抛 `NoSuchMethodError`——**Error 不是 Exception,`catch(Exception)` 拦不住**——导致 openSettings 崩溃、进程被 `Force finishing`,表现为"上上下下退出软件"。logcat 铁证:`E/AndroidRuntime ... MainActivity.openSettings(SourceFile:4)` + `Force finishing activity` + `Process ... has died`。修复:`SDK_INT >= LOLLIPOP` 版本守卫 + `catch(Throwable)` 双保险;`tryLockTask()` 整条 Lock Task 链在 4.4 上整体早返回跳过。
+- **遥控主页键回到播放墙**: manifest 启用 HomeAlias 不足以让 4.4 的 HOME 键生效(框架保留 preferred-HOME 关联)。`lmw_provision.sh` 新增设默认 HOME 步骤:`cmd package set-home-activity`(高版本)/ `pm clear-preferred-activity`(4.4 回退,禁用 youku 桌面后唯一启用的 CATEGORY_HOME 目标=播放端被自动选中)。设置页「设为主页」默认勾选。
+
 ## [v1.10.3] — 2026-07-05
 
 ### Fixed

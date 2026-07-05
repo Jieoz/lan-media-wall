@@ -61,6 +61,8 @@ class SettingsActivity : AppCompatActivity() {
         showHardwareSelfCheck()
         showBloatware()
 
+        // HomeAlias 现在 manifest 默认启用(v1.10.3+),所以首次进设置也应勾上;
+        // 保留读取当前实际状态,便于用户主动关掉(极少数不想抢 HOME 的场景)。
         binding.inputSetAsHome.isChecked = isHomeAliasEnabled()
         binding.btnSave.setOnClickListener { save() }
         binding.btnResetConn.setOnClickListener { confirmResetConnection() }
