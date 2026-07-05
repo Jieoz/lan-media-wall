@@ -199,7 +199,7 @@ class MainActivity : AppCompatActivity() {
             val hotH = binding.root.height / 6f
             if (ev.x <= hotW && ev.y <= hotH) {
                 if (exitGesture.onHotZoneTap(System.currentTimeMillis())) {
-                    exitKiosk()
+                    openSettings()
                 }
             }
         }
@@ -213,8 +213,9 @@ class MainActivity : AppCompatActivity() {
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+            // 上上下下 → 打开设置页(不是退出软件)。
             if (exitGesture.onKey(keyCode, System.currentTimeMillis())) {
-                exitKiosk()
+                openSettings()
             }
             return true // consume arrows in kiosk
         }
@@ -222,21 +223,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Release the kiosk locally for debugging: stop Lock Task, set the runtime
-     * [KioskState.suspended] gate (so the service watchdog stops re-locking /
-     * re-immersing), then jump to Settings and finish this Activity so a system
-     * Back from Settings reaches the desktop instead of re-pinning us.
+     * 上上下下(或左上角连点7下)= **打开设置页**,不是退出软件。
+     *
+     * 关键:**不 finish() 本 Activity**。之前 finish 掉唯一的 kiosk Activity,在这些
+     * YunOS 盒子上会让进程被系统回收,用户看到的就是"软件直接退出"而不是"进设置"。
+     * 现在保留 MainActivity 在返回栈里,只是把设置页压在上面 + 挂起 kiosk 看门狗
+     * (KioskState.suspended),这样进设置稳定可靠;用户在设置里按主页键即可回到播放墙
+     * (HomeAlias 默认启用),从设置返回也会落回底下的播放 Activity 而非黑屏。
      */
-    private fun exitKiosk() {
+    private fun openSettings() {
         KioskState.suspended = true
         try { stopLockTask() } catch (_: Exception) {}
-        try {
-            val ctl = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            // (no-op read; kept for symmetry/logging hooks)
-            ctl.lockTaskModeState
-        } catch (_: Exception) {}
-        startActivity(Intent(this, SettingsActivity::class.java))
-        finish()
+        startActivity(
+            Intent(this, SettingsActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            },
+        )
+        // 不 finish():播放 Activity 留在栈底,主页键/返回都能回到它。
     }
 
     fun showIdle() = runOnUiThread {

@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.10.3] — 2026-07-05
+
+### Fixed
+- **被控端上上下下键不再"退出软件"**: `exitKiosk()` 会 `finish()` 掉唯一的 kiosk Activity,在 YunOS/AliOS 4.4 盒子上导致进程被系统回收,看起来像软件直接退出。改为 `openSettings()`——挂起 kiosk 看门狗 + 用 `REORDER_TO_FRONT` 把设置页压在播放 Activity 之上,不 finish,进设置稳定可靠。左上角连点 7 下同走此路径。
+- **遥控主页键(HOME)现在回到播放墙**: `HomeAlias` activity-alias 由默认 `enabled="false"` 改为 `true`,盒子成为 HOME 候选;配合 provision 脚本已禁用的 OEM(youku)桌面,主页键直达播放墙。
+- **控制端版本号一直显示 1.10.0**: `remote_flutter/pubspec.yaml` 版本从未随播放端抬升;现同步到 `1.10.3+23`,CI 从 pubspec 动态解析 build-name/number 烧进 APK。
+
+### Changed
+- **控制端播放编排按钮文案去歧义**: `下发并预缓存` → `①仅下发缓存 (不播)`;`全员就绪 · 同步起播` → `②推送并播放`(即"推送并播放"就是这个键)。README 说明「预缓存就绪 N/M」含义:M 台目标里 N 台已完成本次列表的下载+校验;盒子未收到 prepare 时不下载,故停在 0/M。
+
 ## [v1.10.0] — 2026-07-05
 
 ### Added

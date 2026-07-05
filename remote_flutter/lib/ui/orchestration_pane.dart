@@ -208,12 +208,12 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             children: [
               OutlinedButton.icon(
                 icon: const Icon(Icons.download),
-                label: const Text('下发并预缓存'),
+                label: const Text('①仅下发缓存 (不播)'),
                 onPressed: _canSend ? () => _doPrefetch(state) : null,
               ),
               FilledButton.icon(
                 icon: const Icon(Icons.play_circle),
-                label: const Text('全员就绪 · 同步起播'),
+                label: const Text('②推送并播放'),
                 onPressed: _canSend ? () => _doBarrierPlay(state) : null,
               ),
             ],

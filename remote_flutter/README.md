@@ -3,7 +3,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.10.0+20`**(`pubspec.yaml`)。CI 用 `flutter build apk --build-name=1.10.0 --build-number=20` 把版本号烧进 APK(pubspec 的版本在 flutter 构建时不一定自动进包,靠这两个参数兜底)。发版流程见根 README。
+> **当前版本 `1.10.3+23`**(`pubspec.yaml`)。CI 用 `flutter build apk --build-name=1.10.3 --build-number=23` 把版本号烧进 APK(pubspec 的版本在 flutter 构建时不一定自动进包,靠这两个参数兜底)。发版流程见根 README。
+>
+> **播放编排两个按钮(去歧义,v1.10.3)**:`①仅下发缓存 (不播)` = 只把媒体推到各盒子本地缓存、不播放;`②推送并播放` = 下发列表+预缓存+等全员就绪后统一起播(这就是"推送并播放")。「预缓存就绪 N/M」= M 台目标里有 N 台已把本次列表全部缓存校验完成;盒子未收到 prepare 时不会下载,故会一直停在 0/M。
 
 > Dart 包名仍是 `remote_flutter`(改包名会波及所有 import),但装到手机上的**应用显示名是「媒体墙遥控」**:CI 在 `flutter create` 生成 `android/` 后向 `AndroidManifest.xml` 的 `<application>` 注入 `android:label`(见 `../.github/workflows/flutter-build.yml`),不动 pubspec name。
 

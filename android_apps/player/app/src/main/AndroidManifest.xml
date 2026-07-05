@@ -64,7 +64,7 @@
         <activity-alias
             android:name=".HomeAlias"
             android:targetActivity=".MainActivity"
-            android:enabled="false"
+            android:enabled="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

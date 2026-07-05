@@ -8,7 +8,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.10.2 / versionCode 22`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.10.3 / versionCode 23`** (see `app/build.gradle.kts`).
 > The **Settings screen shows this version** at the top of the device-info line
 > (`版本: v<name> (build <code>)`), read from `BuildConfig` — single source of truth,
 > so what you see on-screen always matches the installed build.
@@ -187,6 +187,16 @@ These can't be exercised in a headless CI/container and need a device:
 - OEM background-activity-start / autostart restrictions vary by vendor.
 - `EncryptedSharedPreferences` needs a working Keystore (falls back to plain
   prefs if unavailable, logged — acceptable degradation).
+
+## D-pad→Settings, HOME key→wall, kiosk-exit no longer kills the app (1.10.3)
+
+- **UP UP DOWN DOWN 现在打开设置页,而不是退出软件。** 之前 `exitKiosk()` 会 `finish()`
+  掉唯一的 kiosk Activity,在 YunOS 盒子上导致进程被回收 → 看起来像"软件直接退出"。
+  改为 `openSettings()`:挂起 kiosk 看门狗 + 把设置页压在播放 Activity 之上,不 finish,
+  进设置稳定可靠。左上角连点 7 下同样走这条路径。
+- **遥控主页键(HOME)现在回到播放墙。** `HomeAlias` 由默认禁用改为 `android:enabled="true"`,
+  盒子成为 HOME 候选;配合 provision 脚本已禁用 youku 桌面 → 主页键直达播放墙(唯一候选)。
+- 控制端按钮文案去歧义:`①仅下发缓存 (不播)` / `②推送并播放`(见 remote_flutter)。
 
 ## Settings shows version + bidirectional connection logging (1.10.2)
 
