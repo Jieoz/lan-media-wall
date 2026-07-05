@@ -1,9 +1,12 @@
 
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../net/broker_client.dart';
 import '../net/discovery.dart';
+import '../net/media_upload.dart';
 import '../p2p/p2p_coordinator.dart';
 import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
@@ -637,11 +640,147 @@ class WallState extends ChangeNotifier {
           Commands.assignGroup(deviceId: deviceId, groupId: groupId),
           deviceId: deviceId);
 
+  /// create_group(§18.1)：新建空分组。broker/p2p 协调端落库后回 wall 快照反映。
+  void createGroup({required String groupId, String? name, bool? sync}) =>
+      _send('create_group',
+          Commands.createGroup(groupId: groupId, name: name, sync: sync));
+
+  /// update_group(§18.2)：改组名/同步模式。
+  void updateGroup({required String groupId, String? name, bool? sync}) =>
+      _send('update_group',
+          Commands.updateGroup(groupId: groupId, name: name, sync: sync));
+
+  /// delete_group(§18.3)：删组,成员回落 [reassignTo]。
+  void deleteGroup({required String groupId, String reassignTo = 'default'}) =>
+      _send('delete_group',
+          Commands.deleteGroup(groupId: groupId, reassignTo: reassignTo));
+
+  /// configure_device(§19)：per-device 配置统一入口(改名/设组/音量/静音)。
+  void configureDevice({
+    required String deviceId,
+    String? deviceName,
+    String? groupId,
+    int? volume,
+    bool? muted,
+  }) =>
+      _send(
+          'configure_device',
+          Commands.configureDevice(
+            deviceId: deviceId,
+            deviceName: deviceName,
+            groupId: groupId,
+            volume: volume,
+            muted: muted,
+          ),
+          deviceId: deviceId);
+
+  // ---- 本地媒体上传(§20 A+B) ----
+  /// 模式 A 的控制端临时 HTTP 服务(p2p / 无 broker 时用)。按需惰性启动。
+  final LocalMediaServer _localMedia = LocalMediaServer();
+
+  /// 上传一个本地文件并返回可下发的 [MediaItem](url 已回填)。自动择路(§20):
+  ///  - broker 模式:上传到 broker 媒体库(模式 B),失败回落模式 A。
+  ///  - p2p 模式:走控制端临时 HTTP 服务(模式 A)。
+  ///
+  /// [onProgress] 上报上传进度(仅模式 B 有意义)。播放模型不变:被控端随后走
+  /// cache_prefetch 从此 URL 下载到**本地缓存**再播放(设计合同 §0)。
+  Future<MediaItem> uploadLocalMedia({
+    required File file,
+    required String type, // "video" | "image"
+    required String name,
+    int? durationMs,
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    // broker 模式且已知 broker host → 模式 B(主路径)。
+    if (!isP2p && brokerHost.isNotEmpty) {
+      try {
+        return await MediaUpload.uploadToBroker(
+          file: file,
+          brokerHost: brokerHost,
+          type: type,
+          name: name,
+          durationMs: durationMs,
+          onProgress: onProgress,
+        );
+      } catch (e) {
+        _pushLog('broker 上传失败,回落本机临时服务: $e');
+        // 落到模式 A。
+      }
+    }
+    // 模式 A:控制端临时 HTTP 服务。需要本机 LAN IP。
+    final ip = await _localIp();
+    if (ip == null || ip.isEmpty) {
+      throw StateError('无法确定本机 LAN IP,模式 A 上传不可用');
+    }
+    if (!_localMedia.running) {
+      await _localMedia.start(bindHost: ip);
+      _pushLog('本机媒体服务已启动(${ip}:${_localMedia.port})');
+    }
+    return MediaUpload.registerLocal(
+      file: file,
+      server: _localMedia,
+      type: type,
+      name: name,
+      durationMs: durationMs,
+    );
+  }
+
+  /// 一键同步播放的**预缓存栅栏**版(§21):下发 playlist(标记 sync) → 发
+  /// prepare(prefetch:true),让 broker/协调端等**全员 cache=ready** 才统一起播。
+  void prepareWithBarrier({
+    required String playlistId,
+    required String groupId,
+    int startIndex = 0,
+    int seekMs = 0,
+  }) {
+    if (isP2p) {
+      // p2p 下由协调端本地编排;用长栅栏超时(120s)等各台缓存+校验完成再回 ready(§21.3)。
+      _p2p.startSync(
+        playlistId: playlistId,
+        groupId: groupId,
+        startIndex: startIndex,
+        seekMs: seekMs,
+        readyTimeoutMsOverride: 120000,
+      );
+      return;
+    }
+    _send(
+      'prepare',
+      {
+        ...Commands.prepare(
+          playlistId: playlistId,
+          groupId: groupId,
+          startIndex: startIndex,
+          seekMs: seekMs,
+        ),
+        'prefetch': true, // §21.2 走长栅栏超时,等全员缓存就绪
+      },
+      groupId: groupId,
+    );
+  }
+
+  /// 取本机首个非回环 IPv4 地址(模式 A 对外 URL / 首启页显示用)。
+  Future<String?> _localIp() async {
+    try {
+      final ifaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback) return addr.address;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   @override
   void dispose() {
     _broker.dispose();
     _discovery.dispose();
     _p2p.dispose();
+    _localMedia.stop();
     super.dispose();
   }
 }

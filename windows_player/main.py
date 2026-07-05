@@ -418,6 +418,7 @@ class Player:
             "set_mute": self._h_set_mute,
             "set_audio_master": self._h_set_audio_master,
             "assign_group": self._h_assign_group,
+            "configure_device": self._h_configure_device,
             "resume_last": self._h_resume_last,
             "welcome": self._h_welcome,
         }.get(type_)
@@ -427,7 +428,8 @@ class Player:
         # ack commands that carry a msg_id (§10)
         if type_ in ("prepare", "pause", "resume", "stop", "next", "prev",
                      "set_volume", "set_mute", "set_audio_master",
-                     "assign_group", "cache_prefetch", "playlist"):
+                     "assign_group", "configure_device", "cache_prefetch",
+                     "playlist"):
             await self._ack(env, True)
 
     async def _ack(self, env: Dict[str, Any], ok: bool, err: str = "") -> None:
@@ -463,6 +465,10 @@ class Player:
         pid = payload.get("playlist_id")
         start_index = int(payload.get("start_index", 0))
         seek_ms = int(payload.get("seek_ms", 0))
+        # §21 预缓存栅栏:控制端置 prefetch:true 表示"缓存好再回 ready"。此时若尚未缓存,
+        # 不立刻回 ready:false,而是后台等下载+校验完成再回 ready:true,让全员统一从头起播。
+        prefetch_barrier = bool(payload.get("prefetch", False))
+        barrier_timeout_ms = int(payload.get("barrier_timeout_ms", 120000))
         pl = self._resolve_playlist(pid)
         ready = False
         self._cancel_dwell()  # §6.3: a new session voids any pending dwell
@@ -481,14 +487,52 @@ class Player:
                         await self._mpv("play_paused", path, seek_ms=seek_ms)
                     self.play_state = "buffering"
                     ready = True
+                elif prefetch_barrier:
+                    # §21 栅栏:后台等缓存完成再回 ready,不阻塞事件循环。保留 task 引用,
+                    # 否则 asyncio 可能在其运行前将其回收(fire-and-forget 陷阱)。
+                    self.downloader.prefetch([item])
+                    self._barrier_task = asyncio.ensure_future(
+                        self._await_cache_then_ready(
+                            pid, item, seek_ms, barrier_timeout_ms))
+                    return
                 else:
-                    # not cached yet — kick a fetch; report not-ready
+                    # 非栅栏路径:not cached yet — kick a fetch; report not-ready
                     self.downloader.prefetch([item])
         await self.ws.send("ready", {
             "device_id": self.device_id,
             "playlist_id": pid,
             "ready": ready,
         })
+
+    async def _await_cache_then_ready(
+            self, pid, item, seek_ms: int, timeout_ms: int) -> None:
+        """§21 预缓存栅栏:轮询该 item 的缓存态,ready 后 prime 并回 ready:true;
+        超时则回 ready:false,让控制端按"已就绪者"降级起播(不无限等)。"""
+        deadline = self._loop_time() + timeout_ms / 1000.0
+        item_id = item["item_id"]
+        while self._loop_time() < deadline:
+            if self.downloader.is_ready(item_id):
+                path = str(self.downloader.ready_path(item_id))
+                if item.get("type") != "image":
+                    await self._mpv("play_paused", path, seek_ms=seek_ms)
+                self.play_state = "buffering"
+                await self.ws.send("ready", {
+                    "device_id": self.device_id,
+                    "playlist_id": pid,
+                    "ready": True,
+                })
+                return
+            await asyncio.sleep(0.5)
+        # 超时未就绪:如实上报,交给控制端/broker 决定降级。
+        await self.ws.send("ready", {
+            "device_id": self.device_id,
+            "playlist_id": pid,
+            "ready": False,
+        })
+
+    @staticmethod
+    def _loop_time() -> float:
+        return asyncio.get_event_loop().time()
 
     # --- §9.2 play_at (the sync-critical path) -----------------------
     async def _h_play_at(self, payload, env) -> None:
@@ -699,6 +743,25 @@ class Player:
         if gid:
             self.group_id = gid
             self.state.set_group_id(gid)
+
+    # --- §19 configure_device ----------------------------------------
+    async def _h_configure_device(self, payload, env) -> None:
+        """盒子配置(§19):改显示名 / 设组 / 设音量。仅对本机 device_id 生效,
+        缺省字段不动。改动持久化,重启后保留。"""
+        if payload.get("device_id") != self.device_id:
+            return
+        name = payload.get("device_name")
+        if isinstance(name, str) and name.strip():
+            self.device_name = name.strip()
+            self.state.set_device_name(self.device_name)
+        gid = payload.get("group_id")
+        if isinstance(gid, str) and gid:
+            self.group_id = gid
+            self.state.set_group_id(gid)
+        vol = payload.get("volume")
+        if isinstance(vol, (int, float)):
+            self.volume = max(0, min(100, int(vol)))
+            await self._mpv("set_volume", self.volume)
 
     async def _h_resume_last(self, payload, env) -> None:
         await self._resume_last()

@@ -299,11 +299,15 @@ class P2pCoordinator {
   ///  3. 算 play_at = controllerNow + bufferMs，发给（收齐:全部 / 超时:已就绪）。
   ///
   /// 返回本次会话的 prepare_id。
+  ///
+  /// [readyTimeoutMsOverride] 供 §21 预缓存栅栏用:传入长超时(如 120s),让各被控端
+  /// 有时间下载+校验完成再回 ready,而非用默认 2s 短超时。缺省沿用构造时的短超时。
   String startSync({
     required String playlistId,
     required String groupId,
     int startIndex = 0,
     int seekMs = 0,
+    int? readyTimeoutMsOverride,
   }) {
     final prepareId = uuid4();
     final devices =
@@ -321,7 +325,7 @@ class P2pCoordinator {
       startIndex: startIndex,
       seekMs: seekMs,
       bufferMs: _bufferMs,
-      readyTimeoutMs: _readyTimeoutMs,
+      readyTimeoutMs: readyTimeoutMsOverride ?? _readyTimeoutMs,
     );
     final payload = Commands.prepare(
       playlistId: playlistId,

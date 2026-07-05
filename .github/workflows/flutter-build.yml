@@ -100,6 +100,20 @@ jobs:
           else
             echo "CAMERA permission already present"
           fi
+          # 局域网发现 + 本机媒体服务（§20 模式 A / §7 UDP 发现）所需权限（幂等）。
+          # INTERNET 通常已由 flutter 脚手架加入；CHANGE_WIFI_MULTICAST_STATE 让
+          # WiFi 下不过滤广播/组播，ACCESS_NETWORK_STATE 供网卡枚举。
+          for PERM in \
+            "android.permission.INTERNET" \
+            "android.permission.CHANGE_WIFI_MULTICAST_STATE" \
+            "android.permission.ACCESS_NETWORK_STATE"; do
+            if ! grep -q "$PERM" "$MANIFEST"; then
+              sed -i "s#\(<manifest[^>]*>\)#\1\n    <uses-permission android:name=\"$PERM\" />#" "$MANIFEST"
+              echo "injected $PERM"
+            else
+              echo "$PERM already present"
+            fi
+          done
           # 应用名（§3）：`flutter create --project-name remote_flutter` 生成的
           # android:label 就是 "remote_flutter"，装到手机上显示这个内部名。改包名
           # 会波及 Dart import，副作用大；这里只把 <application android:label> 改成

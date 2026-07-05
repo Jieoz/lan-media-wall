@@ -38,16 +38,18 @@ lib/
     messages.dart           # 各消息类型 Dart 模型 + Commands payload 构造器
   net/
     broker_client.dart      # WS 长连接、重连、hello/welcome、入站分发、thumb_meta+二进制帧配对
-    discovery.dart          # UDP 8772 discover/announce + 设备清单持久化
+    discovery.dart          # UDP 8772 discover/announce:启动即周期广播(修自动发现)+ 子网定向广播 + 清单持久化
+    media_upload.dart       # 本地媒体上传(§20 A+B):sha256 流式摘要、broker 媒体库 PUT、控制端临时 HTTP 服务
   state/
-    wall_state.dart         # ChangeNotifier:设备墙状态/连接态/缩略图/出站命令
+    wall_state.dart         # ChangeNotifier:设备墙状态/连接态/缩略图/出站命令/上传编排/预缓存栅栏
   p2p/
-    p2p_coordinator.dart    # 无 broker 时遥控端兼任协调端:多 WS 直连、逐台接入态上报
-  ui/
-    wall_screen.dart        # 设备墙(合并发现/已连的统一视图 + 占位卡 + 接入态)
-    invite_screen.dart      # 邀请/添加设备:扫码(mobile_scanner)/粘贴/手填三层入口
-    control_panel.dart      # 控制面板
-    settings_screen.dart    # 设置 + 诊断日志
+    p2p_coordinator.dart    # 无 broker 时遥控端兼任协调端:多 WS 直连、逐台接入态上报、栅栏长超时
+  ui/                       # 横屏平板为主场景(docs/controller-ux-redesign.md §4)
+    responsive_shell.dart   # 外壳:≥900dp 双栏并置(设备墙|编排),窄屏底部导航降级 + 顶部状态条
+    device_wall_pane.dart   # 设备墙栏:设备卡(缩略图/相位/缓存态)+ 分组管理(新建/改/删)+ 配置盒子(§19)
+    orchestration_pane.dart # 编排栏:选组/编列表(本地上传+URL)/预缓存栅栏进度/一键同步起播/传输/音量/出声台
+    invite_screen.dart      # 邀请/添加设备:扫码(mobile_scanner)/粘贴/手填三层入口(以对话框弹出)
+    settings_screen.dart    # 设置 + 诊断日志(以对话框弹出)
 test/
   envelope_test.dart        # HMAC 签名往返 + canonicalJson 与 §3 一致性
   messages_test.dart        # 消息序列化/反序列化往返

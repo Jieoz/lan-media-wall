@@ -15,6 +15,9 @@ dependencies:
   provider: ^6.1.1
   shared_preferences: ^2.2.2
   qr_flutter: ^4.1.0
+  # 本地媒体上传（§20 A+B）：选手机相册/文件里的图片视频。file_picker 5.x 兼容
+  # 本工程 SDK 下限（Dart >=3.0 / Flutter >=3.10）；6.x+ 需更高 SDK。
+  file_picker: ^5.5.0
   # 真·摄像头扫码（§15 三层入口之「扫码」）。3.5.x 是兼容本工程 SDK 下限
   # (Dart >=3.0 / Flutter >=3.10) 的最后一条线；4.x/5.x/6.x 需 Flutter 3.19+/
   # Dart 3.3+，会顶穿上面的 environment 约束。要求 Android minSdkVersion 21

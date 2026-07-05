@@ -450,6 +450,56 @@ class Commands {
         'group_id': groupId,
       };
 
+  /// create_group（§18.1）：新建空分组。
+  static Map<String, dynamic> createGroup({
+    required String groupId,
+    String? name,
+    bool? sync,
+  }) =>
+      {
+        'group_id': groupId,
+        if (name != null) 'name': name,
+        if (sync != null) 'sync': sync,
+      };
+
+  /// update_group（§18.2）：改组名/同步模式（只传要改的字段）。
+  static Map<String, dynamic> updateGroup({
+    required String groupId,
+    String? name,
+    bool? sync,
+  }) =>
+      {
+        'group_id': groupId,
+        if (name != null) 'name': name,
+        if (sync != null) 'sync': sync,
+      };
+
+  /// delete_group（§18.3）：删组，成员回落 [reassignTo]（默认 default）。
+  static Map<String, dynamic> deleteGroup({
+    required String groupId,
+    String reassignTo = 'default',
+  }) =>
+      {
+        'group_id': groupId,
+        'reassign_to': reassignTo,
+      };
+
+  /// configure_device（§19）：per-device 配置统一入口（只传要改的字段）。
+  static Map<String, dynamic> configureDevice({
+    required String deviceId,
+    String? deviceName,
+    String? groupId,
+    int? volume,
+    bool? muted,
+  }) =>
+      {
+        'device_id': deviceId,
+        if (deviceName != null) 'device_name': deviceName,
+        if (groupId != null) 'group_id': groupId,
+        if (volume != null) 'volume': volume.clamp(0, 100),
+        if (muted != null) 'muted': muted,
+      };
+
   static Map<String, dynamic> _target({String? groupId, String? deviceId}) => {
         if (groupId != null) 'group_id': groupId,
         if (deviceId != null) 'device_id': deviceId,

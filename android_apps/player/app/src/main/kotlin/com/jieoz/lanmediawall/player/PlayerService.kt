@@ -550,6 +550,7 @@ class PlayerService : Service() {
             "set_mute" -> hSetMute(payload)
             "set_audio_master" -> hSetAudioMaster(payload)
             "assign_group" -> hAssignGroup(payload)
+            "configure_device" -> hConfigureDevice(payload)
             "resume_last" -> scope.launch { resumeLast() }
             "welcome" -> hWelcome(payload)
             "controller_presence" -> hControllerPresence(payload)
@@ -633,6 +634,10 @@ class PlayerService : Service() {
         val prepareId = payload["prepare_id"].asString()
         val startIndex = payload["start_index"].asIntOrNull() ?: 0
         val seekMs = payload["seek_ms"].asLongOrNull() ?: 0L
+        // §21 预缓存栅栏:prefetch=true 表示"缓存好再回 ready"。未缓存时不立刻回
+        // ready:false,而是后台等下载+校验完成再回 ready:true,让全员统一从头起播。
+        val prefetchBarrier = payload["prefetch"].asBoolOrNull() ?: false
+        val barrierTimeoutMs = payload["barrier_timeout_ms"].asLongOrNull() ?: 120000L
         val pl = resolvePlaylist(pid)
         var ready = false
         dwellTimer.getAndSet(null)?.cancel() // §6.3: a new session voids any dwell
@@ -655,11 +660,25 @@ class PlayerService : Service() {
                     playState = "buffering"
                     ready = true
                 }
+            } else if (prefetchBarrier) {
+                // §21 栅栏:后台等缓存完成再回 ready,不阻塞消息循环。
+                downloader.prefetch(listOf(item))
+                scope.launch {
+                    awaitCacheThenReady(pid, groupId, prepareId, item, seekMs,
+                        pl, barrierTimeoutMs)
+                }
+                return
             } else {
                 downloader.prefetch(listOf(item)) // kick a fetch; report not-ready
             }
         }
         // §9.1: echo prepare_id + group_id back so broker matches the session.
+        sendReady(pid, groupId, prepareId, ready)
+    }
+
+    /** §9.1 ready 上报:回带 prepare_id + group_id 供 broker/协调端匹配会话。 */
+    private fun sendReady(pid: String?, groupId: String?, prepareId: String?,
+                          ready: Boolean) {
         link?.send("ready", jsonObj {
             put("device_id", settings.deviceId)
             put("playlist_id", pid)
@@ -667,6 +686,32 @@ class PlayerService : Service() {
             put("prepare_id", prepareId)
             put("ready", ready)
         })
+    }
+
+    /** §21 预缓存栅栏:轮询缓存态,ready 后 prime 并回 ready:true;超时回 ready:false,
+     *  交由控制端/broker 按"已就绪者"降级起播(不无限等)。 */
+    private suspend fun awaitCacheThenReady(
+        pid: String?, groupId: String?, prepareId: String?,
+        item: MediaItem, seekMs: Long, pl: Playlist, timeoutMs: Long
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (downloader.isReady(item.itemId)) {
+                val readyFile = downloader.readyPath(item.itemId)
+                readyFile?.let { downloader.touch(it) }
+                val path = readyFile?.absolutePath
+                if (path != null) {
+                    if (item.type != "image") {
+                        controllerRef?.loadPaused(path, seekMs, singleLoop(pl))
+                    }
+                    playState = "buffering"
+                    sendReady(pid, groupId, prepareId, true)
+                    return
+                }
+            }
+            delay(500)
+        }
+        sendReady(pid, groupId, prepareId, false)
     }
 
     // --- §9.2 play_at (sync-critical path) ---------------------------
@@ -855,6 +900,25 @@ class PlayerService : Service() {
         payload["group_id"].asString()?.let { settings.groupId = it }
     }
 
+    // --- §19 configure_device ----------------------------------------
+    /** 盒子配置(§19):改显示名 / 设组 / 设音量。仅对本机 device_id 生效,缺省字段不动。
+     *  改动持久化(SharedPreferences),重启后保留。 */
+    private fun hConfigureDevice(payload: Json.Obj) {
+        if (payload["device_id"].asString() != settings.deviceId) return
+        payload["device_name"].asString()?.takeIf { it.isNotBlank() }?.let {
+            settings.deviceName = it.trim()
+        }
+        payload["group_id"].asString()?.takeIf { it.isNotBlank() }?.let {
+            settings.groupId = it
+        }
+        payload["volume"].asIntOrNull()?.let {
+            val vol = it.coerceIn(0, 100)
+            settings.volume = vol
+            controllerRef?.currentVolumePercent = vol
+            controllerRef?.setVolume(vol)
+        }
+    }
+
     // --- §6.4 thumbnail loop -----------------------------------------
     private suspend fun thumbnailLoop() {
         while (scope.isActive) {
@@ -973,7 +1037,7 @@ class PlayerService : Service() {
         private val ACKABLE = setOf(
             "prepare", "pause", "resume", "stop", "next", "prev",
             "set_volume", "set_mute", "set_audio_master", "assign_group",
-            "cache_prefetch", "playlist",
+            "configure_device", "cache_prefetch", "playlist",
         )
 
         @Volatile
