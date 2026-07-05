@@ -213,6 +213,17 @@ class PlayerService : Service() {
                         ConnState.set(ConnState.Phase.P2P_CONNECTED)
                     },
                     onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+                    // §2 可见性:控制器已连上(WS 握手过)但入站帧持续被丢弃时,
+                    // 不再误报"已连接"。把丢弃原因写进 P2P_CONNECTED 的 detail,
+                    // 让设置页/远程截图能一眼看出"连着但收不下消息 + 为什么"。
+                    onInboundDrop = { reason, _ ->
+                        if (controllerPresent) {
+                            ConnState.set(
+                                ConnState.Phase.P2P_CONNECTED,
+                                "已连接但丢帧: $reason",
+                            )
+                        }
+                    },
                     initialAuthMode = plan.authMode,
                     initialKeyMode = plan.keyMode,
                     deviceKey = deviceKey,

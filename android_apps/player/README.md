@@ -8,7 +8,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.10.0 / versionCode 20`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.10.1 / versionCode 21`** (see `app/build.gradle.kts`).
 > `versionCode` MUST increment on every release — it's how Android decides "this is
 > newer". Bumping `versionName` alone can cause the update to be rejected as the same
 > version. See the release checklist in the root README.
@@ -184,3 +184,27 @@ These can't be exercised in a headless CI/container and need a device:
 - OEM background-activity-start / autostart restrictions vary by vendor.
 - `EncryptedSharedPreferences` needs a working Keystore (falls back to plain
   prefs if unavailable, logged — acceptable degradation).
+
+## Inbound-frame observability & p2p clock fix (1.10.1)
+
+Diagnoses the "shows connected but push does nothing, with no logs" class of
+bug (typically after a FORCE reinstall wipes `/data/data` and re-pairing):
+
+- **`P2pServer` now logs the full inbound path** under tag `lmw.P2pServer`:
+  WS handshake (with `authMode`/`keyMode`), controller connect/disconnect, every
+  received frame (`RX <type> from=… authed=…`), and — critically — **every
+  dropped frame with its reason** (`DROP inbound: reason=SHAPE|SIG|STALE|DUP …`).
+  Previously a failed `Envelope.verify` was `return`ed silently, which is why the
+  box was a black box. Grep the device with:
+  `adb shell "logcat -d | grep lmw.P2pServer"`.
+- **Freshness is now checked against the controller's master clock**
+  (`ClockSync.masterNow()`), not the box's raw wall clock. A box whose clock
+  legitimately differs from the controller no longer STALE-drops every frame.
+- **Replay cache + first-connect window reset on each (re)connect**, so a fresh
+  pairing after a wipe is never rejected as a `DUP`.
+- **`onInboundDrop` surfaces persistent drops to the UI**: `ConnState` shows
+  `已连接但丢帧: <reason>` instead of a bare "connected", so an operator (or a
+  remote screenshot) can self-diagnose auth/clock mismatch on-screen.
+- `Envelope.peekTypeFrom` gives callers a verify-free peek at a raw frame's
+  `type`/`from`/`sig` length purely for the drop log (Envelope stays
+  Android-free; only the caller Logs).

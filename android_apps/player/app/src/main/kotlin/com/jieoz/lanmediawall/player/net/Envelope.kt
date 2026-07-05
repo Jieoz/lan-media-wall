@@ -318,6 +318,22 @@ object Envelope {
         return VerifyResult(true, Reason.OK, parsed)
     }
 
+    /**
+     * Best-effort peek at a raw frame's `type` / `from` / `sig` length **without**
+     * verifying — used only by callers to log a dropped frame's identity when
+     * [verify] returned no [Parsed] (a drop yields `parsed=null`). Pure logic, no
+     * Android dependency (the §A observability contract: only the *caller* Logs).
+     * Returns null if the text isn't even a JSON object.
+     */
+    fun peekTypeFrom(raw: String): Triple<String?, String?, Int>? {
+        val obj = try { Json.parse(raw) as? Json.Obj } catch (e: Exception) { null } ?: return null
+        val e = obj.entries
+        val type = e["type"].asString()
+        val from = e["from"].asString()
+        val sigLen = e["sig"].asString()?.length ?: -1
+        return Triple(type, from, sigLen)
+    }
+
     private fun constantTimeEquals(a: String, b: String): Boolean {
         val ab = a.toByteArray(Charsets.UTF_8)
         val bb = b.toByteArray(Charsets.UTF_8)

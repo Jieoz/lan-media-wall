@@ -1,5 +1,6 @@
 package com.jieoz.lanmediawall.player.net
 
+import android.util.Log
 import com.jieoz.lanmediawall.player.sync.ClockSync
 import java.io.BufferedInputStream
 import java.io.OutputStream
@@ -53,6 +54,10 @@ class P2pServer(
     private val clock: ClockSync,
     private val onConnect: () -> Unit,
     private val onMessage: (type: String, payload: Json.Obj, env: Envelope.Parsed) -> Unit,
+    /** §2 可见性:入站帧因验签/时效/重放被丢弃时回调(带 [Envelope.Reason])。
+     *  让 PlayerService 把"已连接但持续丢帧"反映到 [com.jieoz.lanmediawall.player.ConnState]
+     *  与设置页,不再误报"已连接"。默认 no-op(单测/内部调用无需关心)。 */
+    private val onInboundDrop: (reason: Envelope.Reason, type: String?) -> Unit = { _, _ -> },
     /** Auth mode we declare as coordinator (§13). In p2p *we* are authoritative,
      *  so unlike [BrokerClient] this is not a bootstrap that gets overwritten by
      *  a welcome — it is the mode for the whole session. */
@@ -137,26 +142,33 @@ class P2pServer(
             // --- RFC6455 opening handshake (§14.3) ------------------------
             val head = readHandshakeHead(input) ?: run { socket.close(); return }
             val req = WsHandshake.parseRequest(head)
+            val peer = socket.remoteSocketAddress?.toString() ?: "?"
             val key = req?.takeIf { it.isUpgrade }?.key ?: run {
                 // not a WS upgrade — reject politely and drop.
+                Log.w(TAG, "reject non-WS request from $peer")
                 try { out.write(BAD_REQUEST.toByteArray(Charsets.UTF_8)); out.flush() } catch (_: Exception) {}
                 socket.close(); return
             }
             WsFrame.write(out, WsHandshake.responseFor(key).toByteArray(Charsets.UTF_8))
+            Log.i(TAG, "WS handshake OK from $peer (authMode=${authMode.wire} keyMode=${keyMode.wire})")
 
             // --- single-controller guard (§14.4) --------------------------
             val conn = Conn(socket, out)
             if (!active.compareAndSet(null, conn)) {
                 // a controller is already connected; reject this extra one with
                 // close code 1013 (try again later), mirroring p2p_server.py.
+                Log.w(TAG, "reject 2nd controller $peer (1013): one already connected")
                 try {
                     WsFrame.write(out, WsFrame.encodeClose(1013))
                 } catch (_: Exception) {}
                 socket.close()
                 return
             }
+            Log.i(TAG, "controller connected: $peer")
 
             clock.reset() // §1: re-handshake on every (re)connect
+            replay.clear() // §3: fresh replay window per connection (no stale DUPs)
+            firstConnect = true // §3: widen freshness window for the first frame
             // we are the coordinator now — send welcome immediately (§14.3).
             sendOn(conn, "welcome", buildWelcomePayload())
             try { onConnect() } catch (_: Exception) {}
@@ -167,9 +179,11 @@ class P2pServer(
                 stopSyncLoop()
                 active.compareAndSet(conn, null)
                 firstConnect = false
+                Log.i(TAG, "controller disconnected: $peer")
                 try { socket.close() } catch (_: Exception) {}
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "controller conn error: ${e.javaClass.simpleName}: ${e.message}")
             try { socket.close() } catch (_: Exception) {}
             active.updateAndGet { if (it?.socket === socket) null else it }
         }
@@ -292,13 +306,31 @@ class P2pServer(
 
     // --- inbound verify + dispatch -----------------------------------
     private fun handleText(raw: String) {
+        // §8: freshness is checked against the **controller's** master clock, not
+        // our raw wall clock. We fold local now → master via the learned offset
+        // (0 before the first time_sync lands, harmless: the first-connect window
+        // is 120s). Using uncorrected nowMs() would STALE-drop a controller whose
+        // clock legitimately differs from ours — the exact silent-drop bug.
+        val nowMaster = clock.masterNow()
         val result = Envelope.verify(
             psk, raw, replay = replay, firstConnect = firstConnect,
+            now = nowMaster,
             authMode = authMode, keyMode = keyMode,
             verifyKeyFor = ::verifyKeyFor,
         )
-        if (!result.ok || result.parsed == null) return
+        if (!result.ok || result.parsed == null) {
+            // §2 可见性:入站帧被丢 → 打原因 + 帧概要,并回调让 UI 反映。此前是
+            // `if (!result.ok) return` 静默吞掉,是"没有日志"的直接元凶。
+            val peek = Envelope.peekTypeFrom(raw)
+            Log.w(TAG, "DROP inbound: reason=${result.reason} " +
+                "type=${peek?.first ?: "?"} from=${peek?.second ?: "?"} " +
+                "sigLen=${peek?.third ?: -1} authMode=${authMode.wire} keyMode=${keyMode.wire}")
+            try { onInboundDrop(result.reason, peek?.first) } catch (_: Exception) {}
+            return
+        }
         val parsed = result.parsed
+        Log.i(TAG, "RX ${parsed.type} from=${parsed.from} authed=${parsed.authed} " +
+            "sigLen=${parsed.sig.length}")
         when (parsed.type) {
             // controller answered *our* probe → learn offset to its clock.
             "time_sync_ack" -> { onTimeSyncAck(parsed.payloadObj); return }
@@ -309,7 +341,8 @@ class P2pServer(
         }
         try {
             onMessage(parsed.type, parsed.payloadObj, parsed)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "onMessage(${parsed.type}) threw: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -383,6 +416,8 @@ class P2pServer(
     }
 
     companion object {
+        private const val TAG = "lmw.P2pServer"
+
         // a WS opening-handshake head is small; cap to defend against a peer
         // that never sends the blank-line terminator.
         private const val MAX_HEAD = 16 * 1024

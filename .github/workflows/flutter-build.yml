@@ -174,9 +174,24 @@ jobs:
       # release.apk / app-x86_64-release.apk, typically ~20-40 MB each). With no
       # keystore these are UNSIGNED — fine for sideload; a signed set is built
       # below when keystore secrets are present.
+      # Single source of truth for the version: pubspec.yaml (`version: X.Y.Z+N`).
+      # Parsed here so the APK's internal versionName/versionCode ALWAYS match the
+      # tag — no hardcoded number to drift (root fix for the v1.8/1.9/1.10 drift).
+      - name: Derive version from pubspec
+        id: ver
+        working-directory: remote_flutter
+        shell: bash
+        run: |
+          RAW=$(grep -E '^version:' pubspec.yaml | head -1 | sed 's/version:[[:space:]]*//')
+          NAME=${RAW%%+*}
+          CODE=${RAW##*+}
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "::notice::controller version_name=$NAME version_code=$CODE (from pubspec)"
+
       - name: Build release APKs (split per ABI)
         working-directory: remote_flutter
-        run: flutter build apk --release --split-per-abi --build-name=1.9.0 --build-number=19
+        run: flutter build apk --release --split-per-abi --build-name=${{ steps.ver.outputs.name }} --build-number=${{ steps.ver.outputs.code }}
 
       - name: Upload release APKs
         uses: actions/upload-artifact@v4
@@ -220,7 +235,7 @@ jobs:
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-          flutter build apk --release --split-per-abi --build-name=1.9.0 --build-number=19 || {
+          flutter build apk --release --split-per-abi --build-name=${{ steps.ver.outputs.name }} --build-number=${{ steps.ver.outputs.code }} || {
             echo "::warning::Signed release build failed (likely signingConfig not wired into the generated Gradle). Unsigned release APKs already uploaded."
             exit 0
           }
