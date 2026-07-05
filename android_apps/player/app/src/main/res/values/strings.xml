@@ -5,7 +5,7 @@
     <!-- §4.2/§7 first-boot notice: stopped-state rule + LAN-only warning. -->
     <string name="first_boot_notice">After installing, open this app once manually — otherwise Android won\'t deliver the boot broadcast and it won\'t auto-start after a reboot. LAN use only: do not expose this player to the public internet.</string>
     <!-- §2 zero-config status line: LAN IP / device_id / group. -->
-    <string name="device_info_fmt">LAN IP: %1$s\nDevice ID: %2$s\nGroup: %3$s</string>
+    <string name="device_info_fmt">版本: v%4$s (build %5$d)\nLAN IP: %1$s\nDevice ID: %2$s\nGroup: %3$s</string>
 
     <string name="label_device_name">Device name</string>
     <string name="hint_device_name">e.g. Lobby Left Screen</string>

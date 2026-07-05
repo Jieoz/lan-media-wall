@@ -99,8 +99,10 @@ class SettingsActivity : AppCompatActivity() {
      */
     private fun showDeviceInfoAndQr() {
         val ip = detectIp()
+        // 版本号来自 BuildConfig(单一真相源:gradle versionName/Code),永不漂移。
         binding.textDeviceInfo.text = getString(
             R.string.device_info_fmt, ip, settings.deviceId, settings.groupId,
+            BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE,
         )
         val uri = QrEncoder.buildEnrollUri(
             ip = ip,

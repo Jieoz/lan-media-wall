@@ -221,10 +221,14 @@ class P2pServer(
             val frame = try {
                 WsFrame.readFrame(input)
             } catch (e: Exception) {
+                // §2 可见性:区分断开原因(异常 read vs 干净 EOF vs close 帧),
+                // 否则\"连上又断\"到底谁先挂无从判断。
+                Log.w(TAG, "recv ended: read error ${e.javaClass.simpleName}: ${e.message}")
                 break
-            } ?: break // clean EOF
+            } ?: run { Log.i(TAG, "recv ended: clean EOF (peer closed socket)"); null } ?: break
             when {
                 frame.isClose -> {
+                    Log.i(TAG, "recv ended: controller sent CLOSE frame")
                     try { synchronized(conn.writeLock) { WsFrame.write(conn.out, WsFrame.encodeClose(1000)) } } catch (_: Exception) {}
                     break
                 }
@@ -274,8 +278,16 @@ class P2pServer(
             synchronized(conn.writeLock) {
                 WsFrame.write(conn.out, WsFrame.encodeText(text))
             }
+            // §2 可见性:TX 侧此前全无日志,welcome/time_sync 有没有真发出去看不到,
+            // 是\"只见 RX 不见 TX\"盲区的元凶。心跳类(time_sync)降噪到 debug。
+            if (type == "time_sync" || type == "time_sync_ack") {
+                Log.d(TAG, "TX $type -> $to")
+            } else {
+                Log.i(TAG, "TX $type -> $to")
+            }
             (env.entries["msg_id"] as? Json.Str)?.value
         } catch (e: Exception) {
+            Log.w(TAG, "TX $type FAILED: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }

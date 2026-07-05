@@ -8,7 +8,10 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.10.1 / versionCode 21`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.10.2 / versionCode 22`** (see `app/build.gradle.kts`).
+> The **Settings screen shows this version** at the top of the device-info line
+> (`版本: v<name> (build <code>)`), read from `BuildConfig` — single source of truth,
+> so what you see on-screen always matches the installed build.
 > `versionCode` MUST increment on every release — it's how Android decides "this is
 > newer". Bumping `versionName` alone can cause the update to be rejected as the same
 > version. See the release checklist in the root README.
@@ -184,6 +187,14 @@ These can't be exercised in a headless CI/container and need a device:
 - OEM background-activity-start / autostart restrictions vary by vendor.
 - `EncryptedSharedPreferences` needs a working Keystore (falls back to plain
   prefs if unavailable, logged — acceptable degradation).
+
+## Settings shows version + bidirectional connection logging (1.10.2)
+
+- Settings screen now displays `版本: v<name> (build <code>)` (from `BuildConfig`).
+- `lmw.P2pServer` now logs the **TX** side too (`TX welcome/hello/…`), not just RX,
+  and names the **disconnect cause** (`CLOSE frame` / `clean EOF` / `read error …`).
+  This closes the "only see RX, never see TX / why did it drop" blind spot when a
+  controller connects, handshakes, then disconnects in a loop without pushing media.
 
 ## Inbound-frame observability & p2p clock fix (1.10.1)
 
