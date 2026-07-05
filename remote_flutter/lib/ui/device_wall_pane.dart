@@ -4,7 +4,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../net/media_upload.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
 import 'invite_screen.dart';
