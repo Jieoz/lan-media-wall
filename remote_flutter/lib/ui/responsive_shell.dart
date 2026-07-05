@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../net/broker_client.dart' show ConnState;
 import '../state/wall_state.dart';
 import 'device_wall_pane.dart';
 import 'orchestration_pane.dart';
@@ -105,9 +106,9 @@ class _WidePane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    return const Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: const [
+      children: [
         SizedBox(
           width: 360,
           child: DeviceWallPane(),

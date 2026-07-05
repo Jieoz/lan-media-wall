@@ -714,7 +714,7 @@ class WallState extends ChangeNotifier {
     }
     if (!_localMedia.running) {
       await _localMedia.start(bindHost: ip);
-      _pushLog('本机媒体服务已启动(${ip}:${_localMedia.port})');
+      _pushLog('本机媒体服务已启动($ip:${_localMedia.port})');
     }
     return MediaUpload.registerLocal(
       file: file,

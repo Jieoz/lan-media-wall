@@ -111,9 +111,18 @@ class MediaUpload {
   }
 }
 
+/// 捕获单个 [Digest] 的极简 Sink —— 免依赖 package:convert 的 AccumulatorSink。
+class _DigestCatcher implements Sink<Digest> {
+  Digest? value;
+  @override
+  void add(Digest data) => value = data;
+  @override
+  void close() {}
+}
+
 /// 流式 sha256 累加器(避免把大视频整个读进内存)。
 class _Sha256Sink {
-  final _output = AccumulatorSink<Digest>();
+  final _output = _DigestCatcher();
   late final ByteConversionSink _input =
       sha256.startChunkedConversion(_output);
 
@@ -121,7 +130,7 @@ class _Sha256Sink {
 
   String get hex {
     _input.close();
-    return _output.events.single.toString();
+    return _output.value!.toString();
   }
 }
 

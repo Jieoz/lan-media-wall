@@ -524,7 +524,7 @@ class _AudioMasterPicker extends StatefulWidget {
 }
 
 class _AudioMasterPickerState extends State<_AudioMasterPicker> {
-  late Set<String> _selected = {
+  late final Set<String> _selected = {
     for (final d in widget.members)
       if (d.audioMaster) d.deviceId
   };
