@@ -53,6 +53,32 @@ void main() {
     test('空组 → 空列表', () {
       expect(GroupExpander.expand('group:nope', devices: devices), isEmpty);
     });
+
+    // --- v1.10.5 回归:group_id 漂移容忍 + 空 gid 通配 ---
+    // 真机根因:扫码直连一台盒子后「推送并播放」算出 0 台目标(group_id 因空格/
+    // 大小写/前后空白与 UI 选中的 gid 严格不等)→ 一条 prepare 都不发 → 图永远出不来。
+    test('group 匹配容忍大小写差异', () {
+      final devs = [_dev('a', 'Default'), _dev('b', 'default')];
+      final r = GroupExpander.expand('group:default', devices: devs);
+      expect(r.toSet(), {'a', 'b'}, reason: 'Default 与 default 应视为同组');
+    });
+
+    test('group 匹配容忍前后空格', () {
+      final devs = [_dev('a', ' default '), _dev('b', 'default')];
+      final r = GroupExpander.expand('group:default', devices: devs);
+      expect(r.toSet(), {'a', 'b'}, reason: '前后空格不应导致匹配失败');
+    });
+
+    test('gid 自身带空格/大小写也能匹配', () {
+      final devs = [_dev('a', 'default')];
+      final r = GroupExpander.expand('group: DEFAULT ', devices: devs);
+      expect(r, ['a']);
+    });
+
+    test('空 gid → 通配匹配所有设备(避免"未指定组"误判为空组)', () {
+      final r = GroupExpander.expand('group:', devices: devices);
+      expect(r.toSet(), {'a', 'b', 'c'});
+    });
   });
 
   group('GroupExpander.groupsOf', () {

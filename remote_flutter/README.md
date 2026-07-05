@@ -63,6 +63,8 @@ lib/
 test/
   envelope_test.dart        # HMAC 签名往返 + canonicalJson 与 §3 一致性
   messages_test.dart        # 消息序列化/反序列化往返
+  p2p_group_test.dart       # GroupExpander 扇出;含 v1.10.5 回归:group_id 漂移
+                            # (空格/大小写/空 gid)容忍,防"推图算出 0 台"复发
 ```
 
 ## 安装与运行
