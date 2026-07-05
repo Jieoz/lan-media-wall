@@ -15,8 +15,8 @@ android {
         // the target 1688 外贸盒. targetSdk stays high for modern-OS behavior.
         minSdk = 19
         targetSdk = 34
-        versionCode = 19
-        versionName = "1.9.0"
+        versionCode = 20
+        versionName = "1.10.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // §6: on minSdk 19 the merged dex can exceed the 65k method limit
         // (exoplayer2 + appcompat + okhttp + coroutines). Pre-21 has no native

@@ -551,6 +551,7 @@ class PlayerService : Service() {
             "set_audio_master" -> hSetAudioMaster(payload)
             "assign_group" -> hAssignGroup(payload)
             "configure_device" -> hConfigureDevice(payload)
+            "update_app" -> hUpdateApp(payload, env)
             "resume_last" -> scope.launch { resumeLast() }
             "welcome" -> hWelcome(payload)
             "controller_presence" -> hControllerPresence(payload)
@@ -919,6 +920,60 @@ class PlayerService : Service() {
         }
     }
 
+    // --- §22 update_app (remote self-update, root install) -----------
+    /**
+     * §22: remotely update this box's own APK. FOUR guardrails (see UpdateGuard
+     * + RootInstaller): (1) the frame MUST be authenticated (env.authed) — an
+     * `open`/unsigned box refuses; (2) target versionCode MUST be strictly
+     * newer (no downgrade/replay); (3) url + 64-hex sha256 required and the
+     * downloaded bytes are re-verified before install; (4) the Android platform
+     * enforces same-signer at boot-scan time. Only after all pass do we root-
+     * install via /data/app + reboot (the only path that works on these boxes).
+     * Runs off-thread; reports the outcome back over the link.
+     */
+    private fun hUpdateApp(payload: Json.Obj, env: Envelope.Parsed) {
+        if (!targetsMe(payload)) return
+        val targetCode = payload["version_code"].asIntOrNull()
+        val url = payload["url"].asString()
+        val sha = payload["sha256"].asString()
+        val decision = com.jieoz.lanmediawall.player.update.UpdateGuard.decide(
+            authed = env.authed,
+            currentVersionCode = BuildConfig.VERSION_CODE,
+            targetVersionCode = targetCode,
+            url = url,
+            sha256 = sha,
+        )
+        if (decision is com.jieoz.lanmediawall.player.update.UpdateGuard.Decision.Reject) {
+            reportUpdate("rejected", decision.reason)
+            pushError("update:${decision.reason}")
+            return
+        }
+        // Proceed on a background thread — download can be large; must not block
+        // the link. url/sha are non-null here (guard passed).
+        reportUpdate("downloading", "")
+        scope.launch(Dispatchers.IO) {
+            val updater = com.jieoz.lanmediawall.player.update.AppUpdater(cacheDir)
+            when (val r = updater.downloadVerifyInstall(packageName, url!!, sha!!)) {
+                is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Installing ->
+                    reportUpdate("installing", "reboot") // box reboots now
+                is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Failed -> {
+                    reportUpdate("failed", r.reason)
+                    pushError("update:${r.reason}")
+                }
+            }
+        }
+    }
+
+    /** Report §22 update progress/outcome back to the coordinator (best-effort). */
+    private fun reportUpdate(state: String, detail: String) {
+        link?.send("update_status", jsonObj {
+            put("device_id", settings.deviceId)
+            put("state", state)      // downloading | installing | rejected | failed
+            put("detail", detail)
+            put("version_code", BuildConfig.VERSION_CODE)
+        })
+    }
+
     // --- §6.4 thumbnail loop -----------------------------------------
     private suspend fun thumbnailLoop() {
         while (scope.isActive) {
@@ -1037,7 +1092,7 @@ class PlayerService : Service() {
         private val ACKABLE = setOf(
             "prepare", "pause", "resume", "stop", "next", "prev",
             "set_volume", "set_mute", "set_audio_master", "assign_group",
-            "configure_device", "cache_prefetch", "playlist",
+            "configure_device", "cache_prefetch", "playlist", "update_app",
         )
 
         @Volatile

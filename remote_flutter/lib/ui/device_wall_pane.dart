@@ -1,6 +1,10 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../net/media_upload.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
 import 'invite_screen.dart';
@@ -73,9 +77,134 @@ class _ActionsBar extends StatelessWidget {
             label: const Text('新建组'),
             onPressed: () => _createGroupDialog(context, state),
           ),
+          const SizedBox(width: 8),
+          // §23 远程更新:整墙/整组免逐台 adb 刷机。仅 broker 模式可用。
+          IconButton(
+            tooltip: '远程更新固件 (APK)',
+            icon: const Icon(Icons.system_update_alt),
+            onPressed: () => _remoteUpdateDialog(context, state),
+          ),
         ],
       ),
     );
+  }
+}
+
+/// §23 远程自更新:选 APK → 上传到 broker 媒体库(得 url+sha256) → 填目标
+/// versionCode + 目标(某组/某台/全部) → 下发 update_app。被控端四护栏二次校验才装。
+Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
+  if (state.isP2p || state.brokerHost.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('远程更新需 broker 模式:APK 要放在被控端长时可达的 broker 媒体库')));
+    return;
+  }
+  final picked = await FilePicker.platform.pickFiles(
+    type: FileType.custom,
+    allowedExtensions: const ['apk'],
+    withData: false,
+  );
+  final path = picked?.files.single.path;
+  if (path == null) return;
+  final apk = File(path);
+
+  final versionCtl = TextEditingController();
+  final groups = state.groups;
+  String? targetGroupId; // null = 全部(不带 group_id/device_id)
+  var uploading = false;
+  String? uploadedUrl, uploadedSha;
+
+  if (!context.mounted) return;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => AlertDialog(
+        title: const Text('远程更新固件'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('APK:${apk.uri.pathSegments.last}',
+                  maxLines: 2, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 8),
+              TextField(
+                controller: versionCtl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: '目标 versionCode（整数，必须比被控端现版本大）',
+                  helperText: '被控端会拒绝 ≤ 当前版本的更新（防降级/重放）',
+                ),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<String?>(
+                isExpanded: true,
+                value: targetGroupId,
+                decoration: const InputDecoration(labelText: '目标'),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('全部设备')),
+                  for (final g in groups)
+                    DropdownMenuItem(
+                        value: g.groupId,
+                        child: Text('组:${g.name.isEmpty ? g.groupId : g.name}')),
+                ],
+                onChanged: (v) => setLocal(() => targetGroupId = v),
+              ),
+              const SizedBox(height: 12),
+              if (uploadedUrl != null)
+                Text('已上传 ✓ sha256:${uploadedSha!.substring(0, 12)}…',
+                    style: const TextStyle(color: Colors.green, fontSize: 12))
+              else
+                Text(
+                  uploading ? '上传中…' : '点「上传并下发」先把 APK 传到 broker，再下发更新指令',
+                  style: const TextStyle(fontSize: 12),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: uploading ? null : () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            onPressed: uploading
+                ? null
+                : () async {
+                    final vc = int.tryParse(versionCtl.text.trim());
+                    if (vc == null || vc <= 0) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                          content: Text('请填写有效的 versionCode（正整数）')));
+                      return;
+                    }
+                    setLocal(() => uploading = true);
+                    try {
+                      final r =
+                          await state.uploadApkForUpdate(apk: apk);
+                      uploadedUrl = r.url;
+                      uploadedSha = r.sha256;
+                      state.updateApp(
+                        url: r.url,
+                        versionCode: vc,
+                        sha256: r.sha256,
+                        groupId: targetGroupId,
+                      );
+                      if (ctx.mounted) Navigator.pop(ctx, true);
+                    } catch (e) {
+                      setLocal(() => uploading = false);
+                      if (ctx.mounted) {
+                        ScaffoldMessenger.of(ctx).showSnackBar(
+                            SnackBar(content: Text('更新失败:$e')));
+                      }
+                    }
+                  },
+            child: const Text('上传并下发'),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (ok == true && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('已下发更新指令;被控端校验通过后将下载→安装→重启')));
   }
 }
 

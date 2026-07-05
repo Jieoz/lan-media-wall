@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.10.0] — 2026-07-05
+
+### Added
+- **远程自更新 (`update_app`, §23)**: 遥控端选 APK → 上传到 broker 媒体库(得 url+sha256)→ 下发 `update_app` 给某台/某组/全部,被控端自己拉取并 root 安装(`su` 复制进 `/data/app` + reboot,4.4 外贸盒唯一可靠路径),免逐台 adb 刷机。被控端回报 `update_status`(downloading/installing/rejected/failed)。
+- **四条安全护栏**: (1) 仅接受**已鉴权**帧(`Envelope.authed`——open/空签名一律拒),(2) `version_code` 必须**严格更新**(防降级/重放),(3) `url`+64 位 hex `sha256` 必填且下载后**重算比对**(不符删文件拒装),(4) 同签名由 Android 平台开机包扫描强制(免额外代码)。
+- **控制端 UI**: 设备墙动作条新增「远程更新固件」入口,支持选目标(全部/按组)+ 填 versionCode + 一键上传下发。
+
+### Notes
+- 仅内网使用:`update_app` 依赖 `auth_mode`≠`open` + 已配 PSK 才生效;切勿把被控端暴露公网。
+- 纯逻辑护栏(`UpdateGuard`)+ 安装命令(`RootInstaller.installScript`)+ `authed` 语义均有 JVM 单测覆盖。
+
 ## [v1.9.0] — 2026-07-05
 
 ### Added

@@ -53,7 +53,8 @@
 | 本地媒体上传(v1.9) | 遥控端可直接选手机/平板本地图片视频下发:有 broker 走**模式 B**(PUT 到 broker 媒体库,`/media/<sha256>` 断点续传 + sha256 去重校验),无 broker(p2p)走**模式 A**(遥控端起临时 HTTP 服务供各屏拉取)。sha256 流式摘要,不整文件进内存 |
 | 预缓存栅栏(v1.9) | 同步起播前的「全员缓存好再一起从头播」栅栏:`prepare(prefetch:true)` 下被控端**不立刻回 ready:false**,而是后台等下载+校验完成再回 `ready:true`(默认 120s 超时降级),避免个别屏没缓存完就黑屏/追帧。Windows + Android 两端一致 |
 | 盒子远程配置(v1.9) | `configure_device` 一条命令改被控端**显示名 / 分组 / 音量**,仅对目标 device_id 生效、缺省字段不动、改动持久化重启保留。Windows + Android 两端一致 |
-| 运维(Phase 2) | OTA 远程更新 / 远程重启 / 断电恢复上次任务 / 定时编排 |
+| 远程自更新(v1.10) | `update_app`(§23):遥控端选 APK → 上传 broker 媒体库(得 url+sha256)→ 下发给某台/某组/全部,被控端自己拉取并 root 安装(`su` 复制进 `/data/app` + reboot,4.4 外贸盒唯一可靠路径),**免逐台 adb 刷机**。四护栏:仅接受**已鉴权**帧(open/空签名拒)、`version_code` 必须**严格更新**(防降级/重放)、`sha256` 下载后**重算比对**、同签名由 Android 平台强制。仅内网,依赖 `auth_mode`≠`open` |
+| 运维(Phase 2) | 远程重启 / 断电恢复上次任务 / 定时编排(OTA 远程更新已在 v1.10 落地,见上) |
 
 完整通信协议见 [`protocol_spec.md`](./protocol_spec.md)。
 

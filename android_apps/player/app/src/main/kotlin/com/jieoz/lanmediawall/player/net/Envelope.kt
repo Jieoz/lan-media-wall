@@ -205,6 +205,16 @@ object Envelope {
         val sig: String,
         val payload: Json,
         val payloadObj: Json.Obj,
+        /**
+         * True only when this frame's signature was actually recomputed and
+         * matched (i.e. `mustVerify` was true and the HMAC check passed).
+         * `open` mode and empty-sig `optional` frames are accepted but arrive
+         * with `authed=false`. Security-sensitive handlers (e.g. §22
+         * `update_app`, which can root-install an APK) MUST require
+         * `authed==true` so an unauthenticated box can never be remotely
+         * reflashed over the LAN.
+         */
+        val authed: Boolean = false,
     )
 
     enum class Reason { OK, SHAPE, SIG, STALE, DUP }
@@ -291,6 +301,9 @@ object Envelope {
                 return VerifyResult(false, Reason.SIG, null)
             }
         }
+        // `authed` is true iff we actually recomputed + matched the HMAC above.
+        // open / empty-sig-optional frames pass verification but are NOT authed.
+        val authed = mustVerify
 
         val window = if (firstConnect) FIRST_CONNECT_WINDOW_MS else FRESH_WINDOW_MS
         if (Math.abs(now - ts) > window) {
@@ -301,7 +314,7 @@ object Envelope {
             return VerifyResult(false, Reason.DUP, null)
         }
 
-        val parsed = Parsed(v, type, msgId, ts, from, to, sig, payloadObj, payloadObj)
+        val parsed = Parsed(v, type, msgId, ts, from, to, sig, payloadObj, payloadObj, authed)
         return VerifyResult(true, Reason.OK, parsed)
     }
 

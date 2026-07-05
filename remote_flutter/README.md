@@ -3,7 +3,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.9.0+19`**(`pubspec.yaml`)。CI 用 `flutter build apk --build-name=1.9.0 --build-number=19` 把版本号烧进 APK(pubspec 的版本在 flutter 构建时不一定自动进包,靠这两个参数兜底)。发版流程见根 README。
+> **当前版本 `1.10.0+20`**(`pubspec.yaml`)。CI 用 `flutter build apk --build-name=1.10.0 --build-number=20` 把版本号烧进 APK(pubspec 的版本在 flutter 构建时不一定自动进包,靠这两个参数兜底)。发版流程见根 README。
 
 > Dart 包名仍是 `remote_flutter`(改包名会波及所有 import),但装到手机上的**应用显示名是「媒体墙遥控」**:CI 在 `flutter create` 生成 `android/` 后向 `AndroidManifest.xml` 的 `<application>` 注入 `android:label`(见 `../.github/workflows/flutter-build.yml`),不动 pubspec name。
 
@@ -29,6 +29,10 @@ LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播
 - **设备墙即时可见性（§14.5）**：发现 / 扫码 / 手填的设备**立即以占位卡出现**，
   显示接入态（已发现 / 连接中 / 已连接 / 失败+原因），用 `device_id` 去重，WS 回传的
   `DeviceStatus` 覆盖占位——不再"正在添加却看不到设备"、不再静默吞掉连接失败。
+- **远程更新固件（§23，v1.10）**：设备墙动作条「远程更新固件」→ 选 APK →
+  上传到 broker 媒体库（`uploadApkForUpdate` 得 url+sha256）→ 选目标（全部/按组）+
+  填目标 `versionCode` → 下发 `update_app`。被控端四护栏二次校验（已鉴权+版本严格更新
+  +sha256 比对）才下载安装重启。**仅 broker 模式**（APK 需长时可达的媒体库 URL）。
 
 ## 目录结构
 
@@ -43,12 +47,12 @@ lib/
     discovery.dart          # UDP 8772 discover/announce:启动即周期广播(修自动发现)+ 子网定向广播 + 清单持久化
     media_upload.dart       # 本地媒体上传(§20 A+B):sha256 流式摘要、broker 媒体库 PUT、控制端临时 HTTP 服务
   state/
-    wall_state.dart         # ChangeNotifier:设备墙状态/连接态/缩略图/出站命令/上传编排/预缓存栅栏
+    wall_state.dart         # ChangeNotifier:设备墙状态/连接态/缩略图/出站命令/上传编排/预缓存栅栏/远程更新(§23)
   p2p/
     p2p_coordinator.dart    # 无 broker 时遥控端兼任协调端:多 WS 直连、逐台接入态上报、栅栏长超时
   ui/                       # 横屏平板为主场景(docs/controller-ux-redesign.md §4)
     responsive_shell.dart   # 外壳:≥900dp 双栏并置(设备墙|编排),窄屏底部导航降级 + 顶部状态条
-    device_wall_pane.dart   # 设备墙栏:设备卡(缩略图/相位/缓存态)+ 分组管理(新建/改/删)+ 配置盒子(§19)
+    device_wall_pane.dart   # 设备墙栏:设备卡(缩略图/相位/缓存态)+ 分组管理(新建/改/删)+ 配置盒子(§19)+ 远程更新固件(§23)
     orchestration_pane.dart # 编排栏:选组/编列表(本地上传+URL)/预缓存栅栏进度/一键同步起播/传输/音量/出声台
     invite_screen.dart      # 邀请/添加设备:扫码(mobile_scanner)/粘贴/手填三层入口(以对话框弹出)
     settings_screen.dart    # 设置 + 诊断日志(以对话框弹出)

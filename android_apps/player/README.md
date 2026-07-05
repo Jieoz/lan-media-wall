@@ -5,10 +5,10 @@ behaviorally **on par with the Windows player** (`../../windows_player/`) — sa
 protocol, same roles, different playback kernel (Media3 instead of mpv).
 
 Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec.md)
-**v1.4** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
-prefetch barrier §21).
+**v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
+prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.9.0 / versionCode 19`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.10.0 / versionCode 20`** (see `app/build.gradle.kts`).
 > `versionCode` MUST increment on every release — it's how Android decides "this is
 > newer". Bumping `versionName` alone can cause the update to be rejected as the same
 > version. See the release checklist in the root README.
@@ -47,6 +47,18 @@ prefetch barrier §21).
   the download+verify to finish, then sends `ready:true` (falling back to
   `ready:false` after the 120s barrier timeout) so a synced group starts only
   once everyone is cached.
+- **§23 remote self-update (v1.5 / v1.10)** — `update_app` lets a box update its
+  own APK with no per-device adb. FOUR guardrails gate it (`update/UpdateGuard`):
+  (1) the frame MUST be **authenticated** (`Envelope.authed`; an `open`/unsigned
+  box refuses — `rejected:unauthenticated`); (2) the target `version_code` MUST be
+  **strictly newer** (blocks downgrade/replay); (3) `url` + a 64-hex `sha256` are
+  required and the downloaded bytes are **re-hashed** before install (mismatch →
+  `failed:sha256-mismatch`, file deleted, never half-installs); (4) the Android
+  platform enforces **same-signer** at boot-scan time (free). Install mirrors
+  `deploy_player.sh` — `su` copies the APK into `/data/app/<pkg>-1.apk`, `chmod
+  644`, `reboot` (the only path that works on the 4.4 boxes, whose faked install
+  location breaks `pm install`). Progress/outcome is reported back via
+  `update_status`. **Internal LAN only** — keep the box off the public internet.
 - **§11 kiosk + watchdog** — fullscreen immersive (system bars hidden, re-
   asserted), screen kept on, BOOT_COMPLETED autostart, optional Lock Task Mode
   (when Device Owner), idle/stop shows pure black overlay (never the desktop),

@@ -500,6 +500,26 @@ class Commands {
         if (muted != null) 'muted': muted,
       };
 
+  /// update_app（§23）：令目标被控端自更新到 [url] 指向的 APK。
+  /// [versionCode] 必须严格大于被控端当前版本（被控端会二次校验，防降级/重放）；
+  /// [sha256] 为 64 位十六进制，被控端下载后重算比对（不符拒装）。
+  /// 需目标处于已鉴权链路（auth_mode≠open 且已配 PSK），否则被控端拒绝。
+  static Map<String, dynamic> updateApp({
+    required String url,
+    required int versionCode,
+    required String sha256,
+    String? versionName,
+    String? groupId,
+    String? deviceId,
+  }) =>
+      {
+        ..._target(groupId: groupId, deviceId: deviceId),
+        'url': url,
+        'version_code': versionCode,
+        'sha256': sha256,
+        if (versionName != null) 'version_name': versionName,
+      };
+
   static Map<String, dynamic> _target({String? groupId, String? deviceId}) => {
         if (groupId != null) 'group_id': groupId,
         if (deviceId != null) 'device_id': deviceId,

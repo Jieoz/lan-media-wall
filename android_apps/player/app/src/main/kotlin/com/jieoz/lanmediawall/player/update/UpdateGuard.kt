@@ -1,0 +1,56 @@
+package com.jieoz.lanmediawall.player.update
+
+/**
+ * §22 self-update decision logic — PURE, unit-testable, no Android / no I/O.
+ *
+ * All four release-line guardrails funnel through [decide] so the security
+ * contract lives in one place with tests:
+ *
+ *   1. AUTHENTICATED     — the frame's HMAC signature was recomputed + matched
+ *      (`env.authed`). An `open`/unsigned box refuses remote reflash outright.
+ *   2. MONOTONIC VERSION — target versionCode must be strictly greater than the
+ *      running one (blocks downgrade + replay of an old update_app).
+ *   3. WELL-FORMED       — url + a 64-hex sha256 must be present (the sha256 is
+ *      re-verified against the downloaded bytes before install).
+ *   4. SAME-SIGNER       — enforced by the Android platform at boot-scan time,
+ *      not here; noted so the guarantee is explicit.
+ */
+object UpdateGuard {
+
+    sealed class Decision {
+        object Proceed : Decision()
+        data class Reject(val reason: String) : Decision()
+    }
+
+    private val SHA256_RE = Regex("^[0-9a-fA-F]{64}$")
+
+    /**
+     * @param authed          env.authed — was the frame's signature verified?
+     * @param currentVersionCode  BuildConfig.VERSION_CODE of the running app.
+     * @param targetVersionCode   payload `version_code` (null if absent).
+     * @param url             payload `url` of the APK on the broker media store.
+     * @param sha256          payload `sha256` of the APK (64 hex chars).
+     */
+    fun decide(
+        authed: Boolean,
+        currentVersionCode: Int,
+        targetVersionCode: Int?,
+        url: String?,
+        sha256: String?,
+    ): Decision {
+        // 1. authenticated frame only — an open/unsigned box never self-reflashes.
+        if (!authed) return Decision.Reject("unauthenticated")
+        // 3a. url required
+        if (url.isNullOrBlank()) return Decision.Reject("missing-url")
+        // 3b. sha256 required + shape-checked (integrity gate before install)
+        if (sha256.isNullOrBlank() || !SHA256_RE.matches(sha256)) {
+            return Decision.Reject("bad-sha256")
+        }
+        // 2. monotonic versionCode — strictly newer, else block downgrade/replay
+        if (targetVersionCode == null) return Decision.Reject("missing-version-code")
+        if (targetVersionCode <= currentVersionCode) {
+            return Decision.Reject("not-newer($targetVersionCode<=$currentVersionCode)")
+        }
+        return Decision.Proceed
+    }
+}
