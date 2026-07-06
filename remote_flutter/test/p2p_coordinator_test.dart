@@ -183,7 +183,11 @@ void main() {
 
       final sentPlaylist = link.sent.where((s) => _parse(s).type == 'playlist');
       expect(sentPlaylist.length, 1);
-      expect(_parse(sentPlaylist.single).to, 'player:10.10.8.160:8770');
+      // 根因A 身份归一后:收到 status 携带真实 device_id 时,连接已从占位
+      // key(host:port)重绑定到真实 device_id,因此即便走「回退全部已连接」
+      // 兜底,目标也应是真实 device_id(player:and-88fe839f52),而不再是
+      // 归一前的占位 key。这正是归一生效的证据。
+      expect(_parse(sentPlaylist.single).to, 'player:and-88fe839f52');
       expect(logs.any((line) => line.contains('回退到全部已连接 1 台')), isTrue);
     });
 
