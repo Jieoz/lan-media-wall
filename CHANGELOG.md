@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
-## [v1.10.6] — 2026-07-06
+## [v1.10.7] — 2026-07-06
 
 ### Fixed
 - **P2P 直连也能远程更新 APK**: 控制端「远程更新固件」不再限制 broker 模式。broker 下仍上传到 broker 媒体库;P2P/无 broker 下复用控制端本机临时 HTTP 服务生成 APK 下载 URL+sha256,再通过 P2P `update_app` 下发。播放端授权规则同步调整:broker 帧仍需 HMAC 鉴权,P2P 直连控制链路可作为本地操作者授权,但版本严格递增、sha256 校验、同签名平台校验和 root `/data/app` 安装流程不变。

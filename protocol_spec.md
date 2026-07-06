@@ -1,9 +1,9 @@
-# LAN Media Wall — 通信协议规范 (Protocol Spec) v1.10.6
+# LAN Media Wall — 通信协议规范 (Protocol Spec) v1.10.7
 
 > 这是 broker / Windows 被控端 / Android 被控端 / Flutter 遥控端 **共同遵守的合同**。
 > 任何一端都不得擅自更改字段名或语义；如需扩展，只能新增 `type` 或在 `payload` 里加可选字段，并升 `v`。
 >
-> 线协议主版本仍为 envelope 字段 `v:1`。本文档版本跟随产品 release，记录 v1.1–v1.10.6 的向后兼容扩展；任何破坏性字段语义变更才需要提升 envelope `v`。
+> 线协议主版本仍为 envelope 字段 `v:1`。本文档版本跟随产品 release，记录 v1.1–v1.10.7 的向后兼容扩展；任何破坏性字段语义变更才需要提升 envelope `v`。
 
 ---
 

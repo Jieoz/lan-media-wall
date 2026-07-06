@@ -3,7 +3,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.10.6+26`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=1.10.6 --build-number=26` 把版本号烧进 APK。发版流程见根 README。
+> **当前版本 `1.10.7+27`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=1.10.7 --build-number=27` 把版本号烧进 APK。发版流程见根 README。
 >
 > **推图目标匹配修复(v1.10.5+,关键)**:扫码直连一台盒子后点「②推送并播放」却毫无反应、盒子日志零 `RX prepare` 或只有 `RX prepare` 但没有实际下载/播放——根因是 P2P 侧按 group/设备 id 算出的目标集为空。修复:(1) `GroupExpander` 的 group 比较容忍前后空格+大小写,空 gid 视为通配;(2) `startSync` 与普通 `send(group:...)` 都在 group 匹配为空但确有已连接被控端时,直接把**全部已直连设备**作为推送目标,绝不静默 0 台;(3) 诊断日志打印 `connected / 各设备 group_id / targets` 决定性信息。诊断日志页支持「复制全部」+ 单行可选中复制。
 >
