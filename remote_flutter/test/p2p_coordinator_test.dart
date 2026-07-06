@@ -157,7 +157,12 @@ void main() {
       expect(links['hb']!.sent.where((s) => _parse(s).type == 'pause').length, 1);
     });
 
-    test('send group 匹配为空但已有直连时回退到全部已连接', () async {
+    test('根因A 归一后:status 带匹配组 → 走正常路径命中(不再触发兜底)', () async {
+      // 拨号只有占位 key(host:port),收到 status 带真实 device_id + group_id
+      // 后连接重绑定到真实 id。此后 send(group:default) 应通过 GroupExpander
+      // 正常匹配到该真实 id(它现在既在 aggregator 的 default 组、又在
+      // connectedIds 里),命中正常路径,不再落入「回退全部已连接」兜底。
+      // 这正是根因 A 修复目标:正常路径优先,兜底不再是唯一能推图的路径。
       late FakeWsLink link;
       final logs = <String>[];
       final coord = P2pCoordinator(
@@ -183,10 +188,42 @@ void main() {
 
       final sentPlaylist = link.sent.where((s) => _parse(s).type == 'playlist');
       expect(sentPlaylist.length, 1);
-      // 根因A 身份归一后:收到 status 携带真实 device_id 时,连接已从占位
-      // key(host:port)重绑定到真实 device_id,因此即便走「回退全部已连接」
-      // 兜底,目标也应是真实 device_id(player:and-88fe839f52),而不再是
-      // 归一前的占位 key。这正是归一生效的证据。
+      // 目标是归一后的真实 device_id,而不是拨号时的占位 host:port key。
+      expect(_parse(sentPlaylist.single).to, 'player:and-88fe839f52');
+      // 命中正常路径 → 不应打印兜底日志。
+      expect(logs.any((line) => line.contains('回退到全部已连接')), isFalse);
+    });
+
+    test('兜底保留:归一后 group 仍匹配为空(设备在别组)时回退全部已连接(目标为真实 id)', () async {
+      // v1.10.5 兜底保留验证:设备归一到真实 id 后,若命令发往一个该设备
+      // 并不属于的组(default vs lobby),GroupExpander 匹配为空,应回退到
+      // 全部已连接;且回退目标是归一后的真实 device_id。
+      late FakeWsLink link;
+      final logs = <String>[];
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onLog = logs.add;
+      coord.setPeers([const P2pPeer(deviceId: '10.10.8.160:8770', host: 'h', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+      link.sent.clear();
+
+      coord.handleFrame(
+        '10.10.8.160:8770',
+        frame(openCodec(), 'status', {
+          'device_id': 'and-88fe839f52',
+          'group_id': 'default',
+        }),
+      );
+
+      // 发往设备并不属于的 lobby 组 → 正常匹配为空 → 触发兜底。
+      coord.send('playlist', to: 'group:lobby', payload: {'playlist_id': 'pl-1'});
+
+      final sentPlaylist = link.sent.where((s) => _parse(s).type == 'playlist');
+      expect(sentPlaylist.length, 1);
       expect(_parse(sentPlaylist.single).to, 'player:and-88fe839f52');
       expect(logs.any((line) => line.contains('回退到全部已连接 1 台')), isTrue);
     });
