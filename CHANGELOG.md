@@ -6,6 +6,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 ## [v1.10.6] — 2026-07-06
 
 ### Fixed
+- **P2P 直连也能远程更新 APK**: 控制端「远程更新固件」不再限制 broker 模式。broker 下仍上传到 broker 媒体库;P2P/无 broker 下复用控制端本机临时 HTTP 服务生成 APK 下载 URL+sha256,再通过 P2P `update_app` 下发。播放端授权规则同步调整:broker 帧仍需 HMAC 鉴权,P2P 直连控制链路可作为本地操作者授权,但版本严格递增、sha256 校验、同签名平台校验和 root `/data/app` 安装流程不变。
+- **P2P 普通下发不再被 group 目标扇空吞掉**: 继 `prepare/startSync` 后,普通 `playlist`、`cache_prefetch`、`set_volume` 等 `send(group:...)` 也加上同样的已连接兜底。真机日志里 `startSync ... targets=[] → 回退到 1 台` 后播放端虽能收到 `prepare`,但前置 `playlist/cache_prefetch` 仍显示 `无目标` 并被丢弃,导致播放端没有媒体清单/下载任务。现在 group 匹配为空但确有直连设备时直接回退到全部已连接,并打印 connected/devices 诊断值。
 - **远程自更新 broker 主链路接通**: broker 现在转发 `update_app` 到某台/某组/全部目标,并把被控端 `update_status` 合并进设备墙状态(`update_state/update_detail/update_version_code`),避免控制端下发后被中枢静默丢弃。
 - **媒体上传 token 与远程更新兼容**: broker 开启 `media_upload_token` 后,控制端设置页可填写同一 token,本地媒体/APK 上传会带 `Authorization: Bearer ...`;下载仍对被控端开放。
 - **远程更新目标补齐单台选择**: 控制端「远程更新固件」支持全部/分组/单台三种目标,并在无可选目标时明确提示。

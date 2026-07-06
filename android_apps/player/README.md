@@ -51,13 +51,14 @@ prefetch barrier §21, remote self-update §23).
   `ready:false` after the 120s barrier timeout) so a synced group starts only
   once everyone is cached.
 - **§23 remote self-update (v1.5 / v1.10)** — `update_app` lets a box update its
-  own APK with no per-device adb. FOUR guardrails gate it (`update/UpdateGuard`):
-  (1) the frame MUST be **authenticated** (`Envelope.authed`; an `open`/unsigned
-  box refuses — `rejected:unauthenticated`); (2) the target `version_code` MUST be
-  **strictly newer** (blocks downgrade/replay); (3) `url` + a 64-hex `sha256` are
-  required and the downloaded bytes are **re-hashed** before install (mismatch →
-  `failed:sha256-mismatch`, file deleted, never half-installs); (4) the Android
-  platform enforces **same-signer** at boot-scan time (free). Install mirrors
+  own APK with no per-device adb. Guardrails gate it (`update/UpdateGuard`):
+  (1) broker-mode frames MUST be authenticated (`Envelope.authed == true`), while
+  an accepted local P2P controller link can authorize bootstrap updates;
+  (2) the target `version_code` MUST be strictly greater than the running
+  `BuildConfig.VERSION_CODE`; (3) the APK URL + 64-hex `sha256` are required and
+  the downloaded bytes are re-hashed before install; (4) same-signer is enforced
+  by Android's package scanner. Install path is the root `/data/app/<pkg>-1.apk`
+  + reboot flow used by the deployment script.
   `deploy_player.sh` — `su` copies the APK into `/data/app/<pkg>-1.apk`, `chmod
   644`, `reboot` (the only path that works on the 4.4 boxes, whose faked install
   location breaks `pm install`). Progress/outcome is reported back via

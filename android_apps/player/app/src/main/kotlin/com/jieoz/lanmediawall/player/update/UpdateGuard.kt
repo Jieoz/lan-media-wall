@@ -6,8 +6,8 @@ package com.jieoz.lanmediawall.player.update
  * All four release-line guardrails funnel through [decide] so the security
  * contract lives in one place with tests:
  *
- *   1. AUTHENTICATED     — the frame's HMAC signature was recomputed + matched
- *      (`env.authed`). An `open`/unsigned box refuses remote reflash outright.
+ *   1. AUTHORIZED        — either the frame's HMAC signature was recomputed +
+ *      matched (`env.authed`) OR it arrived over the local P2P controller link.
  *   2. MONOTONIC VERSION — target versionCode must be strictly greater than the
  *      running one (blocks downgrade + replay of an old update_app).
  *   3. WELL-FORMED       — url + a 64-hex sha256 must be present (the sha256 is
@@ -26,6 +26,7 @@ object UpdateGuard {
 
     /**
      * @param authed          env.authed — was the frame's signature verified?
+     * @param p2pLocal        frame came over the accepted local P2P controller link.
      * @param currentVersionCode  BuildConfig.VERSION_CODE of the running app.
      * @param targetVersionCode   payload `version_code` (null if absent).
      * @param url             payload `url` of the APK on the broker media store.
@@ -33,13 +34,15 @@ object UpdateGuard {
      */
     fun decide(
         authed: Boolean,
+        p2pLocal: Boolean = false,
         currentVersionCode: Int,
         targetVersionCode: Int?,
         url: String?,
         sha256: String?,
     ): Decision {
-        // 1. authenticated frame only — an open/unsigned box never self-reflashes.
-        if (!authed) return Decision.Reject("unauthenticated")
+        // 1. authorized frame only. Broker mode requires HMAC auth; local P2P direct
+        // control is treated as an explicit operator channel for bootstrap updates.
+        if (!authed && !p2pLocal) return Decision.Reject("unauthorized")
         // 3a. url required
         if (url.isNullOrBlank()) return Decision.Reject("missing-url")
         // 3b. sha256 required + shape-checked (integrity gate before install)

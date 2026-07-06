@@ -949,6 +949,7 @@ class PlayerService : Service() {
         val sha = payload["sha256"].asString()
         val decision = com.jieoz.lanmediawall.player.update.UpdateGuard.decide(
             authed = env.authed,
+            p2pLocal = link is com.jieoz.lanmediawall.player.net.P2pServer,
             currentVersionCode = BuildConfig.VERSION_CODE,
             targetVersionCode = targetCode,
             url = url,

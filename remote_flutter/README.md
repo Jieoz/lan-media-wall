@@ -5,7 +5,7 @@ LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播
 
 > **当前版本 `1.10.6+26`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=1.10.6 --build-number=26` 把版本号烧进 APK。发版流程见根 README。
 >
-> **推图目标匹配修复(v1.10.5,关键)**:扫码直连一台盒子后点「②推送并播放」却毫无反应、盒子日志零 `RX prepare`、控制端诊断日志显示 `p2p prepare → 0 台`——根因是 `startSync` 按 group 算出的目标集为空(group_id 细微漂移/匹配过严)。三重修复:(1) `GroupExpander` 的 group 比较改为容忍前后空格+大小写,空 gid 视为通配;(2) `startSync` 增加兜底——group 匹配为空但确有已连接被控端时,直接把**全部已直连设备**作为推送目标,绝不静默 0 台;(3) `startSync` 打印 `gid / connected / 各设备 group_id / targets` 决定性诊断行。诊断日志页新增「复制全部」按钮 + 单行可选中复制。
+> **推图目标匹配修复(v1.10.5+,关键)**:扫码直连一台盒子后点「②推送并播放」却毫无反应、盒子日志零 `RX prepare` 或只有 `RX prepare` 但没有实际下载/播放——根因是 P2P 侧按 group/设备 id 算出的目标集为空。修复:(1) `GroupExpander` 的 group 比较容忍前后空格+大小写,空 gid 视为通配;(2) `startSync` 与普通 `send(group:...)` 都在 group 匹配为空但确有已连接被控端时,直接把**全部已直连设备**作为推送目标,绝不静默 0 台;(3) 诊断日志打印 `connected / 各设备 group_id / targets` 决定性信息。诊断日志页支持「复制全部」+ 单行可选中复制。
 >
 > **播放编排两个按钮(去歧义,v1.10.3)**:`①仅下发缓存 (不播)` = 只把媒体推到各盒子本地缓存、不播放;`②推送并播放` = 下发列表+预缓存+等全员就绪后统一起播(这就是"推送并播放")。「预缓存就绪 N/M」= M 台目标里有 N 台已把本次列表全部缓存校验完成;盒子未收到 prepare 时不会下载,故会一直停在 0/M。
 
@@ -34,9 +34,9 @@ LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播
   显示接入态（已发现 / 连接中 / 已连接 / 失败+原因），用 `device_id` 去重，WS 回传的
   `DeviceStatus` 覆盖占位——不再"正在添加却看不到设备"、不再静默吞掉连接失败。
 - **远程更新固件（§23，v1.10）**：设备墙动作条「远程更新固件」→ 选 APK →
-  上传到 broker 媒体库（`uploadApkForUpdate` 得 url+sha256；broker 开了 `media_upload_token` 时在设置页填写同一 token）→ 选目标（全部/按组/单台）+
+  broker 模式上传到媒体库（可填 `media_upload_token`），P2P 模式启动控制端本机临时 HTTP 服务 → 选择全部 / 分组 / 单台目标 →
   填目标 `versionCode` → 下发 `update_app`。被控端四护栏二次校验（已鉴权+版本严格更新
-  +sha256 比对）才下载安装重启。**仅 broker 模式**（APK 需长时可达的媒体库 URL）。
+  或 P2P 本地链路授权 + 版本严格更新 + sha256 + 同签名）。
 
 ## 目录结构
 

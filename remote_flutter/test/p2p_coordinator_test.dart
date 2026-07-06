@@ -157,6 +157,36 @@ void main() {
       expect(links['hb']!.sent.where((s) => _parse(s).type == 'pause').length, 1);
     });
 
+    test('send group 匹配为空但已有直连时回退到全部已连接', () async {
+      late FakeWsLink link;
+      final logs = <String>[];
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onLog = logs.add;
+      coord.setPeers([const P2pPeer(deviceId: '10.10.8.160:8770', host: 'h', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+      link.sent.clear();
+
+      coord.handleFrame(
+        '10.10.8.160:8770',
+        frame(openCodec(), 'status', {
+          'device_id': 'and-88fe839f52',
+          'group_id': 'default',
+        }),
+      );
+
+      coord.send('playlist', to: 'group:default', payload: {'playlist_id': 'pl-1'});
+
+      final sentPlaylist = link.sent.where((s) => _parse(s).type == 'playlist');
+      expect(sentPlaylist.length, 1);
+      expect(_parse(sentPlaylist.single).to, 'player:10.10.8.160:8770');
+      expect(logs.any((line) => line.contains('回退到全部已连接 1 台')), isTrue);
+    });
+
     test('startSync fan prepare，收齐 ready → play_at 发各成员', () async {
       final links = <String, FakeWsLink>{};
       final coord = P2pCoordinator(

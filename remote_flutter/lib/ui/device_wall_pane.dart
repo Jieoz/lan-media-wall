@@ -77,7 +77,7 @@ class _ActionsBar extends StatelessWidget {
             onPressed: () => _createGroupDialog(context, state),
           ),
           const SizedBox(width: 8),
-          // §23 远程更新:整墙/整组免逐台 adb 刷机。仅 broker 模式可用。
+          // §23 远程更新:整墙/整组免逐台 adb 刷机。broker/P2P 均可用。
           IconButton(
             tooltip: '远程更新固件 (APK)',
             icon: const Icon(Icons.system_update_alt),
@@ -89,14 +89,9 @@ class _ActionsBar extends StatelessWidget {
   }
 }
 
-/// §23 远程自更新:选 APK → 上传到 broker 媒体库(得 url+sha256) → 填目标
+/// §23 远程自更新:选 APK → 暴露为被控端可 GET 的 URL(得 sha256) → 填目标
 /// versionCode + 目标(某台/某组/全部) → 下发 update_app。被控端四护栏二次校验才装。
 Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
-  if (state.isP2p || state.brokerHost.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('远程更新需 broker 模式:APK 要放在被控端长时可达的 broker 媒体库')));
-    return;
-  }
   final picked = await FilePicker.platform.pickFiles(
     type: FileType.custom,
     allowedExtensions: const ['apk'],
@@ -187,7 +182,7 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
                     style: const TextStyle(color: Colors.green, fontSize: 12))
               else
                 Text(
-                  uploading ? '上传中…' : '点「上传并下发」先把 APK 传到 broker，再下发更新指令',
+                  uploading ? '准备中…' : '点「准备并下发」生成 APK 下载地址，再下发更新指令',
                   style: const TextStyle(fontSize: 12),
                 ),
             ],
@@ -240,7 +235,7 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
                       }
                     }
                   },
-            child: const Text('上传并下发'),
+            child: const Text('准备并下发'),
           ),
         ],
       ),

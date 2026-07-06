@@ -267,13 +267,21 @@ class P2pCoordinator {
   /// 把一条命令按 `to` 地址在客户端侧扇出（group→逐成员；player→单条；all→全体）。
   /// payload 由调用方按 §6/§9 构造（与 broker 模式同一套 [Commands]）。
   void send(String type, {required String to, Map<String, dynamic> payload = const {}}) {
-    final targets = GroupExpander.expand(
+    final devices = aggregator.snapshot(serverTime: clock.serverTime()).devices;
+    var targets = GroupExpander.expand(
       to,
-      devices: aggregator.snapshot(serverTime: clock.serverTime()).devices,
+      devices: devices,
       connected: connectedIds,
-    );
+    ).toSet();
     if (targets.isEmpty) {
-      _log('send($type) 无目标（to=$to）');
+      _log('send($type) 无目标（to=$to, connected=${connectedIds.toList()}, '
+          'devices=${devices.map((d) => "${d.deviceId}@grp=\"${d.groupId}\"").toList()}）');
+      if (to.startsWith('group:') && connectedIds.isNotEmpty) {
+        targets = connectedIds.toSet();
+        _log('send($type) group 匹配为空 → 回退到全部已连接 ${targets.length} 台: ${targets.toList()}');
+      }
+    }
+    if (targets.isEmpty) {
       return;
     }
     for (final id in targets) {

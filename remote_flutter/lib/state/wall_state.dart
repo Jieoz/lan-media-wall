@@ -682,24 +682,28 @@ class WallState extends ChangeNotifier {
           ),
           deviceId: deviceId);
 
-  /// 把 APK 上传到 broker 媒体库(复用 §20 mode B 通道,broker 按 sha256 存),
-  /// 返回可下发给 update_app 的 (url, sha256)。仅 broker 模式可用——self-update
-  /// 需要一个所有被控端都能长时可达的 URL,控制端临时服务(mode A)不适合。
+  /// 把 APK 暴露成被控端可 GET 的 URL,返回可下发给 update_app 的 (url, sha256)。
+  /// broker 模式优先上传到 broker 媒体库;P2P/无 broker 时复用控制端本机临时 HTTP 服务。
   Future<({String url, String sha256})> uploadApkForUpdate({
     required File apk,
     void Function(int sent, int total)? onProgress,
   }) async {
-    if (isP2p || brokerHost.isEmpty) {
-      throw StateError('远程更新需 broker 模式(APK 要放在长时可达的 broker 媒体库)');
+    if (!isP2p && brokerHost.isNotEmpty) {
+      final item = await MediaUpload.uploadToBroker(
+        file: apk,
+        brokerHost: brokerHost,
+        type: 'app',
+        name: apk.uri.pathSegments.last,
+        uploadToken: mediaUploadToken,
+        onProgress: onProgress,
+      );
+      return (url: item.url, sha256: item.sha256 ?? '');
     }
-    // 复用现成的 broker 上传(mode B):type 仅作 MediaItem 元数据,update_app
-    // 只取回填的 url + sha256。broker 的 /media/<sha256>.apk 支持 Range 续传。
-    final item = await MediaUpload.uploadToBroker(
+
+    final item = await uploadLocalMedia(
       file: apk,
-      brokerHost: brokerHost,
       type: 'app',
       name: apk.uri.pathSegments.last,
-      uploadToken: mediaUploadToken,
       onProgress: onProgress,
     );
     return (url: item.url, sha256: item.sha256 ?? '');
