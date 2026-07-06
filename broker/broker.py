@@ -39,6 +39,8 @@ DEFAULTS = {
     "discovery_port": 8772,
     # §20.1 media library (local-upload mode B). 0 disables the HTTP endpoint.
     "media_port": 8773,
+    "media_bind_host": "0.0.0.0",
+    "media_upload_token": "",
     "media_dir": "media",
     "media_max_bytes": 500 * 1024 * 1024,  # 500 MB (contract §4.9)
     # §21.2 prefetch barrier: how long to wait for all members to cache+ready
@@ -107,6 +109,12 @@ def load_config(path: Optional[str] = None) -> dict:
     env_key_mode = os.environ.get("LMW_KEY_MODE")
     if env_key_mode:
         cfg["key_mode"] = env_key_mode
+    env_media_bind = os.environ.get("LMW_MEDIA_BIND_HOST")
+    if env_media_bind:
+        cfg["media_bind_host"] = env_media_bind
+    env_media_token = os.environ.get("LMW_MEDIA_UPLOAD_TOKEN")
+    if env_media_token:
+        cfg["media_upload_token"] = env_media_token
     cfg["auth_mode"] = envelope.normalize_auth_mode(cfg.get("auth_mode"))
     cfg["topology"] = normalize_topology(cfg.get("topology"))
     cfg["key_mode"] = envelope.normalize_key_mode(cfg.get("key_mode"))
@@ -343,6 +351,8 @@ class Hub:
             "ota_check": self._on_route_to_players,
             "ota_apply": self._on_route_to_players,
             "reboot": self._on_route_to_players,
+            "update_app": self._on_route_to_players,
+            "update_status": self._on_update_status,
             "resume_last": self._on_route_to_players,
             "ack": self._on_ack,
             "error": self._on_error,
@@ -410,6 +420,25 @@ class Hub:
         if conn.role != "player":
             return
         self.reg.update_status(conn.ident, env["payload"])
+        self.mark_wall_dirty()
+
+    async def _on_update_status(self, conn: ClientConn, env: dict) -> None:
+        if conn.role != "player":
+            return
+        p = env["payload"]
+        device_id = p.get("device_id") or conn.ident
+        if not device_id:
+            return
+        dev = self.reg.get(device_id)
+        status = dict(dev.last_status) if dev is not None else {}
+        status.update({
+            "device_id": device_id,
+            "update_state": p.get("state", ""),
+            "update_detail": p.get("detail", ""),
+            "update_version_code": p.get("version_code"),
+            "online": True,
+        })
+        self.reg.update_status(device_id, status)
         self.mark_wall_dirty()
 
     async def _on_time_sync(self, conn: ClientConn, env: dict, t2: int) -> None:
@@ -789,6 +818,8 @@ async def run(cfg: dict, *, hub: Optional["Hub"] = None,
             cfg.get("media_dir", "media"),
             port=media_port,
             max_bytes=cfg.get("media_max_bytes", media_mod.DEFAULT_MAX_BYTES),
+            bind_host=cfg.get("media_bind_host", "0.0.0.0"),
+            upload_token=cfg.get("media_upload_token", ""),
         )
         try:
             await hub.media.start()

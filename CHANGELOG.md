@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.10.6] — 2026-07-06
+
+### Fixed
+- **远程自更新 broker 主链路接通**: broker 现在转发 `update_app` 到某台/某组/全部目标,并把被控端 `update_status` 合并进设备墙状态(`update_state/update_detail/update_version_code`),避免控制端下发后被中枢静默丢弃。
+- **媒体上传 token 与远程更新兼容**: broker 开启 `media_upload_token` 后,控制端设置页可填写同一 token,本地媒体/APK 上传会带 `Authorization: Bearer ...`;下载仍对被控端开放。
+- **远程更新目标补齐单台选择**: 控制端「远程更新固件」支持全部/分组/单台三种目标,并在无可选目标时明确提示。
+
 ## [v1.10.5] — 2026-07-05
 
 ### Fixed (CRITICAL — 一张图都推不出去的真根因)

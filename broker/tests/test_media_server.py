@@ -102,6 +102,33 @@ def test_sha256_mismatch_rejected(server):
     _run_isolated(server, scenario)
 
 
+def test_upload_token_required_but_download_open():
+    data = b"signed apk bytes"
+    sha = hashlib.sha256(data).hexdigest()
+    tmp = tempfile.mkdtemp(prefix="lmw_media_token_")
+    srv = media_mod.MediaServer(tmp, port=0, max_bytes=1024 * 1024,
+                                upload_token="upload-secret")
+
+    async def scenario(port):
+        put = (f"PUT /media/{sha}.apk HTTP/1.1\r\n"
+               f"Host: x\r\nContent-Length: {len(data)}\r\n\r\n").encode()
+        status, _, _ = await _http("127.0.0.1", port, put, data)
+        assert status.startswith("HTTP/1.1 401")
+
+        authed_put = (f"PUT /media/{sha}.apk HTTP/1.1\r\n"
+                      f"Host: x\r\nAuthorization: Bearer upload-secret\r\n"
+                      f"Content-Length: {len(data)}\r\n\r\n").encode()
+        status, _, _ = await _http("127.0.0.1", port, authed_put, data)
+        assert status.startswith("HTTP/1.1 201")
+
+        get = (f"GET /media/{sha}.apk HTTP/1.1\r\nHost: x\r\n\r\n").encode()
+        status, _, body = await _http("127.0.0.1", port, get)
+        assert status.startswith("HTTP/1.1 200")
+        assert body == data
+
+    _run_isolated((srv, tmp), scenario)
+
+
 def test_idempotent_reupload(server):
     data = b"dedup me"
     sha = hashlib.sha256(data).hexdigest()

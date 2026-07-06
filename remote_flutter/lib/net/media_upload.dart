@@ -40,6 +40,7 @@ class MediaUpload {
     required String name,
     int? durationMs,
     int port = mediaPort,
+    String uploadToken = '',
     void Function(int sent, int total)? onProgress,
   }) async {
     final d = await digestFile(file);
@@ -52,6 +53,10 @@ class MediaUpload {
       final req = await client.putUrl(uri);
       req.headers.contentType = ContentType.binary;
       req.headers.contentLength = d.size;
+      if (uploadToken.trim().isNotEmpty) {
+        req.headers.set(HttpHeaders.authorizationHeader,
+            'Bearer ${uploadToken.trim()}');
+      }
       var sent = 0;
       await for (final chunk in file.openRead()) {
         req.add(chunk);

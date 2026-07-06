@@ -45,8 +45,10 @@ field names and semantics here follow it exactly.
 - **Media library (§20.1)**: `media_server.py` serves a content-addressed store
   at `/media/<sha256>`. Controllers `PUT` a local file (mode B upload); the
   broker verifies the body's sha256 against the URL, dedups identical content,
-  and serves `GET` with HTTP Range so players resume interrupted downloads. Pure
-  stdlib asyncio — no extra dependency, safe for the Synology Docker target.
+  and serves `GET` with HTTP Range so players resume interrupted downloads.
+  Downloads stay open for players; uploads can require `media_upload_token`, and
+  `media_bind_host` can bind the endpoint to loopback behind a reverse proxy.
+  Pure stdlib asyncio — no extra dependency, safe for the Synology Docker target.
 - **Prefetch barrier (§21)**: for a synced start the controller may send
   `prepare(prefetch:true)`; the broker widens the `ready` collection timeout
   (barrier timeout, default 120s) so every member finishes downloading +
@@ -129,7 +131,9 @@ python3 -c "import secrets; print(secrets.token_hex(32))"   # generate one
 
 Copy `config.example.yaml` to `config.yaml` to tune ports, the sync buffer
 (`buffer_ms`, default 1500), the ready timeout (`ready_timeout_ms`, default
-2000), and throttling. Env `LMW_PSK` overrides the file.
+2000), media-library exposure (`media_bind_host`, `media_upload_token`), and
+throttling. Env `LMW_PSK`, `LMW_MEDIA_BIND_HOST`, and `LMW_MEDIA_UPLOAD_TOKEN`
+override the file.
 
 ## Run locally
 
@@ -224,3 +228,8 @@ the single PSK (it derives per-endpoint keys on the fly); keep that PSK secret
 and, in `open` mode especially, keep the broker off untrusted networks. Use
 `key_mode=global` only to interop with endpoints not yet upgraded to v1.3, which
 reverts to the shared-PSK trust model (anyone with the PSK is fully trusted).
+The HTTP media library is separate from envelope auth: player downloads remain
+open by URL, but set `media_upload_token` to require a bearer token for uploads,
+or bind `media_bind_host: 127.0.0.1` when a reverse proxy owns LAN exposure. The
+controller settings page has a matching optional media-upload token field; leave
+it empty unless the broker enforces `media_upload_token`.

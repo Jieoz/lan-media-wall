@@ -90,7 +90,7 @@ class _ActionsBar extends StatelessWidget {
 }
 
 /// §23 远程自更新:选 APK → 上传到 broker 媒体库(得 url+sha256) → 填目标
-/// versionCode + 目标(某组/某台/全部) → 下发 update_app。被控端四护栏二次校验才装。
+/// versionCode + 目标(某台/某组/全部) → 下发 update_app。被控端四护栏二次校验才装。
 Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
   if (state.isP2p || state.brokerHost.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -108,7 +108,10 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
 
   final versionCtl = TextEditingController();
   final groups = state.groups;
-  String? targetGroupId; // null = 全部(不带 group_id/device_id)
+  final devices = state.wallDevices;
+  var targetKind = 'all';
+  String? targetGroupId = groups.isEmpty ? null : groups.first.groupId;
+  String? targetDeviceId = devices.isEmpty ? null : devices.first.deviceId;
   var uploading = false;
   String? uploadedUrl, uploadedSha;
 
@@ -135,19 +138,49 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
                 ),
               ),
               const SizedBox(height: 8),
-              DropdownButtonFormField<String?>(
+              DropdownButtonFormField<String>(
                 isExpanded: true,
-                value: targetGroupId,
-                decoration: const InputDecoration(labelText: '目标'),
-                items: [
-                  const DropdownMenuItem(value: null, child: Text('全部设备')),
-                  for (final g in groups)
-                    DropdownMenuItem(
-                        value: g.groupId,
-                        child: Text('组:${g.name.isEmpty ? g.groupId : g.name}')),
+                value: targetKind,
+                decoration: const InputDecoration(labelText: '目标类型'),
+                items: const [
+                  DropdownMenuItem(value: 'all', child: Text('全部设备')),
+                  DropdownMenuItem(value: 'group', child: Text('指定分组')),
+                  DropdownMenuItem(value: 'device', child: Text('指定单台')),
                 ],
-                onChanged: (v) => setLocal(() => targetGroupId = v),
+                onChanged: (v) => setLocal(() => targetKind = v ?? 'all'),
               ),
+              if (targetKind == 'group') ...[
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  value: targetGroupId,
+                  decoration: const InputDecoration(labelText: '分组'),
+                  items: [
+                    for (final g in groups)
+                      DropdownMenuItem(
+                          value: g.groupId,
+                          child: Text('组:${g.name.isEmpty ? g.groupId : g.name}')),
+                  ],
+                  onChanged: (v) => setLocal(() => targetGroupId = v),
+                ),
+              ],
+              if (targetKind == 'device') ...[
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  value: targetDeviceId,
+                  decoration: const InputDecoration(labelText: '单台设备'),
+                  items: [
+                    for (final d in devices)
+                      DropdownMenuItem(
+                          value: d.deviceId,
+                          child: Text(d.deviceName.isEmpty
+                              ? d.deviceId
+                              : '${d.deviceName} (${d.deviceId})')),
+                  ],
+                  onChanged: (v) => setLocal(() => targetDeviceId = v),
+                ),
+              ],
               const SizedBox(height: 12),
               if (uploadedUrl != null)
                 Text('已上传 ✓ sha256:${uploadedSha!.substring(0, 12)}…',
@@ -174,17 +207,29 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
                           content: Text('请填写有效的 versionCode（正整数）')));
                       return;
                     }
+                    final groupId = targetKind == 'group' ? targetGroupId : null;
+                    final deviceId = targetKind == 'device' ? targetDeviceId : null;
+                    if (targetKind == 'group' && groupId == null) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(content: Text('没有可选分组')));
+                      return;
+                    }
+                    if (targetKind == 'device' && deviceId == null) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(content: Text('没有可选设备')));
+                      return;
+                    }
                     setLocal(() => uploading = true);
                     try {
-                      final r =
-                          await state.uploadApkForUpdate(apk: apk);
+                      final r = await state.uploadApkForUpdate(apk: apk);
                       uploadedUrl = r.url;
                       uploadedSha = r.sha256;
                       state.updateApp(
                         url: r.url,
                         versionCode: vc,
                         sha256: r.sha256,
-                        groupId: targetGroupId,
+                        groupId: groupId,
+                        deviceId: deviceId,
                       );
                       if (ctx.mounted) Navigator.pop(ctx, true);
                     } catch (e) {

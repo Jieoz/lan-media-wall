@@ -20,14 +20,15 @@ Design notes
 ------------
 - Files are stored by content hash, so name collisions and duplicate uploads
   are free (dedup + "instant upload" when the hash already exists).
-- No auth on this endpoint by design (internal LAN, §20.1); put a reverse proxy
-  in front if you need it. It carries no control semantics.
+- Downloads are intentionally open so players can cache media by URL. Uploads
+  can be gated with an optional bearer token for less-trusted LANs.
 - Kept deliberately small and framework-free so it runs on the Synology Docker
   broker image without adding aiohttp/starlette.
 """
 from __future__ import annotations
 
 import asyncio
+import hmac
 import hashlib
 import logging
 import os
@@ -58,19 +59,24 @@ class MediaServer:
     """Stdlib-asyncio HTTP server for the broker media library."""
 
     def __init__(self, media_dir: str, *, port: int = DEFAULT_MEDIA_PORT,
-                 max_bytes: int = DEFAULT_MAX_BYTES):
+                 max_bytes: int = DEFAULT_MAX_BYTES, bind_host: str = "0.0.0.0",
+                 upload_token: str = ""):
         self.media_dir = media_dir
         self.port = port
         self.max_bytes = max_bytes
+        self.bind_host = bind_host or "0.0.0.0"
+        self.upload_token = upload_token or ""
         self._server: Optional[asyncio.AbstractServer] = None
         os.makedirs(self.media_dir, exist_ok=True)
 
     # ---- lifecycle -------------------------------------------------------
     async def start(self) -> None:
         self._server = await asyncio.start_server(
-            self._handle_client, "0.0.0.0", self.port)
-        log.info("broker media library on :%d (dir=%s, max=%dMB)",
-                 self.port, self.media_dir, self.max_bytes // (1024 * 1024))
+            self._handle_client, self.bind_host, self.port)
+        auth_note = "upload-token" if self.upload_token else "open-upload"
+        log.info("broker media library on %s:%d (dir=%s, max=%dMB, %s)",
+                 self.bind_host, self.port, self.media_dir,
+                 self.max_bytes // (1024 * 1024), auth_note)
 
     def stop(self) -> None:
         if self._server is not None:
@@ -120,6 +126,9 @@ class MediaServer:
             abs_path, sha, ext = resolved
 
             if method == "PUT" or method == "POST":
+                if not self._upload_authorized(headers):
+                    await self._send_simple(writer, 401, "Unauthorized")
+                    return
                 await self._handle_put(reader, writer, headers, abs_path, sha, ext)
             elif method in ("GET", "HEAD"):
                 await self._handle_get(writer, headers, abs_path, ext,
@@ -151,6 +160,15 @@ class MediaServer:
             except ValueError:
                 continue
         return headers
+
+    def _upload_authorized(self, headers: dict) -> bool:
+        if not self.upload_token:
+            return True
+        auth = headers.get("authorization", "")
+        prefix = "Bearer "
+        if not auth.startswith(prefix):
+            return False
+        return hmac.compare_digest(auth[len(prefix):].strip(), self.upload_token)
 
     # ---- PUT (upload, §20.1) --------------------------------------------
     async def _handle_put(self, reader: asyncio.StreamReader,

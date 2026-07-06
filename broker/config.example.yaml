@@ -45,6 +45,8 @@ discovery_port: 8772    # UDP discover/announce
 # endpoint so controllers can upload local files, which players then fetch over
 # the normal cache_prefetch path. Set media_port: 0 to disable the endpoint.
 media_port: 8773
+media_bind_host: "0.0.0.0"        # set to 127.0.0.1 when fronted by a reverse proxy
+media_upload_token: ""            # optional Bearer token required for PUT/POST uploads
 media_dir: "media"                 # where uploaded files are stored (by sha256)
 media_max_bytes: 524288000         # 500 MB per-file upload cap (413 over this)
 

@@ -18,9 +18,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _host = TextEditingController();
   final _port = TextEditingController();
   final _psk = TextEditingController();
+  final _mediaUploadToken = TextEditingController();
   final _ctlId = TextEditingController();
   bool _secure = false;
   bool _pskVisible = false;
+  bool _mediaUploadTokenVisible = false;
   bool _loaded = false;
 
   @override
@@ -28,6 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _host.dispose();
     _port.dispose();
     _psk.dispose();
+    _mediaUploadToken.dispose();
     _ctlId.dispose();
     super.dispose();
   }
@@ -38,6 +41,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _host.text = s.brokerHost;
     _port.text = s.brokerPort.toString();
     _psk.text = s.psk;
+    _mediaUploadToken.text = s.mediaUploadToken;
     _ctlId.text = s.controllerId;
     _secure = s.brokerSecure;
   }
@@ -49,6 +53,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       port: port,
       secure: _secure,
       newPsk: _psk.text,
+      newMediaUploadToken: _mediaUploadToken.text,
       newControllerId: _ctlId.text,
     );
     if (!mounted) return;
@@ -104,6 +109,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: Icon(
                     _pskVisible ? Icons.visibility_off : Icons.visibility),
                 onPressed: () => setState(() => _pskVisible = !_pskVisible),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _mediaUploadToken,
+            obscureText: !_mediaUploadTokenVisible,
+            decoration: InputDecoration(
+              labelText: '媒体上传 token（可选）',
+              helperText: 'broker 配置 media_upload_token 时填写；留空保持开放上传兼容',
+              prefixIcon: const Icon(Icons.upload_file),
+              suffixIcon: IconButton(
+                icon: Icon(_mediaUploadTokenVisible
+                    ? Icons.visibility_off
+                    : Icons.visibility),
+                onPressed: () => setState(() =>
+                    _mediaUploadTokenVisible = !_mediaUploadTokenVisible),
               ),
             ),
           ),

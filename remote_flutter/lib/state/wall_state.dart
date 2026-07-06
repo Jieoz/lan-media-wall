@@ -19,6 +19,7 @@ class _Keys {
   static const port = 'settings.broker_port';
   static const secure = 'settings.broker_secure';
   static const psk = 'settings.psk';
+  static const mediaUploadToken = 'settings.media_upload_token';
   static const controllerId = 'settings.controller_id';
 }
 
@@ -83,6 +84,7 @@ class WallState extends ChangeNotifier {
   int brokerPort = 8770;
   bool brokerSecure = false;
   String psk = '';
+  String mediaUploadToken = '';
   String controllerId = '';
 
   // ---- 运行态 ----
@@ -314,6 +316,7 @@ class WallState extends ChangeNotifier {
     brokerPort = prefs.getInt(_Keys.port) ?? 8770;
     brokerSecure = prefs.getBool(_Keys.secure) ?? false;
     psk = prefs.getString(_Keys.psk) ?? '';
+    mediaUploadToken = prefs.getString(_Keys.mediaUploadToken) ?? '';
     controllerId = prefs.getString(_Keys.controllerId) ?? '';
     if (controllerId.isEmpty) {
       controllerId = 'ctl-${uuid4().substring(0, 8)}';
@@ -327,6 +330,7 @@ class WallState extends ChangeNotifier {
     int? port,
     bool? secure,
     String? newPsk,
+    String? newMediaUploadToken,
     String? newControllerId,
   }) async {
     final prefs = await SharedPreferences.getInstance();
@@ -346,6 +350,10 @@ class WallState extends ChangeNotifier {
       psk = newPsk;
       _codec.psk = newPsk;
       await prefs.setString(_Keys.psk, newPsk);
+    }
+    if (newMediaUploadToken != null) {
+      mediaUploadToken = newMediaUploadToken.trim();
+      await prefs.setString(_Keys.mediaUploadToken, mediaUploadToken);
     }
     if (newControllerId != null && newControllerId.trim().isNotEmpty) {
       controllerId = newControllerId.trim();
@@ -691,6 +699,7 @@ class WallState extends ChangeNotifier {
       brokerHost: brokerHost,
       type: 'app',
       name: apk.uri.pathSegments.last,
+      uploadToken: mediaUploadToken,
       onProgress: onProgress,
     );
     return (url: item.url, sha256: item.sha256 ?? '');
@@ -745,6 +754,7 @@ class WallState extends ChangeNotifier {
           type: type,
           name: name,
           durationMs: durationMs,
+          uploadToken: mediaUploadToken,
           onProgress: onProgress,
         );
       } catch (e) {
