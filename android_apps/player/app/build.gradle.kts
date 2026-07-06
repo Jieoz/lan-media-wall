@@ -1,7 +1,25 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
 }
+
+// §根因B: 稳定 release 签名。CI 从 GitHub Actions Secret 解码固定 keystore,写出
+// key.properties(指向 $RUNNER_TEMP 的 keystore,绝不进仓库)。本文件读取它;存在
+// 则 release 用**固定证书**签名——同一指纹跨版本一致,覆盖安装(§23 远程 update_app)
+// 不再 INSTALL_FAILED_UPDATE_INCOMPATIBLE、不必卸载重装。无 secret(如 fork PR)时
+// 优雅降级到 debug 签名,出可安装的 APK,构建绝不失败。
+// key.properties 与 keystore 都不入库(见 .gitignore),明文凭据只活在 CI runner 内。
+val keystorePropsFile: File = rootProject.file("key.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) {
+        FileInputStream(keystorePropsFile).use { load(it) }
+    }
+}
+val hasReleaseKeystore: Boolean =
+    keystoreProps.getProperty("storeFile")?.let { file(it).exists() } ?: false
 
 android {
     namespace = "com.jieoz.lanmediawall.player"
@@ -15,13 +33,40 @@ android {
         // the target 1688 外贸盒. targetSdk stays high for modern-OS behavior.
         minSdk = 19
         targetSdk = 34
-        versionCode = 27
-        versionName = "1.10.7"
+        versionCode = 28
+        versionName = "1.11.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // §6: on minSdk 19 the merged dex can exceed the 65k method limit
         // (exoplayer2 + appcompat + okhttp + coroutines). Pre-21 has no native
         // multidex, so enable the support-library loader (see PlayerApp).
         multiDexEnabled = true
+    }
+
+    // §6.1: APK MUST carry a v1 (JAR) signature or it won't install on <7.0
+    // ("应用未安装"). AGP enables v1 by default at minSdk 19, but pin it
+    // explicitly on the debug key both build types sign with, so a future
+    // minSdk bump or AGP default change can't silently drop v1.
+    // NOTE: declared BEFORE buildTypes so release.signingConfig can resolve the
+    // "release" config below (Kotlin DSL blocks are evaluated top-to-bottom).
+    signingConfigs {
+        getByName("debug") {
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+        // §根因B: 固定 release 证书。仅当 CI 解码出 key.properties 且 keystore 文件
+        // 存在时才配置(否则 storeFile 为 null,AGP 会在无 release 构建时也报错)。
+        // v1+v2 都开:minSdk 19 必须 v1(JAR 签名)否则 <7.0 装不上(§6.1);v2 给
+        // 现代系统更快校验。凭据全部来自 key.properties(CI 从 Secret 写),不硬编码。
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
     }
 
     buildTypes {
@@ -34,11 +79,14 @@ android {
             // which installs cleanly AND removes the pre-21 MultiDex.install()
             // dependency. resource shrinking off (keeps it simple).
             isMinifyEnabled = true
-            // CI has no production keystore. Sign release with the standard debug
-            // key so the shipped release APK is actually installable (an unsigned
-            // release APK cannot be sideloaded). A real keystore, when wired via
-            // -P props, can override this.
-            signingConfig = signingConfigs.getByName("debug")
+            // §根因B: 有固定 keystore(CI 解码出 key.properties) → 用 release 固定证书
+            // 签名,指纹跨版本一致 → 覆盖升级 OK。无 keystore(fork PR / 本地) → 降级
+            // 到 debug 签名,APK 仍可 sideload,构建不失败。
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -47,15 +95,6 @@ android {
         debug {
             isMinifyEnabled = false
         }
-    }
-
-    // §6.1: APK MUST carry a v1 (JAR) signature or it won't install on <7.0
-    // ("应用未安装"). AGP enables v1 by default at minSdk 19, but pin it
-    // explicitly on the debug key both build types sign with, so a future
-    // minSdk bump or AGP default change can't silently drop v1.
-    signingConfigs.getByName("debug") {
-        enableV1Signing = true
-        enableV2Signing = true
     }
 
     compileOptions {

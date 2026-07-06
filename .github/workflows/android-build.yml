@@ -1,9 +1,11 @@
 # Android player — cloud build (Gradle wrapper, installable release APK).
 #
 # Builds android_apps/player/ (Kotlin, Gradle wrapper) into a RELEASE APK.
-# With no production keystore the release buildType is debug-signed (see
-# app/build.gradle.kts) so the APK is still installable for sideload. A real
-# keystore can later be wired via the project's signingConfig.
+# Release signing (§根因B): when the ANDROID_KEYSTORE_* Secrets are present the
+# release buildType signs with a FIXED production certificate (constant SHA256
+# across versions → 覆盖升级 / 远程 update_app §23 works). With no secrets
+# (fork PRs) app/build.gradle.kts gracefully falls back to debug signing so the
+# APK is still installable for sideload and the lane stays green.
 #
 # NOTE: android_apps/player/ is produced by another track. If the Gradle wrapper
 # is not present yet, the build steps no-op gracefully (guarded below) so this
@@ -63,11 +65,67 @@ jobs:
         shell: bash
         run: chmod +x android_apps/player/gradlew
 
-      - name: Build release APK (debug-signed, installable)
+      # --- Stable release signing (§根因B) ---------------------------------
+      # Decode the fixed keystore from Secrets and write key.properties so the
+      # release buildType signs with a CONSTANT certificate (same SHA256 across
+      # versions). That is what makes 覆盖安装 / 远程 update_app (§23) work — a
+      # per-build debug key changes fingerprint every version and forces
+      # uninstall-reinstall (INSTALL_FAILED_UPDATE_INCOMPATIBLE). Runs only when
+      # ALL secrets are present; otherwise build.gradle.kts falls back to debug
+      # signing and the lane still passes (fork PRs, no-secret contexts).
+      # key.properties + keystore live only in $RUNNER_TEMP / the player root
+      # (git-ignored) — plaintext credentials never enter the repo.
+      - name: Check for release keystore
+        if: steps.detect.outputs.present == 'true'
+        id: keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ANDROID_KEYSTORE_BASE64 secret — release APK will be debug-signed (installable, but no cross-version overwrite-update)."
+          fi
+
+      - name: Decode keystore and write key.properties
+        if: steps.detect.outputs.present == 'true' && steps.keystore.outputs.have == 'true'
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          cat > android_apps/player/key.properties <<EOF
+          storeFile=$RUNNER_TEMP/release.keystore
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+          echo "::notice::Release keystore decoded — release APK will be signed with the fixed production certificate."
+
+      - name: Build release APK
         if: steps.detect.outputs.present == 'true'
         working-directory: android_apps/player
         shell: bash
         run: ./gradlew --no-daemon assembleRelease
+
+      # Echo the signer certificate so the fixed SHA256 fingerprint is visible in
+      # the CI log for real-device cross-check (§根因B verification).
+      - name: Verify APK signer certificate
+        if: steps.detect.outputs.present == 'true' && steps.keystore.outputs.have == 'true'
+        shell: bash
+        run: |
+          APK="$(ls android_apps/player/app/build/outputs/apk/release/*.apk | head -1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner 2>/dev/null | sort | tail -1)"
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "$APK" | grep -i "SHA-256" || true
+          else
+            echo "::notice::apksigner not found; skipping fingerprint echo."
+          fi
 
       - name: Upload release APK
         if: steps.detect.outputs.present == 'true'
@@ -78,8 +136,8 @@ jobs:
           if-no-files-found: error
 
       # --- Attach release APK to a GitHub Release on tag pushes (v*) --------
-      # assembleRelease above is debug-signed (installable) by default; a real
-      # keystore can be wired later via the project's signingConfig. The glob
+      # assembleRelease above is signed with the fixed production certificate
+      # when secrets are present (else debug-signed, still installable). The glob
       # matches the single app-release.apk Gradle emits. fail_on_unmatched_files
       # is true so a path regression fails the lane loudly instead of silently
       # shipping a release with no player APK (the v1.0.0 miss).

@@ -30,6 +30,9 @@ android_apps/**/.idea/
 *.apk
 *.keystore
 *.jks
+# §根因B: CI 从 Secret 解码 keystore 后写出的签名凭据文件,绝不入库(公开仓)。
+key.properties
+android_apps/**/key.properties
 
 # Secrets / runtime
 *.psk

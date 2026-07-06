@@ -231,6 +231,107 @@ void main() {
       expect(links['hb']!.sent.where((s) => _parse(s).type == 'play_at').length, 1);
     });
 
+    test('身份归一(根因A): welcome 带真实 device_id → 连接从占位 key 重绑定', () async {
+      late FakeWsLink link;
+      final logs = <String>[];
+      final identified = <String, String>{};
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )
+        ..onLog = logs.add
+        ..onPeerIdentified = (from, to) => identified[from] = to;
+      // 扫码/手动添加:无真实 id,以 host:port 当占位 deviceId 建连。
+      coord.setPeers(
+          [const P2pPeer(deviceId: '10.10.8.160:8770', host: '10.10.8.160', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+      // 归一前:connectedIds 是占位命名空间。
+      expect(coord.connectedIds, {'10.10.8.160:8770'});
+
+      // welcome 从 from=player:<真实id> 带出真实 device_id。
+      coord.handleFrame(
+        '10.10.8.160:8770',
+        frame(openCodec(), 'welcome', {'topology': 'p2p'},
+            from: 'player:and-b87bfc8e49'),
+      );
+      // 归一后:占位 key 迁移到真实 device_id,命名空间归一。
+      expect(coord.connectedIds, {'and-b87bfc8e49'});
+      expect(identified['10.10.8.160:8770'], 'and-b87bfc8e49');
+      expect(logs.any((l) => l.contains('身份归一') && l.contains('and-b87bfc8e49')),
+          isTrue);
+    });
+
+    test('身份归一(根因A): 归一后组扇出走正常路径(不靠兜底) + play_at 正常下发', () async {
+      late FakeWsLink link;
+      final logs = <String>[];
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 100000,
+        bufferMs: 2000,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onLog = logs.add;
+      coord.setPeers(
+          [const P2pPeer(deviceId: '10.10.8.160:8770', host: '10.10.8.160', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+      // status 带真实 device_id → 归一 + 聚合。
+      coord.handleFrame(
+        '10.10.8.160:8770',
+        frame(openCodec(), 'status',
+            {'device_id': 'and-b87bfc8e49', 'group_id': 'default'},
+            from: 'player:and-b87bfc8e49'),
+      );
+      expect(coord.connectedIds, {'and-b87bfc8e49'});
+      link.sent.clear();
+      logs.clear();
+
+      final prepareId = coord.startSync(playlistId: 'pl-1', groupId: 'default');
+      // 组匹配正常命中,不再触发兜底回退。
+      expect(logs.any((l) => l.contains('回退到全部已连接')), isFalse);
+      final prep = _parse(link.sent.firstWhere((s) => _parse(s).type == 'prepare'));
+      expect(prep.to, 'player:and-b87bfc8e49');
+
+      // ready 带真实 device_id → 会话目标集匹配成功 → play_at 下发(不再黑屏)。
+      coord.handleFrame(
+        'and-b87bfc8e49',
+        frame(openCodec(), 'ready',
+            {'device_id': 'and-b87bfc8e49', 'prepare_id': prepareId, 'ready': true},
+            from: 'player:and-b87bfc8e49'),
+      );
+      final play = _parse(link.sent.firstWhere((s) => _parse(s).type == 'play_at'));
+      expect(play.to, 'player:and-b87bfc8e49');
+      expect(play.payload['play_at'], 102000);
+    });
+
+    test('身份归一(根因A): 归一后 setPeers(占位)不误断活连接', () async {
+      late FakeWsLink link;
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      );
+      const placeholder =
+          P2pPeer(deviceId: '10.10.8.160:8770', host: '10.10.8.160', port: 8770);
+      coord.setPeers([placeholder]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+      coord.handleFrame(
+        '10.10.8.160:8770',
+        frame(openCodec(), 'welcome', {'topology': 'p2p'},
+            from: 'player:and-b87bfc8e49'),
+      );
+      expect(coord.connectedIds, {'and-b87bfc8e49'});
+      // 发现仍只知道占位 id(扫码 URI 无真实 id):按端点对账,活连接不该被误断+重拨。
+      coord.setPeers([placeholder]);
+      expect(coord.connectedCount, 1);
+      expect(coord.connectedIds, {'and-b87bfc8e49'});
+    });
+
     test('对端消失 → 断开并 markOffline', () async {
       final links = <String, FakeWsLink>{};
       var lastWall = 0;

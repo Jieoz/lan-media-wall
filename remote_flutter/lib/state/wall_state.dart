@@ -115,6 +115,11 @@ class WallState extends ChangeNotifier {
   final Map<String, LinkPhase> _linkPhase = {};
   final Map<String, String> _linkError = {};
 
+  /// 根因 A 修复:占位 id(`host:port`,扫码无真实 device_id 时的兜底键) → 真实
+  /// device_id 的别名映射。p2p 归一([P2pCoordinator.onPeerIdentified])发生时登记。
+  /// [wallDevices] 据此把「占位卡」折叠进「真实卡」,同一台盒子只剩一张卡。
+  final Map<String, String> _idAlias = {};
+
   /// 当前 broker 接入目标（用于避免发现重复触发时反复重连）。
   String _brokerTarget = '';
 
@@ -159,15 +164,20 @@ class WallState extends ChangeNotifier {
       ));
     }
     // 2. 发现/手动添加但还没状态快照的 → 占位卡。
+    //    根因 A 修复：占位 id(`host:port`,扫码无真实 device_id)一旦经 p2p 归一
+    //    ([_idAlias]),就解析到真实 device_id。若该真实 id 已在上一步出过卡(status
+    //    已回传),则跳过——否则会出现「占位卡 + 真实卡」双卡。相位/失败原因也按真实
+    //    id 取(归一时已迁移过去)。
     for (final a in _discovered) {
-      if (seen.contains(a.deviceId)) continue;
-      seen.add(a.deviceId);
+      final id = _resolveId(a.deviceId);
+      if (seen.contains(id)) continue;
+      seen.add(id);
       out.add(WallDevice(
-        deviceId: a.deviceId,
-        deviceName: a.deviceName.isNotEmpty ? a.deviceName : a.deviceId,
-        phase: _linkPhase[a.deviceId] ?? LinkPhase.discovered,
+        deviceId: id,
+        deviceName: a.deviceName.isNotEmpty ? a.deviceName : id,
+        phase: _linkPhase[id] ?? LinkPhase.discovered,
         ip: a.ip,
-        error: _linkError[a.deviceId],
+        error: _linkError[id],
       ));
     }
     return out;
@@ -302,6 +312,7 @@ class WallState extends ChangeNotifier {
       ..onWall = _onWall
       ..onPeers = _onP2pPeers
       ..onPeerState = _onPeerState
+      ..onPeerIdentified = _onPeerIdentified
       ..onLog = _pushLog;
 
     await _discovery.start();
@@ -510,6 +521,29 @@ class WallState extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  /// 根因 A 修复：p2p 身份归一发生时（[P2pCoordinator.onPeerIdentified]），把占位
+  /// id(`host:port`) → 真实 device_id 登记进别名表，并把占位卡上的接入相位/失败原因
+  /// 迁移到真实 id。归一后 [wallDevices] 据 [_idAlias] 把占位卡折叠进真实卡：同一台
+  /// 盒子只剩一张卡（修「设备墙双卡」）。
+  void _onPeerIdentified(String placeholderId, String realId) {
+    if (placeholderId == realId) return;
+    _idAlias[placeholderId] = realId;
+    // 迁移相位：占位卡此前记录的 connecting/connected 归到真实 id（真实 id 尚无相位
+    // 时才迁，避免覆盖已由真实 id 上报的更新状态）。
+    final phase = _linkPhase.remove(placeholderId);
+    if (phase != null) {
+      _linkPhase[realId] = _linkPhase[realId] ?? phase;
+    }
+    final err = _linkError.remove(placeholderId);
+    if (err != null && !_linkError.containsKey(realId)) {
+      _linkError[realId] = err;
+    }
+    notifyListeners();
+  }
+
+  /// 把一个 id 解析到其归一后的真实 device_id（无别名则原样返回）。
+  String _resolveId(String id) => _idAlias[id] ?? id;
 
   void _onDiscovered(List<AnnounceInfo> list) {
     _discovered

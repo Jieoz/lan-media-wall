@@ -87,6 +87,12 @@ class P2pCoordinator {
   /// failed 时 [reason] 给出原因（超时/拒绝/握手失败）。UI 据此画每张卡的状态。
   void Function(String deviceId, PeerLinkState state, String? reason)? onPeerState;
 
+  /// 身份归一回调（根因 A 修复）：当一条以占位 key（`host:port`，扫码/手动添加时
+  /// 无真实 device_id）建立的直连,从对端 `welcome`/`status` 拿到**真实 device_id**
+  /// 后,把连接从占位 key 重绑定到真实 id。UI 层据此把占位卡与真实卡收敛成一张
+  /// （否则设备墙会同时出现「占位卡(恒连)」+「真实卡(随 status 时断)」两张）。
+  void Function(String placeholderId, String realId)? onPeerIdentified;
+
   /// 诊断日志。
   void Function(String line)? onLog;
 
@@ -102,20 +108,39 @@ class P2pCoordinator {
   // ---- 连接管理 ----
 
   /// 用一组发现到的对端刷新连接：新增的拨号，消失的断开。
+  ///
+  /// **按连接端点(host:port)对账,而非按 deviceId**(根因 A 修复的关键):一条连接一旦
+  /// 从占位 key(`host:port`)重绑定到真实 device_id,后续发现仍可能只知道占位 id
+  /// (扫码 URI 无真实 id)。若仍按 deviceId 对账,会把「已重绑定到真实 id 的活连接」
+  /// 误判为「已消失」而断开,再以占位 key 重拨 → 抖动 + 回到双命名空间。以端点对账则
+  /// 天然幂等:同一 host:port 的连接不论当前挂在哪个 key 下,都视为「已存在,不动」。
   void setPeers(Iterable<P2pPeer> peers) {
     if (_disposed) return;
-    final next = {for (final p in peers) p.deviceId: p};
-    // 断开不再出现的对端。
-    for (final id in _links.keys.toList()) {
-      if (!next.containsKey(id)) _disconnect(id);
+    final nextByEndpoint = {for (final p in peers) _endpoint(p): p};
+    // 断开端点不再出现的对端(用当前实际 key 断,兼容已重绑定的连接)。
+    for (final key in _links.keys.toList()) {
+      final peer = _peers[key];
+      final ep = peer == null ? null : _endpoint(peer);
+      if (ep == null || !nextByEndpoint.containsKey(ep)) _disconnect(key);
     }
-    // 拨号新对端。
-    for (final p in next.values) {
+    // 已连端点集合(当前挂在任意 key 下的连接)。
+    final connectedEndpoints = {
+      for (final key in _links.keys)
+        if (_peers[key] != null) _endpoint(_peers[key]!),
+    };
+    // 拨号新端点。
+    for (final entry in nextByEndpoint.entries) {
+      if (connectedEndpoints.contains(entry.key)) continue;
+      final p = entry.value;
       _peers[p.deviceId] = p;
       if (!_links.containsKey(p.deviceId)) _dial(p);
     }
     _emitPeers();
   }
+
+  /// 一台对端的连接端点标识（host:port，归一小写去空格）。身份对账的稳定键。
+  static String _endpoint(P2pPeer p) =>
+      '${p.host.trim().toLowerCase()}:${p.port}';
 
   void _dial(P2pPeer peer) {
     if (_disposed) return;
@@ -130,23 +155,92 @@ class P2pCoordinator {
       return;
     }
     _links[peer.deviceId] = link;
+    // 所有回调都用 [_keyForLink] 解析「这条 link **当前**挂在哪个 key 下」,而非闭包
+    // 捕获拨号时的占位 key——身份归一(重绑定)后这条 link 已挂到真实 device_id,
+    // 若仍按占位 key 清理会漏删/错删,留下孤儿连接(设备墙恒显已连的幽灵卡)。
     _subs[peer.deviceId] = link.textStream.listen(
-      (text) => _onText(peer.deviceId, text),
-      onError: (Object e) => _onLinkError(peer.deviceId, e),
-      onDone: () => _onLinkDone(peer.deviceId),
+      (text) => _onText(_keyForLink(link) ?? peer.deviceId, text),
+      onError: (Object e) => _onLinkError(_keyForLink(link) ?? peer.deviceId, e),
+      onDone: () => _onLinkDone(_keyForLink(link) ?? peer.deviceId),
       cancelOnError: false,
     );
     link.ready.then((_) {
-      if (_links[peer.deviceId] != link) return;
+      final key = _keyForLink(link);
+      if (key == null) return; // 已被替换/断开
       _log('已连接被控端 ${peer.deviceName ?? peer.deviceId}(${peer.uri})');
-      _emitPeerState(peer.deviceId, PeerLinkState.connected, null);
-      _sendHello(peer.deviceId);
+      _emitPeerState(key, PeerLinkState.connected, null);
+      _sendHello(key);
       _emitPeers();
     }).catchError((Object e) {
-      _log('握手失败 ${peer.deviceId}: $e');
-      _emitPeerState(peer.deviceId, PeerLinkState.failed, '握手失败: $e');
-      _onLinkDone(peer.deviceId);
+      final key = _keyForLink(link) ?? peer.deviceId;
+      _log('握手失败 $key: $e');
+      _emitPeerState(key, PeerLinkState.failed, '握手失败: $e');
+      _onLinkDone(key);
     });
+  }
+
+  /// 反查一条 link 当前挂在哪个 key 下（身份归一后 key 可能已从占位迁到真实 id）。
+  String? _keyForLink(WsLink link) {
+    for (final e in _links.entries) {
+      if (identical(e.value, link)) return e.key;
+    }
+    return null;
+  }
+
+  /// 从一帧里取该对端的**真实 device_id**（身份权威）：
+  ///  - status/ready 等:优先 `payload.device_id`(与 [WallAggregator] 聚合键一致)。
+  ///  - welcome 等无 payload.device_id:从 `from`(如 `player:and-b87bfc8e49`)剥前缀。
+  /// 取不到(空/无前缀)→ null,不触发归一(维持占位 key)。
+  static String? _realIdOf(Envelope env) {
+    final pid = env.payload['device_id'];
+    if (pid is String && pid.isNotEmpty) return pid;
+    final from = env.from;
+    final i = from.indexOf(':');
+    if (i >= 0 && i + 1 < from.length) return from.substring(i + 1);
+    return from.isNotEmpty ? from : null;
+  }
+
+  /// 若 [arrivalKey] 仍是占位 key 且本帧带出了真实 device_id,则把连接从占位 key
+  /// 重绑定到真实 id。返回**归一后应使用的 key**（真实 id;无需归一时原样返回）。
+  String _maybeRebind(String arrivalKey, Envelope env) {
+    final realId = _realIdOf(env);
+    if (realId == null || realId == arrivalKey) return arrivalKey;
+    // arrivalKey 已不是活连接(可能上一帧已归一) → 直接用当前应归属的 key。
+    if (!_links.containsKey(arrivalKey)) {
+      return _links.containsKey(realId) ? realId : arrivalKey;
+    }
+    _rebind(arrivalKey, realId);
+    return realId;
+  }
+
+  /// 把 [from] 键上的连接(link/sub/peer)迁移到 [to] 键（真实 device_id）。
+  void _rebind(String from, String to) {
+    final link = _links.remove(from);
+    if (link == null) return;
+    final sub = _subs.remove(from);
+    final peer = _peers.remove(from);
+    // 去重:真实 id 已有另一条连接(重复拨号/重连窗口) → 关掉旧的,新连接接管该 id。
+    if (_links.containsKey(to)) {
+      _log('身份归一去重: $to 已有连接,关闭旧连接保留新连接($from)');
+      _subs.remove(to)?.cancel();
+      _links.remove(to)?.close();
+    }
+    _links[to] = link;
+    if (sub != null) _subs[to] = sub;
+    // peer 元数据用真实 id 重登记(host/port/name 不变,仅键归一)。
+    _peers[to] = peer == null
+        ? P2pPeer(deviceId: to, host: '', port: 0)
+        : P2pPeer(
+            deviceId: to,
+            host: peer.host,
+            port: peer.port,
+            deviceName: peer.deviceName,
+            secure: peer.secure,
+          );
+    _log('身份归一: 占位 key "$from" → 真实 device_id "$to"');
+    // UI 层据此把占位卡与真实卡收敛成一张,并迁移接入态。
+    onPeerIdentified?.call(from, to);
+    _emitPeers();
   }
 
   void _sendHello(String deviceId) {
@@ -193,19 +287,25 @@ class P2pCoordinator {
   /// 处理一条来自 [deviceId] 直连的文本帧。包级可见以便单测直接驱动。
   void handleFrame(String deviceId, String text) => _onText(deviceId, text);
 
-  void _onText(String deviceId, String text) {
+  void _onText(String arrivalKey, String text) {
     final Envelope env;
     try {
       env = Envelope.fromJson(text);
     } catch (e) {
-      _log('JSON 解析失败($deviceId): $e');
+      _log('JSON 解析失败($arrivalKey): $e');
       return;
     }
     final vr = codec.verify(env);
     if (vr != VerifyError.ok) {
-      _log('入站验签失败($deviceId ${env.type}): $vr');
+      _log('入站验签失败($arrivalKey ${env.type}): $vr');
       return;
     }
+    // 根因 A 修复:身份归一。占位 key(host:port)承载的连接,一旦帧里带出真实
+    // device_id(status/ready 的 payload.device_id,或 welcome 的 from=player:<id>),
+    // 就把连接从占位 key 重绑定到真实 id,使 connectedIds 与 WallAggregator/
+    // GroupExpander 用的 device_id 归一到同一命名空间。归一后:组扇出求交集正常命中、
+    // 握手会话目标集用真实 id → ready 匹配成功 → play_at 正常下发(不再黑屏)。
+    final deviceId = _maybeRebind(arrivalKey, env);
     switch (env.type) {
       case 'welcome':
         _log('被控端 $deviceId welcome(topology=${env.payload['topology']})');

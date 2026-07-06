@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.11.0] — 2026-07-06
+
+### Fixed (CRITICAL — 两个根因,真机 logcat + 控制端诊断逐字确认)
+
+- **推送后黑屏 + 设备墙同一盒子双卡的真根因:peer 身份命名空间从不归一(根治)**。
+  扫码/手动添加盒子时控制端没有真实 `device_id`,`P2pCoordinator` 用拨号端点 `host:port`
+  (如 `10.10.8.160:8770`)当占位 key 建连接;而盒子 `welcome`/`status` 上报的**真实
+  device_id**(如 `and-b87bfc8e49`)走另一命名空间。后果链:`connectedIds` 返回占位 key、
+  `WallAggregator`/`GroupExpander` 用真实 id → 组扇出求交集恒为空(只能靠 v1.10.5 兜底硬发
+  prepare);握手会话目标集是占位 key,播放端 `ready` 带真实 id → `targets.contains()` 为
+  false → **`play_at` 永不下发 → 黑屏**;设备墙同时出现「占位卡(恒连)」+「真实卡(随
+  status 时断)」两张。
+  - 修复(归一,不在兜底上雕花):连接一旦从帧里拿到真实 device_id(`status`/`ready` 的
+    `payload.device_id`,或 `welcome` 的 `from=player:<id>`),就把 `_links`/`_subs`/`_peers`
+    的键从占位 key **重绑定**到真实 id(`_maybeRebind`/`_rebind`),打印 `身份归一: 占位 key
+    "host:port" → 真实 device_id "<id>"`。归一后 `connectedIds` 与聚合/扇出同命名空间:组扇出
+    正常命中(不再靠兜底)、握手目标集用真实 id → `ready` 匹配成功 → **`play_at` 正常下发,
+    不再黑屏**。
+  - 边界:重绑定去重(真实 id 已有连接则关旧留新)、`setPeers` 改为**按端点(host:port)对账**
+    以免把已归一的活连接误断重拨、所有 link 回调用 `_keyForLink` 反查当前 key(不闭包捕获占位
+    key)避免孤儿连接。控制端 `WallState` 登记占位→真实别名,`wallDevices` 据此把占位卡折叠
+    进真实卡:**同一盒子只剩一张卡**。
+  - **v1.10.5「group 匹配为空 → 回退全部已连接」兜底保留**(多组场景 / 归一前窗口期保险),
+    归一后正常路径优先命中,不再是唯一能推图的路径。
+
+- **每版必须卸载重装、远程 `update_app` 必失败的真根因:release 签名指纹每版都变(根治)**。
+  player 的 `release` buildType 此前用 `signingConfigs.getByName("debug")`,CI 每次用 AGP 临时
+  生成的 debug.keystore 签名 → **每版证书指纹不同** → 覆盖安装 `INSTALL_FAILED_UPDATE_
+  INCOMPATIBLE` → 只能卸载重装,§23 远程 `update_app` 也必然失败。
+  - 修复:player 从 GitHub Actions Secret 解码**固定 keystore** 签名(参照遥控端
+    `flutter-build.yml` 的成熟流水线)。`build.gradle.kts` 新增 `release` signingConfig,凭据从
+    CI 写出的 `key.properties`(指向 `$RUNNER_TEMP` 的 keystore)读取,release buildType 用它
+    替换 debug;保留 v1+v2 签名(minSdk 19 必须 v1)与 R8/minify 不动。`android-build.yml`
+    在 build 前 `if` 判断 secret 存在 → `base64 -d` 写 keystore + `key.properties` →
+    `assembleRelease`,并回显 signer 证书 SHA256 供真机核对。
+  - **无 secret 优雅降级**:fork PR / 本地无 secret 时回退 debug 签名出可安装 APK,构建不失败。
+  - **安全**:公开仓,keystore/密码明文绝不入库——只用 `${{ secrets.X }}` 与 `$RUNNER_TEMP`;
+    `key.properties`、`*.keystore`、`*.jks` 均 `.gitignore` 排除。固定证书 SHA256 指纹
+    `69:EC:70:E5:92:AE:D4:6C:4E:B1:41:2F:E7:66:8F:41:51:46:81:10:1A:CD:0D:D9:DB:B0:98:D1:E2:6D:6D:54`
+    (30 年有效)。**装 v1.11.0 后从 v1.10.x 覆盖安装无需卸载,远程 update_app 可覆盖升级。**
+
 ## [v1.10.7] — 2026-07-06
 
 ### Fixed

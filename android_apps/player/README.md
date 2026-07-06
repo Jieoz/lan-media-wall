@@ -8,13 +8,26 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.10.6 / versionCode 26`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.11.0 / versionCode 28`** (see `app/build.gradle.kts`).
 > The **Settings screen shows this version** at the top of the device-info line
 > (`版本: v<name> (build <code>)`), read from `BuildConfig` — single source of truth,
 > so what you see on-screen always matches the installed build.
 > `versionCode` MUST increment on every release — it's how Android decides "this is
 > newer". Bumping `versionName` alone can cause the update to be rejected as the same
 > version. See the release checklist in the root README.
+
+> **Release signing (v1.11.0, §根因B — 覆盖升级/远程 update_app 的前提).** The
+> `release` buildType signs with a **fixed production certificate** decoded by CI
+> from GitHub Actions Secrets (`ANDROID_KEYSTORE_BASE64` / `_PASSWORD` / `KEY_ALIAS`
+> / `KEY_PASSWORD`) into a `key.properties` that points at a `$RUNNER_TEMP`
+> keystore. A constant fingerprint across versions is what makes overwrite-install
+> and remote `update_app` (§23) work — the old per-build debug key changed
+> fingerprint every release and forced `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+> (uninstall-reinstall). With no secrets (fork PRs / local) the build gracefully
+> falls back to debug signing so the APK is still installable. **Keystore and
+> plaintext credentials never enter the repo** — `key.properties`, `*.keystore`,
+> `*.jks` are git-ignored; only `${{ secrets.X }}` + `$RUNNER_TEMP` are used. Fixed
+> cert SHA256: `69:EC:70:E5:92:AE:D4:6C:4E:B1:41:2F:E7:66:8F:41:51:46:81:10:1A:CD:0D:D9:DB:B0:98:D1:E2:6D:6D:54`.
 
 ## What it does
 

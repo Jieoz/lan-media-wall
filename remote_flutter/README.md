@@ -3,7 +3,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.10.7+27`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=1.10.7 --build-number=27` 把版本号烧进 APK。发版流程见根 README。
+> **当前版本 `1.11.0+28`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=1.11.0 --build-number=28` 把版本号烧进 APK。发版流程见根 README。
+>
+> **peer 身份归一 · 根治黑屏+双卡(v1.11.0,关键)**:扫码/手动添加的盒子无真实 `device_id`,`P2pCoordinator` 用拨号端点 `host:port` 当占位 key 建连;盒子 `welcome`/`status` 上报的**真实 device_id** 走另一命名空间 → `connectedIds` 与 `WallAggregator`/`GroupExpander` 对不上 → 组扇出恒空(只靠 v1.10.5 兜底硬发 prepare)、握手目标集是占位 key、播放端 `ready` 带真实 id 匹配失败 → **`play_at` 永不下发 → 黑屏**;设备墙还会出「占位卡+真实卡」两张。修复:连接拿到真实 device_id 后把 `_links`/`_subs`/`_peers` **从占位 key 重绑定到真实 id**(打印 `身份归一: host:port → <id>`),`setPeers` 改按端点对账避免误断重拨,`WallState` 把占位卡折叠进真实卡(**同一盒子只剩一张卡**)。归一后正常路径优先命中,v1.10.5 兜底保留但不再是唯一推图路径。回归见 `test/p2p_coordinator_test.dart`。
 >
 > **推图目标匹配修复(v1.10.5+,关键)**:扫码直连一台盒子后点「②推送并播放」却毫无反应、盒子日志零 `RX prepare` 或只有 `RX prepare` 但没有实际下载/播放——根因是 P2P 侧按 group/设备 id 算出的目标集为空。修复:(1) `GroupExpander` 的 group 比较容忍前后空格+大小写,空 gid 视为通配;(2) `startSync` 与普通 `send(group:...)` 都在 group 匹配为空但确有已连接被控端时,直接把**全部已直连设备**作为推送目标,绝不静默 0 台;(3) 诊断日志打印 `connected / 各设备 group_id / targets` 决定性信息。诊断日志页支持「复制全部」+ 单行可选中复制。
 >
