@@ -310,6 +310,7 @@ class WallState extends ChangeNotifier {
       ..onLog = _pushLog;
     _p2p = P2pCoordinator(codec: _codec, controllerId: controllerId)
       ..onWall = _onWall
+      ..onThumb = _onThumb
       ..onPeers = _onP2pPeers
       ..onPeerState = _onPeerState
       ..onPeerIdentified = _onPeerIdentified

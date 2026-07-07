@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
+import '../protocol/thumb_pairing.dart';
 import 'clock_master.dart';
 import 'group_expander.dart';
 import 'handshake.dart';
@@ -83,6 +85,10 @@ class P2pCoordinator {
   /// 连接的对端数量变化（用于 UI“已连 N 台”展示）。
   void Function(int connectedCount)? onPeers;
 
+  /// 收到某台被控端的缩略图 JPEG（thumb_meta + 紧跟的二进制帧配对完成后）。
+  /// 与 broker 路径 [BrokerClient.onThumb] 行为一致（复用 [ThumbPairing]）。
+  void Function(String deviceId, Uint8List jpeg)? onThumb;
+
   /// 单台对端连接态变化（§14.5 可见性）：connecting/connected/failed，
   /// failed 时 [reason] 给出原因（超时/拒绝/握手失败）。UI 据此画每张卡的状态。
   void Function(String deviceId, PeerLinkState state, String? reason)? onPeerState;
@@ -97,9 +103,20 @@ class P2pCoordinator {
   void Function(String line)? onLog;
 
   final Map<String, WsLink> _links = {};
-  final Map<String, StreamSubscription<String>> _subs = {};
+  final Map<String, _PeerSubs> _subs = {};
   final Map<String, P2pPeer> _peers = {};
   bool _disposed = false;
+
+  // ---- 断线主动重连（任务 C，与 broker 指数退避对齐）----
+  /// 每个仍被期望连接的 key 的待重连定时器。断线后按退避重拨，重连成功即清。
+  final Map<String, Timer> _reconnectTimers = {};
+
+  /// 每个 key 的当前退避（ms）。首次 1s，翻倍到上限 30s；重连成功归零。
+  final Map<String, int> _reconnectBackoff = {};
+
+  /// 退避下限/上限（ms）——与 [BrokerClient] 一致，避免无限狂拨。
+  static const int _reconnectMinMs = 1000;
+  static const int _reconnectMaxMs = 30000;
 
   /// 当前已建立直连的 device_id 集合。
   Set<String> get connectedIds => _links.keys.toSet();
@@ -123,6 +140,17 @@ class P2pCoordinator {
       final ep = peer == null ? null : _endpoint(peer);
       if (ep == null || !nextByEndpoint.containsKey(ep)) _disconnect(key);
     }
+    // 端点不再出现、但仍挂着待重连的对端（断线后正退避重拨中，已不在 _links）：
+    // 一并清掉，避免对「发现列表已移除的设备」孤儿式无限重连。
+    for (final key in _peers.keys.toList()) {
+      if (_links.containsKey(key)) continue;
+      final peer = _peers[key];
+      final ep = peer == null ? null : _endpoint(peer);
+      if (ep == null || !nextByEndpoint.containsKey(ep)) {
+        _cancelReconnect(key);
+        _peers.remove(key);
+      }
+    }
     // 已连端点集合(当前挂在任意 key 下的连接)。
     final connectedEndpoints = {
       for (final key in _links.keys)
@@ -144,6 +172,14 @@ class P2pCoordinator {
 
   void _dial(P2pPeer peer) {
     if (_disposed) return;
+    // 去重（任务 C）：同一端点已有活连接（或正被另一条 _dial 建立）时不重复拨号——
+    // 断线重连定时器与 discover 驱动的 setPeers 可能同时想拨同一台，防双连接。
+    if (_hasLinkForEndpoint(_endpoint(peer))) {
+      _log('拨号 ${peer.deviceId}(${peer.uri}) 跳过：该端点已有活连接');
+      return;
+    }
+    // 本次要（重新）建连 → 清掉该 key 的待重连定时器，避免重复触发。
+    _cancelReconnect(peer.deviceId);
     // §14.5 可见性：拨号即上报 connecting，UI 立刻显示「连接中」。
     _emitPeerState(peer.deviceId, PeerLinkState.connecting, null);
     final WsLink link;
@@ -155,19 +191,35 @@ class P2pCoordinator {
       return;
     }
     _links[peer.deviceId] = link;
+    // 缩略图两帧配对：与 broker 路径复用同一 [ThumbPairing]。thumb_meta 文本帧在
+    // _onText 里喂给它，紧跟的二进制帧在 binaryStream listener 里喂给它。
+    final thumbs = ThumbPairing(
+      onThumb: (id, jpeg) => onThumb?.call(id, jpeg),
+      onLog: _log,
+    );
     // 所有回调都用 [_keyForLink] 解析「这条 link **当前**挂在哪个 key 下」,而非闭包
     // 捕获拨号时的占位 key——身份归一(重绑定)后这条 link 已挂到真实 device_id,
     // 若仍按占位 key 清理会漏删/错删,留下孤儿连接(设备墙恒显已连的幽灵卡)。
-    _subs[peer.deviceId] = link.textStream.listen(
+    final textSub = link.textStream.listen(
       (text) => _onText(_keyForLink(link) ?? peer.deviceId, text),
       onError: (Object e) => _onLinkError(_keyForLink(link) ?? peer.deviceId, e),
       onDone: () => _onLinkDone(_keyForLink(link) ?? peer.deviceId),
       cancelOnError: false,
     );
+    // 二进制帧只承载缩略图 JPEG；交给该连接的 [ThumbPairing] 与前一帧 thumb_meta
+    // 配对（onError/onDone 由 text 订阅统一处理连接生命周期，这里不重复上报）。
+    final binarySub = link.binaryStream.listen(
+      (bytes) => _thumbsFor(_keyForLink(link) ?? peer.deviceId)?.onBinary(bytes),
+      cancelOnError: false,
+    );
+    _subs[peer.deviceId] =
+        _PeerSubs(text: textSub, binary: binarySub, thumbs: thumbs);
     link.ready.then((_) {
       final key = _keyForLink(link);
       if (key == null) return; // 已被替换/断开
       _log('已连接被控端 ${peer.deviceName ?? peer.deviceId}(${peer.uri})');
+      // 连上即清退避：下一次断线从 1s 起重连，而非停留在上次的高退避。
+      _reconnectBackoff.remove(key);
       _emitPeerState(key, PeerLinkState.connected, null);
       _sendHello(key);
       _emitPeers();
@@ -224,6 +276,7 @@ class P2pCoordinator {
       _log('身份归一去重: $to 已有连接,关闭旧连接保留新连接($from)');
       _subs.remove(to)?.cancel();
       _links.remove(to)?.close();
+      _cancelReconnect(to);
     }
     _links[to] = link;
     if (sub != null) _subs[to] = sub;
@@ -256,11 +309,52 @@ class P2pCoordinator {
     });
   }
 
+  /// 主动断开（对端从发现列表消失）：这是「不再期望连接」，因此清 peer + 退避 +
+  /// 待重连定时器，绝不重连（否则会和 setPeers 的意图打架、拨一台已被移除的设备）。
   void _disconnect(String deviceId) {
     _subs.remove(deviceId)?.cancel();
     final link = _links.remove(deviceId);
     link?.close();
+    _peers.remove(deviceId);
+    _cancelReconnect(deviceId);
     aggregator.markOffline(deviceId);
+  }
+
+  /// 某端点当前是否已有一条活连接（按 host:port 归一，与 setPeers 对账口径一致）。
+  bool _hasLinkForEndpoint(String endpoint) {
+    for (final key in _links.keys) {
+      final p = _peers[key];
+      if (p != null && _endpoint(p) == endpoint) return true;
+    }
+    return false;
+  }
+
+  /// 断线后按退避安排一次主动重连（任务 C）。仅当该 key 仍被期望连接（[_peers] 里
+  /// 还在）且尚无待重连定时器时才排；重连前 [_dial] 会再按端点去重，防双连接。
+  void _scheduleReconnect(String deviceId) {
+    if (_disposed) return;
+    final peer = _peers[deviceId];
+    if (peer == null) return; // 已被 _disconnect 移除 → 不再期望连接
+    if (_reconnectTimers.containsKey(deviceId)) return; // 已在排队
+    if (_hasLinkForEndpoint(_endpoint(peer))) return; // 端点已另有活连接
+    final delay = _reconnectBackoff[deviceId] ?? _reconnectMinMs;
+    _reconnectBackoff[deviceId] =
+        (delay * 2).clamp(_reconnectMinMs, _reconnectMaxMs);
+    _log('${delay}ms 后重连 $deviceId(${peer.uri})');
+    _reconnectTimers[deviceId] = Timer(Duration(milliseconds: delay), () {
+      _reconnectTimers.remove(deviceId);
+      if (_disposed) return;
+      final p = _peers[deviceId];
+      if (p == null) return; // 排队期间被移除
+      if (_hasLinkForEndpoint(_endpoint(p))) return; // 排队期间已由别处连上
+      _dial(p);
+    });
+  }
+
+  /// 取消并清掉某 key 的待重连定时器 + 退避状态。
+  void _cancelReconnect(String deviceId) {
+    _reconnectTimers.remove(deviceId)?.cancel();
+    _reconnectBackoff.remove(deviceId);
   }
 
   void _onLinkError(String deviceId, Object e) {
@@ -278,6 +372,9 @@ class P2pCoordinator {
     if (wasConnected) {
       _emitPeerState(deviceId, PeerLinkState.failed, '连接断开');
     }
+    // 任务 C：断线主动重连（带退避）。仅当该端点仍被期望连接（未被 _disconnect
+    // 移除）时才排——靠 UDperiodic discover 才重连有状态空档，这里补上主动重连。
+    _scheduleReconnect(deviceId);
     _emitWall();
     _emitPeers();
   }
@@ -335,6 +432,11 @@ class P2pCoordinator {
               : true,
         );
         break;
+      case 'thumb_meta':
+        // §6.4：缩略图元信息，紧跟一个二进制帧。交给该连接的配对状态机暂存，
+        // 二进制帧由 binaryStream listener 喂入完成配对（与 broker 路径一致）。
+        _thumbsFor(deviceId)?.onMeta(env.payload);
+        break;
       case 'ack':
         _log('ack($deviceId): ${env.payload}');
         break;
@@ -345,6 +447,9 @@ class P2pCoordinator {
         _log('忽略入站类型($deviceId): ${env.type}');
     }
   }
+
+  /// 取某 key 当前连接的缩略图配对状态机（无连接/已断开 → null）。
+  ThumbPairing? _thumbsFor(String deviceId) => _subs[deviceId]?.thumbs;
 
   /// 主时钟：回应 player 的 time_sync（§8.1 / §14.3）。
   void _answerTimeSync(String deviceId, Envelope req) {
@@ -480,6 +585,11 @@ class P2pCoordinator {
 
   void dispose() {
     _disposed = true;
+    for (final t in _reconnectTimers.values) {
+      t.cancel();
+    }
+    _reconnectTimers.clear();
+    _reconnectBackoff.clear();
     for (final s in _subs.values) {
       s.cancel();
     }
@@ -493,6 +603,22 @@ class P2pCoordinator {
 
   static String _asStr(Object? v, [String def = '']) =>
       v is String && v.isNotEmpty ? v : def;
+}
+
+/// 一条 p2p 直连的订阅集合：文本帧 + 二进制帧（缩略图）两条订阅，加上该连接的
+/// 缩略图两帧配对状态机 [ThumbPairing]。随 link 一起建立/迁移（身份归一）/关闭。
+class _PeerSubs {
+  _PeerSubs({required this.text, required this.binary, required this.thumbs});
+
+  final StreamSubscription<String> text;
+  final StreamSubscription<Uint8List> binary;
+  final ThumbPairing thumbs;
+
+  void cancel() {
+    text.cancel();
+    binary.cancel();
+    thumbs.reset();
+  }
 }
 
 

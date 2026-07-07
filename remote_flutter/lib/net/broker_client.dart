@@ -6,6 +6,7 @@ import 'package:web_socket_channel/io.dart';
 import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
+import '../protocol/thumb_pairing.dart';
 
 /// 连接态。
 enum ConnState { disconnected, connecting, connected }
@@ -57,8 +58,12 @@ class BrokerClient {
   int _backoffMs = 1000;
   ConnState _state = ConnState.disconnected;
 
-  /// 等待二进制帧的缩略图元信息(§6.4：thumb_meta 之后紧跟一个二进制帧)。
-  ThumbMeta? _pendingThumb;
+  /// 缩略图两帧配对(§6.4：thumb_meta 之后紧跟一个二进制帧)。与 p2p 路径复用
+  /// 同一套 [ThumbPairing]，避免两端解析/存储逻辑分叉。
+  late final ThumbPairing _thumbs = ThumbPairing(
+    onThumb: (id, jpeg) => onThumb?.call(id, jpeg),
+    onLog: _log,
+  );
 
   ConnState get state => _state;
 
@@ -213,7 +218,7 @@ class BrokerClient {
         onWall?.call(WallSnapshot.fromMap(env.payload));
         break;
       case 'thumb_meta':
-        _pendingThumb = ThumbMeta.fromMap(env.payload);
+        _thumbs.onMeta(env.payload);
         break;
       case 'ack':
         _log('ack: ${env.payload}');
@@ -226,18 +231,7 @@ class BrokerClient {
     }
   }
 
-  void _onBinary(Uint8List bytes) {
-    final meta = _pendingThumb;
-    if (meta == null) {
-      _log('收到二进制帧但无配对的 thumb_meta，丢弃');
-      return;
-    }
-    _pendingThumb = null;
-    if (meta.bytes > 0 && bytes.length != meta.bytes) {
-      _log('缩略图字节数不符(meta=${meta.bytes}, got=${bytes.length})');
-    }
-    onThumb?.call(meta.deviceId, bytes);
-  }
+  void _onBinary(Uint8List bytes) => _thumbs.onBinary(bytes);
 
   void _onError(Object e) {
     _log('连接错误: $e');
@@ -267,7 +261,7 @@ class BrokerClient {
       _channel?.sink.close();
     } catch (_) {}
     _channel = null;
-    _pendingThumb = null;
+    _thumbs.reset();
   }
 
   void _setState(ConnState s) {
