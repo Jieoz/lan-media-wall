@@ -211,9 +211,9 @@ jobs:
                   "    }\n"
               )
               src = src[:m.end()] + signing + src[m.end():]
-              new = ("signingConfig lmwKeystoreFile.exists() ? "
+              new = ("signingConfig = lmwKeystoreFile.exists() ? "
                      "signingConfigs.release : signingConfigs.debug")
-              src2 = re.sub(r'signingConfig\s+signingConfigs\.debug', new, src)
+              src2 = re.sub(r'signingConfig\s*=?\s*signingConfigs\.debug', new, src)
               if src2 == src:
                   print(path, "WARN: release buildType 'signingConfig signingConfigs.debug' not found; "
                         "release may not pick up the config", file=sys.stderr)
