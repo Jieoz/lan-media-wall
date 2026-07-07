@@ -287,6 +287,46 @@ void main() {
       expect(links['hb']!.sent.where((s) => _parse(s).type == 'play_at').length, 1);
     });
 
+    test('§9.4b startSync(deviceId) 只锁一台: prepare/play_at 只发这一台', () async {
+      final links = <String, FakeWsLink>{};
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 100000,
+        bufferMs: 2000,
+        linkFactory: (uri) {
+          final l = FakeWsLink(uri);
+          links[uri.host] = l;
+          return l;
+        },
+      );
+      coord.setPeers([
+        const P2pPeer(deviceId: 'a', host: 'ha', port: 8770),
+        const P2pPeer(deviceId: 'b', host: 'hb', port: 8770),
+      ]);
+      for (final l in links.values) {
+        l.completeReady();
+      }
+      await Future<void>.delayed(Duration.zero);
+      coord.handleFrame('a', frame(openCodec(), 'status', {'device_id': 'a', 'group_id': 'lobby'}));
+      coord.handleFrame('b', frame(openCodec(), 'status', {'device_id': 'b', 'group_id': 'lobby'}));
+      for (final l in links.values) {
+        l.sent.clear();
+      }
+
+      // 单台推送:锁定 a。b 是同组同连接的兄弟,绝不能被牵动。
+      final prepareId =
+          coord.startSync(playlistId: 'pl-1', groupId: 'lobby', deviceId: 'a');
+      expect(links['ha']!.sent.where((s) => _parse(s).type == 'prepare').length, 1);
+      expect(links['hb']!.sent.where((s) => _parse(s).type == 'prepare').length, 0);
+
+      // a 回 ready → 只有 a 收到 play_at,b 全程 0 条。
+      coord.handleFrame('a',
+          frame(openCodec(), 'ready', {'device_id': 'a', 'prepare_id': prepareId, 'group_id': 'lobby', 'ready': true}));
+      expect(links['ha']!.sent.where((s) => _parse(s).type == 'play_at').length, 1);
+      expect(links['hb']!.sent.where((s) => _parse(s).type == 'play_at').length, 0);
+    });
+
     test('p2p 预缓存栅栏: prepare 携带 prefetch 参数且 ready=false 只等待不点火', () async {
       late FakeWsLink link;
       final logs = <String>[];

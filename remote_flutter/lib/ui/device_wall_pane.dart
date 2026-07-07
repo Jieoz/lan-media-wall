@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
 import 'invite_screen.dart';
@@ -555,7 +556,12 @@ Future<void> _confirmDeleteGroup(
   if (ok == true) state.deleteGroup(groupId: g.groupId);
 }
 
-/// 配置盒子(§19 configure_device):改名 / 设组 / 音量。修「不能设置盒子配置」。
+/// 单台面板(§v1.13):一处集中该 deviceId 的 状态/版本 展示、播放控制(暂停/恢复/
+/// 停止/上一项/下一项)、重启播放端(§9.4,二次确认)、单播推送内容(§9.4b)、单台
+/// 推送升级(§23),外加原有的 改名/设组/音量(§19 configure_device)。
+///
+/// 「应用」只提交改名/设组/音量;播放控制与重启是即时动作(点了就下发),推送内容/
+/// 升级会先关本弹窗再在父 context 打开各自的流程弹窗。
 Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     WallDevice device, List<WallGroup> groups) async {
   final nameCtl = TextEditingController(text: device.deviceName);
@@ -566,68 +572,117 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setLocal) => AlertDialog(
-        title: Text('配置 ${device.deviceId}'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtl,
-                decoration: const InputDecoration(labelText: '设备显示名'),
-              ),
-              const SizedBox(height: 8),
-              if (groups.isNotEmpty)
-                DropdownButtonFormField<String>(
-                  isExpanded: true,
-                  value: groups.any((g) => g.groupId == groupId)
-                      ? groupId
-                      : null,
-                  decoration: const InputDecoration(labelText: '分组'),
-                  items: [
-                    for (final g in groups)
-                      DropdownMenuItem(
-                          value: g.groupId,
-                          child: Text(g.name.isEmpty ? g.groupId : g.name)),
-                  ],
-                  onChanged: (v) => setLocal(() => groupId = v ?? groupId),
+        title: Text(device.deviceName.isEmpty
+            ? '单台面板 · ${device.deviceId}'
+            : '单台面板 · ${device.deviceName}'),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _DeviceStatusView(device: device),
+                const Divider(height: 20),
+                // 播放控制(即时下发,单播这一台)。
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('播放控制',
+                      style: Theme.of(ctx).textTheme.labelLarge),
                 ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(Icons.volume_up, size: 18),
-                  Expanded(
-                    child: Slider(
-                      value: volume,
-                      min: 0,
-                      max: 100,
-                      divisions: 100,
-                      label: volume.round().toString(),
-                      onChanged: (v) => setLocal(() => volume = v),
-                    ),
+                const SizedBox(height: 6),
+                _DeviceTransportRow(state: state, deviceId: device.deviceId),
+                const SizedBox(height: 12),
+                // §19 改名/设组/音量(「应用」时统一提交)。
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('设备配置',
+                      style: Theme.of(ctx).textTheme.labelLarge),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: nameCtl,
+                  decoration: const InputDecoration(labelText: '设备显示名'),
+                ),
+                const SizedBox(height: 8),
+                if (groups.isNotEmpty)
+                  DropdownButtonFormField<String>(
+                    isExpanded: true,
+                    value: groups.any((g) => g.groupId == groupId)
+                        ? groupId
+                        : null,
+                    decoration: const InputDecoration(labelText: '分组'),
+                    items: [
+                      for (final g in groups)
+                        DropdownMenuItem(
+                            value: g.groupId,
+                            child: Text(g.name.isEmpty ? g.groupId : g.name)),
+                    ],
+                    onChanged: (v) => setLocal(() => groupId = v ?? groupId),
                   ),
-                  SizedBox(width: 32, child: Text('${volume.round()}')),
-                ],
-              ),
-            ],
+                Row(
+                  children: [
+                    const Icon(Icons.volume_up, size: 18),
+                    Expanded(
+                      child: Slider(
+                        value: volume,
+                        min: 0,
+                        max: 100,
+                        divisions: 100,
+                        label: volume.round().toString(),
+                        onChanged: (v) => setLocal(() => volume = v),
+                      ),
+                    ),
+                    SizedBox(width: 32, child: Text('${volume.round()}')),
+                  ],
+                ),
+                const Divider(height: 20),
+                // 内容 / 升级 / 重启:各自即时动作,先关本弹窗再走对应流程。
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.playlist_add),
+                      label: const Text('推送内容(仅这一台)'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _pushContentToDeviceDialog(context, state, device);
+                      },
+                    ),
+                    // §23 单台推送升级:复用 _remoteUpdateDialog,目标预锁定该台。
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.system_update_alt),
+                      label: const Text('推送升级'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _remoteUpdateDialog(context, state, lockDevice: device);
+                      },
+                    ),
+                    // §9.4 重启播放端软件(非整机 reboot),二次确认。
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.orange),
+                      icon: const Icon(Icons.restart_alt),
+                      label: const Text('重启播放端'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _confirmRestartDevice(context, state, device);
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('取消')),
-          // §23 单台推送升级:走同一 _remoteUpdateDialog 流程,目标预锁定为该台。
-          // 先关本配置弹窗(pop null → 不触发下方 configureDevice),再在父 context 打开更新弹窗。
-          OutlinedButton.icon(
-            icon: const Icon(Icons.system_update_alt),
-            label: const Text('推送升级'),
-            onPressed: () {
-              Navigator.pop(ctx);
-              _remoteUpdateDialog(context, state, lockDevice: device);
-            },
-          ),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('应用')),
+              child: const Text('应用配置')),
         ],
       ),
     ),
@@ -638,5 +693,351 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     deviceName: nameCtl.text.trim().isEmpty ? null : nameCtl.text.trim(),
     groupId: groupId.isEmpty ? null : groupId,
     volume: volume.round(),
+  );
+}
+
+/// 单台播放控制行(§9/§v1.13):暂停/恢复/停止/上一项/下一项,全部锁定该 deviceId 单播。
+class _DeviceTransportRow extends StatelessWidget {
+  const _DeviceTransportRow({required this.state, required this.deviceId});
+  final WallState state;
+  final String deviceId;
+
+  @override
+  Widget build(BuildContext context) {
+    void act(void Function() fn, String toast) {
+      fn();
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text(toast)));
+    }
+
+    Widget btn(IconData icon, String label, void Function() onTap) =>
+        OutlinedButton.icon(
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+          onPressed: onTap,
+        );
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        btn(Icons.pause, '暂停',
+            () => act(() => state.pause(deviceId: deviceId), '已暂停这一台')),
+        btn(Icons.play_arrow, '恢复',
+            () => act(() => state.resume(deviceId: deviceId), '已恢复这一台')),
+        btn(Icons.stop, '停止',
+            () => act(() => state.stop(deviceId: deviceId), '已停止这一台')),
+        btn(Icons.skip_previous, '上一项',
+            () => act(() => state.prev(deviceId: deviceId), '上一项')),
+        btn(Icons.skip_next, '下一项',
+            () => act(() => state.next(deviceId: deviceId), '下一项')),
+      ],
+    );
+  }
+}
+
+/// §9.4 重启播放端二次确认:重启的是**播放软件/服务**(PlayerService + kiosk
+/// MainActivity),不是整机 reboot;当前播放会被打断,进程冷启后自动 resume_last。
+Future<void> _confirmRestartDevice(
+    BuildContext context, WallState state, WallDevice device) async {
+  final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('重启「$name」的播放端?'),
+      content: const Text(
+        '将重启这一台的播放软件/服务(不是整机重启)。当前播放会短暂中断,'
+        '进程冷启动后会自动恢复到上一个任务(resume_last)。',
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消')),
+        FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.orange),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('重启播放端')),
+      ],
+    ),
+  );
+  if (ok != true) return;
+  state.restart(deviceId: device.deviceId);
+  if (context.mounted) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text('已下发重启指令给「$name」')));
+  }
+}
+
+/// 单台 状态/版本 一览(§5.1):版本(appVersion)/在线相位/当前播放项/缓存态/组/
+/// 音量/错误/last_seen,做成好读的一页。占位阶段(status==null)只显示相位与 IP。
+class _DeviceStatusView extends StatelessWidget {
+  const _DeviceStatusView({required this.device});
+  final WallDevice device;
+
+  @override
+  Widget build(BuildContext context) {
+    final st = device.status;
+    final (phaseColor, phaseText) = switch (device.phase) {
+      LinkPhase.connected => (Colors.green, '已连接'),
+      LinkPhase.connecting => (Colors.orange, '连接中'),
+      LinkPhase.discovered => (Colors.blueGrey, '已发现'),
+      LinkPhase.failed => (Colors.red, '失败'),
+    };
+    final rows = <(String, String)>[
+      ('设备 ID', device.deviceId),
+      ('应用版本', st?.appVersion?.isNotEmpty == true ? st!.appVersion! : '—(未上报)'),
+      ('分组', st?.groupId.isNotEmpty == true ? st!.groupId : '—'),
+      ('播放态', st != null ? _stateLabel(st.state) : '—'),
+      if (st?.current != null) ('当前项', st!.current!.name),
+      ('音量', st != null ? '${st.volume}${st.muted ? " (静音)" : ""}' : '—'),
+      ('缓存', _cacheLabel(st)),
+      if (st != null && st.audioMaster) ('出声台', '是'),
+      if (device.ip.isNotEmpty) ('IP', device.ip),
+      ('最近在线', _lastSeenLabel(st?.lastSeen)),
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.circle, size: 10, color: phaseColor),
+            const SizedBox(width: 6),
+            Text(phaseText, style: Theme.of(context).textTheme.titleSmall),
+            const Spacer(),
+            if (st?.appVersion?.isNotEmpty == true)
+              Chip(
+                visualDensity: VisualDensity.compact,
+                label: Text('v${st!.appVersion}',
+                    style: const TextStyle(fontSize: 11)),
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        for (final (k, v) in rows)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 1.5),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 76,
+                  child: Text(k,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).hintColor)),
+                ),
+                Expanded(
+                  child: Text(v,
+                      style: Theme.of(context).textTheme.bodySmall,
+                      overflow: TextOverflow.ellipsis),
+                ),
+              ],
+            ),
+          ),
+        if (st != null && st.errors.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text('错误:${st.errors.join(" · ")}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 11, color: Theme.of(context).colorScheme.error)),
+        ],
+      ],
+    );
+  }
+
+  static String _stateLabel(String s) => switch (s) {
+        'playing' => '播放中',
+        'paused' => '已暂停',
+        'buffering' => '缓冲中',
+        'downloading' => '下载中',
+        'idle' => '空闲',
+        _ => s,
+      };
+
+  static String _cacheLabel(DeviceStatus? st) {
+    if (st == null || st.cache.isEmpty) return '—';
+    final total = st.cache.length;
+    final ready = st.cache.values.where((v) => v == 'ready').length;
+    return '$ready/$total 就绪';
+  }
+
+  static String _lastSeenLabel(int? ms) {
+    if (ms == null || ms <= 0) return '—';
+    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+    final d = DateTime.now().difference(dt);
+    if (d.inSeconds < 60) return '${d.inSeconds}s 前';
+    if (d.inMinutes < 60) return '${d.inMinutes}m 前';
+    if (d.inHours < 24) return '${d.inHours}h 前';
+    return '${dt.year}-${dt.month.toString().padLeft(2, "0")}-${dt.day.toString().padLeft(2, "0")}';
+  }
+}
+
+/// §9.4b 单播推送内容:复用编排栏的 上传→下发列表→预缓存→栅栏起播 流程,但目标锁定
+/// 这一台 deviceId(playlist / cache_prefetch / prepare 全走单播 `to: player:<id>`)。
+/// group_id 沿用该台当前组(仅用于 payload 携带,broker/p2p 靠 device_id 收敛目标)。
+Future<void> _pushContentToDeviceDialog(
+    BuildContext context, WallState state, WallDevice device) async {
+  final items = <MediaItem>[];
+  var uploading = false;
+  var loop = true;
+  var uploadHint = '';
+  final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
+  final groupId = device.status?.groupId ?? '';
+
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) {
+        Future<void> pick(String type) async {
+          final result = await FilePicker.platform.pickFiles(
+            type: type == 'image' ? FileType.image : FileType.video,
+            allowMultiple: true,
+            withData: false,
+          );
+          if (result == null || result.files.isEmpty) return;
+          setLocal(() {
+            uploading = true;
+            uploadHint = '准备上传…';
+          });
+          try {
+            for (final f in result.files) {
+              final path = f.path;
+              if (path == null) continue;
+              setLocal(() => uploadHint = '上传 ${f.name} …');
+              final item = await state.uploadLocalMedia(
+                file: File(path),
+                type: type,
+                name: f.name,
+                durationMs: type == 'image' ? 8000 : null,
+                onProgress: (sent, total) {
+                  if (total > 0) {
+                    setLocal(() => uploadHint =
+                        '上传 ${f.name}  ${(sent / total * 100).toStringAsFixed(0)}%');
+                  }
+                },
+              );
+              setLocal(() => items.add(item));
+            }
+          } catch (e) {
+            setLocal(() => uploadHint = '上传失败: $e');
+          } finally {
+            setLocal(() => uploading = false);
+          }
+        }
+
+        return AlertDialog(
+          title: Text('推送内容 → $name'),
+          content: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('只推给这一台(单播)。内容先缓存到该盒子本地,缓存就绪后从头播放。',
+                      style: Theme.of(ctx).textTheme.bodySmall),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.add_photo_alternate),
+                        label: const Text('加图片'),
+                        onPressed: uploading ? null : () => pick('image'),
+                      ),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.video_call),
+                        label: const Text('加视频'),
+                        onPressed: uploading ? null : () => pick('video'),
+                      ),
+                    ],
+                  ),
+                  if (uploading)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(
+                        children: [
+                          const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2)),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(uploadHint,
+                              style: Theme.of(ctx).textTheme.bodySmall)),
+                        ],
+                      ),
+                    ),
+                  if (items.isEmpty && !uploading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text('尚未添加内容', style: TextStyle(fontSize: 12)),
+                    )
+                  else
+                    ...List.generate(items.length, (i) {
+                      final it = items[i];
+                      return ListTile(
+                        dense: true,
+                        leading:
+                            Icon(it.isImage ? Icons.image : Icons.movie),
+                        title:
+                            Text(it.name, overflow: TextOverflow.ellipsis),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () => setLocal(() => items.removeAt(i)),
+                        ),
+                      );
+                    }),
+                  SwitchListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('循环'),
+                    value: loop,
+                    onChanged: (v) => setLocal(() => loop = v),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: uploading ? null : () => Navigator.pop(ctx),
+                child: const Text('取消')),
+            FilledButton.icon(
+              icon: const Icon(Icons.play_circle),
+              label: const Text('推送并播放'),
+              onPressed: (uploading || items.isEmpty)
+                  ? null
+                  : () {
+                      final pid =
+                          'pl-${device.deviceId}-${uuid4().substring(0, 6)}';
+                      // 单播:playlist + cache_prefetch + 栅栏 prepare 全锁这一台。
+                      state.sendPlaylist(
+                        playlistId: pid,
+                        groupId: groupId,
+                        sync: false,
+                        loop: loop,
+                        items: items,
+                        deviceId: device.deviceId,
+                      );
+                      state.cachePrefetch(items, deviceId: device.deviceId);
+                      state.prepareWithBarrier(
+                        playlistId: pid,
+                        groupId: groupId,
+                        deviceId: device.deviceId,
+                      );
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context)
+                        ..clearSnackBars()
+                        ..showSnackBar(SnackBar(
+                            content: Text('已向「$name」推送 ${items.length} 项(缓存就绪后播放)')));
+                    },
+            ),
+          ],
+        );
+      },
+    ),
   );
 }
