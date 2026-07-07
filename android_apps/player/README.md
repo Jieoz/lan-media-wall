@@ -8,13 +8,27 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.11.0 / versionCode 28`** (see `app/build.gradle.kts`).
+> **Current build: `versionName 1.13.0 / versionCode 32`** — derived from
+> `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
+> `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
+> **do not hardcode the version in Gradle**.
 > The **Settings screen shows this version** at the top of the device-info line
 > (`版本: v<name> (build <code>)`), read from `BuildConfig` — single source of truth,
 > so what you see on-screen always matches the installed build.
 > `versionCode` MUST increment on every release — it's how Android decides "this is
 > newer". Bumping `versionName` alone can cause the update to be rejected as the same
 > version. See the release checklist in the root README.
+
+> **HOME/SETUP 物理键回播放墙(v1.13).** QZX_C1 等盒子的物理「回主页」键实测发的是
+> `KEY_SETUP` = `KEYCODE_SETTINGS`(176),**不是** `KEY_HOME`。`MainActivity.onKeyDown`
+> 新增 `KEYCODE_SETTINGS` 分支:消费该键(不让它弹系统设置/漏进播放器)并 `goToWall()`
+> 把播放墙(`MainActivity`,`launchMode=singleTask`)以 `FLAG_ACTIVITY_REORDER_TO_FRONT
+> | SINGLE_TOP` 重新拉到前台。`KEY_HOME` 仍由 `HomeAlias`(category HOME)兜底——**双键
+> 兜底**,哪种键位的盒子都能回墙。
+
+> **`restart` 命令(v1.13).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
+> 命令白名单含 `"restart"` → `hRestart` 分支**重启播放软件(重进播放墙,非整机 reboot)**。
+> 与「重启后自动恢复播放」(v1.12)配合:重启后按 last_task 从磁盘内容寻址重建 ready 索引续播。
 
 > **Release signing (v1.11.0, §根因B — 覆盖升级/远程 update_app 的前提).** The
 > `release` buildType signs with a **fixed production certificate** decoded by CI

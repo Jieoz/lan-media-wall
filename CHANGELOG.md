@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.13.0] — 2026-07-07
+
+### Added
+- **单台设备面板 · 四控(遥控端)**: 设备墙里单击一台盒子的详情弹窗,除既有改名/设组/音量/推送升级外,新增只针对**这一台 `deviceId`** 的操作:①**单台播放控制**——暂停/恢复/停止(`WallState.pause/resume/stop(deviceId:)`,`remote_flutter/lib/ui/device_wall_pane.dart`);②**单播推送内容**——复用编排上传+下发逻辑,目标锁定单台(playlist/prepare-play 走单播);③**状态/版本一览**——内部 `_DeviceStatusView` 展示 `DeviceStatus` 的应用版本(`appVersion`)/在线相位/当前播放项/缓存态/组/音量;④**restart 按钮**(带二次确认)。协议侧 `messages.dart` 新增 `DeviceStatus.appVersion` 字段(+`fromMap` 解析)与 `Commands.restart(...)`,状态侧 `wall_state.dart` 新增 `restart({groupId, deviceId})`。
+- **`restart` 命令(Android player 后端)**: `PlayerService.kt` 命令白名单新增 `"restart"` → `hRestart` 分支,**重启播放软件(重进播放墙,非整机 reboot)**;配合 v1.12「重启自动恢复播放」按 last_task 从磁盘内容寻址续播。
+- **HOME/SETUP 物理键回播放墙(Android player)**: QZX_C1 等盒子的物理「回主页」键实测发的是 `KEY_SETUP`=`KEYCODE_SETTINGS`(176) 而非 `KEY_HOME`(真机 `getevent` 实证)。`MainActivity.onKeyDown` 新增 `KEYCODE_SETTINGS` 分支:消费该键(不弹系统设置/不漏进播放器)并 `goToWall()` 把播放墙(`MainActivity`,`launchMode=singleTask`)以 `FLAG_ACTIVITY_REORDER_TO_FRONT | SINGLE_TOP` 重新拉到前台;`KEY_HOME` 仍由 `HomeAlias`(category HOME)兜底——**双键兜底**,哪种键位的盒子都能回墙。
+
+### Changed
+- **版本单一真相源升到 `1.13.0+32`**: 改 `remote_flutter/pubspec.yaml` 的 `version:` 一行即全端同步——控制端 APK 由 CI `--build-name/--build-number` 派生,播放端 `android_apps/player/app/build.gradle.kts` 在 Gradle-config 时读同一行派生 `versionName/versionCode`,不在 Gradle 里硬编码版本。
+
 ## [v1.12.0] — 2026-07-07
 
 ### Added
