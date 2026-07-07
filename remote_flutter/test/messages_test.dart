@@ -194,6 +194,19 @@ void main() {
       final p = Commands.prepare(playlistId: 'pl-1', groupId: 'g');
       expect(p['start_index'], 0);
       expect(p['seek_ms'], 0);
+      expect(p.containsKey('prefetch'), isFalse);
+      expect(p.containsKey('barrier_timeout_ms'), isFalse);
+    });
+
+    test('prepare 可携带预缓存栅栏参数', () {
+      final p = Commands.prepare(
+        playlistId: 'pl-1',
+        groupId: 'g',
+        prefetch: true,
+        barrierTimeoutMs: 120000,
+      );
+      expect(p['prefetch'], isTrue);
+      expect(p['barrier_timeout_ms'], 120000);
     });
 
     test('set_volume clamp 到 0..100', () {

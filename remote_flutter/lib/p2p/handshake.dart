@@ -154,11 +154,18 @@ class HandshakeOrchestrator {
     // 优先按 prepareId 精确匹配；缺失时按 group+playlist 回退（§9.1 向后兼容）。
     final s = _match(prepareId: prepareId, groupId: groupId, playlistId: playlistId);
     if (s == null) {
-      _log('ready 未匹配任何在途会话（device=$deviceId）');
+      _log('ready 未匹配任何在途会话（device=$deviceId, prepare_id=${prepareId ?? ''}, ready=$ready）');
       return;
     }
     final justComplete =
         s.onReady(deviceId: deviceId, prepareId: prepareId, ready: ready);
+    if (!ready) {
+      _log('ready($deviceId) = false，会话 ${s.prepareId} 继续等待缓存/超时');
+    } else if (!s.targets.contains(deviceId)) {
+      _log('ready($deviceId) 不在会话 ${s.prepareId} 目标内，忽略');
+    } else {
+      _log('ready($deviceId) 命中会话 ${s.prepareId}: ${s.ready.length}/${s.targets.length}');
+    }
     if (justComplete) _fire(s.prepareId, timedOut: false);
   }
 

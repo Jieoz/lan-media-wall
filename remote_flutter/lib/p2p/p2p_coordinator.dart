@@ -416,6 +416,8 @@ class P2pCoordinator {
     int startIndex = 0,
     int seekMs = 0,
     int? readyTimeoutMsOverride,
+    bool prefetchBarrier = false,
+    int barrierTimeoutMs = 120000,
   }) {
     final prepareId = uuid4();
     final devices =
@@ -455,6 +457,8 @@ class P2pCoordinator {
       startIndex: startIndex,
       seekMs: seekMs,
       prepareId: prepareId,
+      prefetch: prefetchBarrier,
+      barrierTimeoutMs: prefetchBarrier ? barrierTimeoutMs : null,
     );
     for (final id in targets) {
       _sendTo(id, 'prepare', to: 'player:$id', payload: payload);

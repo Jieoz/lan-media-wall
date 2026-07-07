@@ -356,6 +356,8 @@ class Commands {
     int startIndex = 0,
     int seekMs = 0,
     String? prepareId,
+    bool prefetch = false,
+    int? barrierTimeoutMs,
   }) =>
       {
         'playlist_id': playlistId,
@@ -363,6 +365,8 @@ class Commands {
         'start_index': startIndex,
         'seek_ms': seekMs,
         if (prepareId != null && prepareId.isNotEmpty) 'prepare_id': prepareId,
+        if (prefetch) 'prefetch': true,
+        if (barrierTimeoutMs != null) 'barrier_timeout_ms': barrierTimeoutMs,
       };
 
   /// play_at（§9.2）。p2p 模式下遥控端收齐 ready 后直接下发给各成员。

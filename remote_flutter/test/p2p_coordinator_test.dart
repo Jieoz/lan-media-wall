@@ -272,6 +272,45 @@ void main() {
       expect(links['hb']!.sent.where((s) => _parse(s).type == 'play_at').length, 1);
     });
 
+    test('p2p 预缓存栅栏: prepare 携带 prefetch 参数且 ready=false 只等待不点火', () async {
+      late FakeWsLink link;
+      final logs = <String>[];
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 100000,
+        readyTimeoutMs: 120000,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onLog = logs.add;
+      coord.setPeers([const P2pPeer(deviceId: 'a', host: 'ha', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+      coord.handleFrame('a', frame(openCodec(), 'status', {'device_id': 'a', 'group_id': 'default'}));
+      link.sent.clear();
+
+      final prepareId = coord.startSync(
+        playlistId: 'pl-1',
+        groupId: 'default',
+        prefetchBarrier: true,
+        readyTimeoutMsOverride: 120000,
+      );
+
+      final prep = _parse(link.sent.firstWhere((s) => _parse(s).type == 'prepare'));
+      expect(prep.payload['prepare_id'], prepareId);
+      expect(prep.payload['prefetch'], isTrue);
+      expect(prep.payload['barrier_timeout_ms'], 120000);
+
+      coord.handleFrame('a', frame(openCodec(), 'ready', {
+        'device_id': 'a',
+        'prepare_id': prepareId,
+        'group_id': 'default',
+        'ready': false,
+      }));
+
+      expect(link.sent.where((s) => _parse(s).type == 'play_at'), isEmpty);
+      expect(logs.any((l) => l.contains('ready(a) = false')), isTrue);
+    });
+
     test('身份归一(根因A): welcome 带真实 device_id → 连接从占位 key 重绑定', () async {
       late FakeWsLink link;
       final logs = <String>[];

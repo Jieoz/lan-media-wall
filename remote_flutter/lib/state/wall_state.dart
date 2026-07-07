@@ -834,6 +834,8 @@ class WallState extends ChangeNotifier {
         startIndex: startIndex,
         seekMs: seekMs,
         readyTimeoutMsOverride: 120000,
+        prefetchBarrier: true,
+        barrierTimeoutMs: 120000,
       );
       return;
     }
