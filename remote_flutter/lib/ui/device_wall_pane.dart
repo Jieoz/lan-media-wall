@@ -78,9 +78,10 @@ class _ActionsBar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           // §23 远程更新:整墙/整组免逐台 adb 刷机。broker/P2P 均可用。
-          IconButton(
-            tooltip: '远程更新固件 (APK)',
+          // 从纯图标改为带可见文字的按钮(与「新建组」风格一致),提升可发现性。
+          OutlinedButton.icon(
             icon: const Icon(Icons.system_update_alt),
+            label: const Text('更新固件'),
             onPressed: () => _remoteUpdateDialog(context, state),
           ),
         ],
@@ -91,7 +92,12 @@ class _ActionsBar extends StatelessWidget {
 
 /// §23 远程自更新:选 APK → 暴露为被控端可 GET 的 URL(得 sha256) → 填目标
 /// versionCode + 目标(某台/某组/全部) → 下发 update_app。被控端四护栏二次校验才装。
-Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
+///
+/// [lockDevice] 非空时(从单设备详情弹窗「推送升级」入口进入):目标预锁定为该台
+/// (targetKind='device'、targetDeviceId=该 device.deviceId),且隐藏目标类型选择器,
+/// 只给这一台推。为空(顶部整墙入口)时保持原行为:默认 all、可自由选 全部/组/单台。
+Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
+    {WallDevice? lockDevice}) async {
   final picked = await FilePicker.platform.pickFiles(
     type: FileType.custom,
     allowedExtensions: const ['apk'],
@@ -104,9 +110,11 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
   final versionCtl = TextEditingController();
   final groups = state.groups;
   final devices = state.wallDevices;
-  var targetKind = 'all';
+  // lockDevice 非空 → 预锁定到该台;否则整墙入口默认 all。
+  var targetKind = lockDevice != null ? 'device' : 'all';
   String? targetGroupId = groups.isEmpty ? null : groups.first.groupId;
-  String? targetDeviceId = devices.isEmpty ? null : devices.first.deviceId;
+  String? targetDeviceId = lockDevice?.deviceId ??
+      (devices.isEmpty ? null : devices.first.deviceId);
   var uploading = false;
   String? uploadedUrl, uploadedSha;
 
@@ -133,18 +141,25 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
                 ),
               ),
               const SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                isExpanded: true,
-                value: targetKind,
-                decoration: const InputDecoration(labelText: '目标类型'),
-                items: const [
-                  DropdownMenuItem(value: 'all', child: Text('全部设备')),
-                  DropdownMenuItem(value: 'group', child: Text('指定分组')),
-                  DropdownMenuItem(value: 'device', child: Text('指定单台')),
-                ],
-                onChanged: (v) => setLocal(() => targetKind = v ?? 'all'),
-              ),
-              if (targetKind == 'group') ...[
+              // 单设备入口:目标已锁定为该台,不再给目标类型选择器(只显示锁定提示)。
+              if (lockDevice != null)
+                Text(
+                  '目标:${lockDevice.deviceName.isEmpty ? lockDevice.deviceId : lockDevice.deviceName}（已锁定这一台）',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                )
+              else
+                DropdownButtonFormField<String>(
+                  isExpanded: true,
+                  value: targetKind,
+                  decoration: const InputDecoration(labelText: '目标类型'),
+                  items: const [
+                    DropdownMenuItem(value: 'all', child: Text('全部设备')),
+                    DropdownMenuItem(value: 'group', child: Text('指定分组')),
+                    DropdownMenuItem(value: 'device', child: Text('指定单台')),
+                  ],
+                  onChanged: (v) => setLocal(() => targetKind = v ?? 'all'),
+                ),
+              if (lockDevice == null && targetKind == 'group') ...[
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   isExpanded: true,
@@ -159,7 +174,7 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state) async {
                   onChanged: (v) => setLocal(() => targetGroupId = v),
                 ),
               ],
-              if (targetKind == 'device') ...[
+              if (lockDevice == null && targetKind == 'device') ...[
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   isExpanded: true,
@@ -600,6 +615,16 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('取消')),
+          // §23 单台推送升级:走同一 _remoteUpdateDialog 流程,目标预锁定为该台。
+          // 先关本配置弹窗(pop null → 不触发下方 configureDevice),再在父 context 打开更新弹窗。
+          OutlinedButton.icon(
+            icon: const Icon(Icons.system_update_alt),
+            label: const Text('推送升级'),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _remoteUpdateDialog(context, state, lockDevice: device);
+            },
+          ),
           FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('应用')),
