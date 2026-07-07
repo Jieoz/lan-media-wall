@@ -165,15 +165,115 @@ jobs:
             grep -nE 'minSdk|compileSdk' "$GRADLE" || true
           done
 
+      # Wire a fixed RELEASE signingConfig into the freshly-scaffolded Gradle so
+      # the controller APK is signed with the SAME keystore every build. Root
+      # fix for the "signature mismatch on 11.1->11.2 upgrade" bug: `flutter
+      # create` generates a build.gradle whose release buildType uses
+      # `signingConfigs.debug`, and the GitHub runner regenerates its debug
+      # keystore every run -> every version got a DIFFERENT cert -> Android
+      # rejected in-place overwrite-updates. This injects a release signingConfig
+      # that reads android/key.properties (written from Secrets below); when no
+      # keystore is present it falls back to debug-signing, so keyless CI still
+      # builds installable (but non-overwrite-updatable) APKs.
+      - name: Inject release signingConfig into generated Gradle
+        working-directory: remote_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io, os, re, sys
+
+          def patch_groovy(path):
+              src = io.open(path, encoding="utf-8").read()
+              if "LMW_RELEASE_SIGNING" in src:
+                  print(path, "already patched"); return True
+              props = (
+                  "// LMW_RELEASE_SIGNING — load fixed keystore creds (written from CI Secrets)\n"
+                  "def lmwKeystoreFile = rootProject.file('key.properties')\n"
+                  "def lmwKeystoreProps = new Properties()\n"
+                  "if (lmwKeystoreFile.exists()) { lmwKeystoreProps.load(new FileInputStream(lmwKeystoreFile)) }\n\n"
+              )
+              m = re.search(r'(?m)^android\s*\{', src)
+              if not m:
+                  print(path, "NO android{ block", file=sys.stderr); return False
+              src = src[:m.start()] + props + src[m.start():]
+              m = re.search(r'(?m)^android\s*\{', src)
+              signing = (
+                  "\n    signingConfigs {\n"
+                  "        release {\n"
+                  "            if (lmwKeystoreFile.exists()) {\n"
+                  "                storeFile file(lmwKeystoreProps['storeFile'])\n"
+                  "                storePassword lmwKeystoreProps['storePassword']\n"
+                  "                keyAlias lmwKeystoreProps['keyAlias']\n"
+                  "                keyPassword lmwKeystoreProps['keyPassword']\n"
+                  "            }\n"
+                  "        }\n"
+                  "    }\n"
+              )
+              src = src[:m.end()] + signing + src[m.end():]
+              new = ("signingConfig lmwKeystoreFile.exists() ? "
+                     "signingConfigs.release : signingConfigs.debug")
+              src2 = re.sub(r'signingConfig\s+signingConfigs\.debug', new, src)
+              if src2 == src:
+                  print(path, "WARN: release buildType 'signingConfig signingConfigs.debug' not found; "
+                        "release may not pick up the config", file=sys.stderr)
+              io.open(path, "w", encoding="utf-8").write(src2)
+              print(path, "patched (groovy)"); return True
+
+          def patch_kts(path):
+              src = io.open(path, encoding="utf-8").read()
+              if "LMW_RELEASE_SIGNING" in src:
+                  print(path, "already patched"); return True
+              if "import java.util.Properties" not in src:
+                  src = "import java.util.Properties\nimport java.io.FileInputStream\n" + src
+              props = (
+                  "// LMW_RELEASE_SIGNING\n"
+                  "val lmwKeystoreFile = rootProject.file(\"key.properties\")\n"
+                  "val lmwKeystoreProps = Properties()\n"
+                  "if (lmwKeystoreFile.exists()) { lmwKeystoreProps.load(FileInputStream(lmwKeystoreFile)) }\n\n"
+              )
+              m = re.search(r'(?m)^android\s*\{', src)
+              if not m:
+                  print(path, "NO android{ block", file=sys.stderr); return False
+              src = src[:m.start()] + props + src[m.start():]
+              m = re.search(r'(?m)^android\s*\{', src)
+              signing = (
+                  "\n    signingConfigs {\n"
+                  "        create(\"release\") {\n"
+                  "            if (lmwKeystoreFile.exists()) {\n"
+                  "                storeFile = file(lmwKeystoreProps[\"storeFile\"] as String)\n"
+                  "                storePassword = lmwKeystoreProps[\"storePassword\"] as String\n"
+                  "                keyAlias = lmwKeystoreProps[\"keyAlias\"] as String\n"
+                  "                keyPassword = lmwKeystoreProps[\"keyPassword\"] as String\n"
+                  "            }\n"
+                  "        }\n"
+                  "    }\n"
+              )
+              src = src[:m.end()] + signing + src[m.end():]
+              new = ('signingConfig = if (lmwKeystoreFile.exists()) '
+                     'signingConfigs.getByName("release") else signingConfigs.getByName("debug")')
+              src2 = re.sub(r'signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)', new, src)
+              if src2 == src:
+                  print(path, "WARN: release buildType debug signingConfig not found", file=sys.stderr)
+              io.open(path, "w", encoding="utf-8").write(src2)
+              print(path, "patched (kts)"); return True
+
+          done = False
+          if os.path.exists("android/app/build.gradle"):
+              done = patch_groovy("android/app/build.gradle") or done
+          if os.path.exists("android/app/build.gradle.kts"):
+              done = patch_kts("android/app/build.gradle.kts") or done
+          if not done:
+              print("ERROR: no android/app/build.gradle[.kts] to patch", file=sys.stderr)
+              sys.exit(1)
+          PY
+          echo "--- signingConfig-related lines after patch ---"
+          grep -nE 'signingConfig|LMW_RELEASE_SIGNING|lmwKeystore' android/app/build.gradle android/app/build.gradle.kts 2>/dev/null || true
+
       - name: Pub get
         working-directory: remote_flutter
         run: flutter pub get
 
-      # Release + split-per-abi: turns the old ~142 MB fat debug APK into small
-      # per-arch release APKs (app-armeabi-v7a-release.apk / app-arm64-v8a-
-      # release.apk / app-x86_64-release.apk, typically ~20-40 MB each). With no
-      # keystore these are UNSIGNED — fine for sideload; a signed set is built
-      # below when keystore secrets are present.
       # Single source of truth for the version: pubspec.yaml (`version: X.Y.Z+N`).
       # Parsed here so the APK's internal versionName/versionCode ALWAYS match the
       # tag — no hardcoded number to drift (root fix for the v1.8/1.9/1.10 drift).
@@ -189,37 +289,14 @@ jobs:
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "::notice::controller version_name=$NAME version_code=$CODE (from pubspec)"
 
-      - name: Build release APKs (split per ABI)
-        working-directory: remote_flutter
-        run: flutter build apk --release --split-per-abi --build-name=${{ steps.ver.outputs.name }} --build-number=${{ steps.ver.outputs.code }}
-
-      - name: Upload release APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: lan-media-wall-controller-android-release
-          path: remote_flutter/build/app/outputs/flutter-apk/*-release.apk
-          if-no-files-found: error
-
-      # --- Optional signed release APK -------------------------------------
-      # Runs only when ALL keystore secrets are present. Decode the base64
-      # keystore, write key.properties, and let Gradle pick up the signing
-      # config. If any secret is absent, the release build is skipped and CI
-      # still passes with the debug artifact.
-      - name: Check for release keystore
+      # Decode the FIXED release keystore from Secrets and write key.properties
+      # so the injected signingConfig signs with a stable cert. Reuses the SAME
+      # four Secrets as the player workflow (repo-level, shared across workflows)
+      # so controller + player share one signing identity. If the Secret is
+      # absent the build falls back to debug-signing (installable sideload, but
+      # no cross-version overwrite-update) and CI still passes.
+      - name: Prepare release signing (if keystore secret present)
         id: keystore
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "have=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "have=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No ANDROID_KEYSTORE_BASE64 secret — skipping signed release APK."
-          fi
-
-      - name: Build release APK (signed)
-        if: steps.keystore.outputs.have == 'true'
         working-directory: remote_flutter
         shell: bash
         env:
@@ -228,25 +305,55 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          cat > android/key.properties <<EOF
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            cat > android/key.properties <<EOF
           storeFile=$RUNNER_TEMP/release.keystore
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-          flutter build apk --release --split-per-abi --build-name=${{ steps.ver.outputs.name }} --build-number=${{ steps.ver.outputs.code }} || {
-            echo "::warning::Signed release build failed (likely signingConfig not wired into the generated Gradle). Unsigned release APKs already uploaded."
-            exit 0
-          }
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release keystore present — controller APK will be signed with the fixed cert."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret — controller APK will be DEBUG-signed (installable, but NO cross-version overwrite-update). Add the keystore Secrets to enable in-place upgrades."
+          fi
 
-      - name: Upload signed release APKs
-        if: steps.keystore.outputs.have == 'true'
+      # One build path: the injected signingConfig signs with the fixed cert when
+      # key.properties exists, else debug-signs. No silent fallback — if a
+      # keystore IS present and signing fails, the build fails loudly.
+      - name: Build release APKs (split per ABI)
+        working-directory: remote_flutter
+        run: flutter build apk --release --split-per-abi --build-name=${{ steps.ver.outputs.name }} --build-number=${{ steps.ver.outputs.code }}
+
+      # Verify the signing identity so a silent debug-fallback can never ship
+      # again. When a keystore was provided, assert the APK is NOT signed by the
+      # Android debug cert (CN=Android Debug); fail the build if it is.
+      - name: Verify APK signing identity
+        if: steps.keystore.outputs.signed == 'true'
+        working-directory: remote_flutter
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(ls build/app/outputs/flutter-apk/*-release.apk | head -1)
+          echo "verifying signer of: $APK"
+          BT=$(ls "$ANDROID_HOME"/build-tools/ | sort -V | tail -1)
+          APKSIGNER="$ANDROID_HOME/build-tools/$BT/apksigner"
+          CERT="$("$APKSIGNER" verify --print-certs "$APK")"
+          echo "$CERT"
+          if echo "$CERT" | grep -qi "CN=Android Debug"; then
+            echo "::error::Release APK is DEBUG-signed despite a keystore being present — signingConfig wiring is broken."
+            exit 1
+          fi
+          echo "::notice::APK signed with the fixed release cert (not the debug cert)."
+
+      - name: Upload release APKs
         uses: actions/upload-artifact@v4
         with:
-          name: lan-media-wall-controller-android-release-signed
+          name: lan-media-wall-controller-android-release
           path: remote_flutter/build/app/outputs/flutter-apk/*-release.apk
-          if-no-files-found: warn
+          if-no-files-found: error
 
       # --- Attach APKs to a GitHub Release on tag pushes (v*) --------------
       # Glob matches every per-ABI release APK produced above (signed if a
