@@ -131,4 +131,86 @@ class CacheEvictionTest {
         )
         assertEquals(2 * gb, q)
     }
+
+    // --- 山寨假容量红线 (G) ------------------------------------------------
+
+    @Test
+    fun fake_capacity_never_raises_quota_above_absolute_ceiling() {
+        val gb = 1024L * 1024 * 1024
+        // A fake box reports 103G usable AND the operator was tricked into a huge
+        // 50G cap. The old code trusted usableSpace → 50% of 103G = 51G → cap 50G
+        // wins → writes straight through the real颗粒. New: clamped to the 2 GiB
+        // absolute ceiling regardless.
+        val q = CacheEviction.effectiveQuota(
+            configuredMaxBytes = 50 * gb,
+            usableSpaceBytes = 103 * gb,
+            currentCacheBytes = 0,
+        )
+        assertEquals(CacheEviction.ABSOLUTE_MAX_BYTES, q)
+        assertTrue(q <= CacheEviction.ABSOLUTE_MAX_BYTES)
+    }
+
+    @Test
+    fun space_percent_can_only_tighten_not_grow() {
+        val gb = 1024L * 1024 * 1024
+        // genuinely tiny real disk (256MB free) → space term pulls quota BELOW
+        // the 2GiB ceiling for headroom.
+        val small = CacheEviction.effectiveQuota(
+            configuredMaxBytes = 2 * gb,
+            usableSpaceBytes = 256L * 1024 * 1024,
+            currentCacheBytes = 0,
+        )
+        assertEquals(128L * 1024 * 1024, small) // 50% of 256MB
+        assertTrue(small < CacheEviction.ABSOLUTE_MAX_BYTES)
+    }
+
+    @Test
+    fun operator_can_only_tighten_below_ceiling() {
+        val mb = 1024L * 1024
+        // operator sets a smaller 512MB cap on a roomy (fake) disk → honored.
+        val q = CacheEviction.effectiveQuota(
+            configuredMaxBytes = 512 * mb,
+            usableSpaceBytes = 999L * 1024 * mb,
+            currentCacheBytes = 0,
+        )
+        assertEquals(512 * mb, q)
+    }
+
+    @Test
+    fun zero_configured_falls_back_to_absolute_ceiling() {
+        val gb = 1024L * 1024 * 1024
+        // 0 = operator didn't tighten → use the absolute ceiling, not unlimited.
+        val q = CacheEviction.effectiveQuota(
+            configuredMaxBytes = 0,
+            usableSpaceBytes = 500 * gb,
+            currentCacheBytes = 0,
+        )
+        assertEquals(CacheEviction.ABSOLUTE_MAX_BYTES, q)
+    }
+
+    // --- 孤儿媒体回收 (G) --------------------------------------------------
+
+    @Test
+    fun orphans_are_unreferenced_and_unprotected() {
+        val files = listOf(
+            f("current", 100, 1, prot = true),  // current playlist media
+            f("part", 50, 2, prot = true),      // .part in flight
+            f("referenced", 100, 3),            // still in a recent playlist
+            f("orphan1", 100, 4),               // nobody references it
+            f("orphan2", 100, 5),
+        )
+        val orphans = CacheEviction.selectOrphans(
+            files, referencedIds = setOf("referenced"),
+        )
+        assertEquals(listOf("orphan1", "orphan2"), orphans)
+    }
+
+    @Test
+    fun protected_is_never_an_orphan_even_if_unreferenced() {
+        // last_task media that dropped out of referencedIds must still survive
+        // because it's marked protected — the black-screen red line.
+        val files = listOf(f("last_task_media", 100, 1, prot = true))
+        val orphans = CacheEviction.selectOrphans(files, referencedIds = emptySet())
+        assertTrue(orphans.isEmpty())
+    }
 }

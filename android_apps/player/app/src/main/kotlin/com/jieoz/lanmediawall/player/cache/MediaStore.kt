@@ -29,9 +29,16 @@ class MediaStore(context: Context) {
 
     // --- playlists ----------------------------------------------------
     fun storePlaylist(playlist: Playlist) {
+        // §6: also record recency (most-recent-first, de-duped) so we can prune
+        // stale playlist records and compute the "still referenced" media set for
+        // orphan reclaim without a full-disk scan.
+        val order = recentIds().toMutableList()
+        order.remove(playlist.playlistId)
+        order.add(0, playlist.playlistId)
         prefs.edit()
             .putString(playlistKey(playlist.playlistId),
                 CanonicalJson.encode(playlist.raw))
+            .putString(KEY_RECENT_PLAYLISTS, order.joinToString(SEP))
             .apply()
     }
 
@@ -45,6 +52,43 @@ class MediaStore(context: Context) {
     }
 
     private fun playlistKey(id: String) = "playlist:$id"
+
+    /** Recorded playlist ids, most-recent-first. Empty when none stored yet. */
+    private fun recentIds(): List<String> =
+        prefs.getString(KEY_RECENT_PLAYLISTS, null)
+            ?.split(SEP)?.filter { it.isNotBlank() } ?: emptyList()
+
+    /**
+     * §6 主动清理:返回**仍需保留**的 playlist(最近 [keepRecent] 条 + last_task
+     * 指向的),供 service 展开成"仍被引用的媒体路径集"喂给孤儿回收。同时把 lmw_media.xml
+     * 里堆积的过期 playlist 记录**剪掉**(删 prefs 条目 + 从 recent 列表移除),避免历史
+     * pl-default-xxx 无限膨胀。纯 prefs 读写,低频(仅新 playlist/prepare 时触发)。
+     */
+    fun pruneAndListReferenced(keepRecent: Int): List<Playlist> {
+        val lastId = getLastTask()?.playlistId
+        val order = recentIds()
+        // keep set = most-recent N ∪ last_task's playlist (never drop what
+        // resume_last points at — black-screen red line).
+        val keep = LinkedHashSet<String>()
+        order.take(keepRecent.coerceAtLeast(1)).forEach { keep.add(it) }
+        lastId?.let { keep.add(it) }
+
+        val editor = prefs.edit()
+        var changed = false
+        for (id in order) {
+            if (id !in keep) {
+                editor.remove(playlistKey(id))
+                changed = true
+            }
+        }
+        // rewrite the recency list to only the kept ids (preserve their order).
+        val newOrder = order.filter { it in keep }
+        if (changed || newOrder.size != order.size) {
+            editor.putString(KEY_RECENT_PLAYLISTS, newOrder.joinToString(SEP))
+            editor.apply()
+        }
+        return newOrder.mapNotNull { loadPlaylist(it) }
+    }
 
     // --- last task (resume_last, §10/§11) -----------------------------
     fun setLastTask(task: LastTask?) {
@@ -68,6 +112,8 @@ class MediaStore(context: Context) {
 
     companion object {
         private const val KEY_LAST_TASK = "last_task"
+        private const val KEY_RECENT_PLAYLISTS = "recent_playlists"
+        private const val SEP = "\n"
     }
 }
 

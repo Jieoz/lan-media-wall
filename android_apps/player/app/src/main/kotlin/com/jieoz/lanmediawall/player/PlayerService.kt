@@ -624,7 +624,28 @@ class PlayerService : Service() {
         index = 0
         mediaStore.storePlaylist(pl)
         updateCacheProtection(pl)
+        // §6 假闪存:投送新内容后、拉新媒体之前,先回收不再被任何近期 playlist 引用的
+        // 旧媒体,给真实颗粒腾余量(prefetch 内部还会做配额 LRU + 写前探针)。
+        reclaimOrphans(pl)
         if (pl.items.isNotEmpty()) downloader.prefetch(pl.items)
+    }
+
+    /**
+     * §6 主动清理孤儿媒体:剪掉过期 playlist 记录,展开"仍被引用的媒体路径集"(最近
+     * [KEEP_RECENT_PLAYLISTS] 条 + last_task + 传入的当前 [current]),回收磁盘上不再
+     * 被任何一份引用的孤儿文件。protected/.part/探针由 downloader 侧兜底保护。
+     */
+    private fun reclaimOrphans(current: Playlist?) {
+        try {
+            val kept = mediaStore.pruneAndListReferenced(KEEP_RECENT_PLAYLISTS)
+            val referenced = HashSet<String>()
+            (kept + listOfNotNull(current)).forEach { pl ->
+                pl.items.forEach { referenced.add(downloader.localPath(it).absolutePath) }
+            }
+            downloader.reclaimOrphans(referenced)
+        } catch (_: Exception) {
+            // reclaim is best-effort hygiene; never let it break playback path.
+        }
     }
 
     /**
@@ -637,6 +658,11 @@ class PlayerService : Service() {
         val protectedFiles = pl?.items?.map { downloader.localPath(it).absolutePath }
             ?.toSet() ?: emptySet()
         downloader.configureQuota(settings.cacheMaxBytes, protectedFiles)
+        // §10/§11 重启恢复:进程重来后 downloader 的 ready 索引是空的,但媒体文件仍在
+        // 磁盘。这里(resumeLast/prepare/play_at 都会经过的收口)按当前 playlist 的 items
+        // 从磁盘重建 ready 索引,使随后的 readyPath 命中本地文件而非回退到失效的 item.url
+        // (黑屏根因)。纯读操作,幂等,已 ready 的不重复登记。
+        pl?.items?.let { if (it.isNotEmpty()) downloader.restoreReadyFromDisk(it) }
     }
 
     // --- §9.1 prepare -------------------------------------------------
@@ -1101,6 +1127,8 @@ class PlayerService : Service() {
         private val VALID_STATES = setOf("playing", "paused", "idle", "buffering", "downloading")
         /** §6.3: default per-image dwell when a playlist item omits duration_ms. */
         private const val DEFAULT_IMAGE_DWELL_MS = 5000L
+        /** §6 孤儿回收:保留最近 N 条 playlist 的媒体(+ last_task),其余视为孤儿。 */
+        private const val KEEP_RECENT_PLAYLISTS = 3
         private val ACKABLE = setOf(
             "prepare", "pause", "resume", "stop", "next", "prev",
             "set_volume", "set_mute", "set_audio_master", "assign_group",

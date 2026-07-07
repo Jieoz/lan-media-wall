@@ -22,6 +22,14 @@ object CacheEviction {
     /** Default absolute cap when the operator hasn't overridden it: 2 GiB. */
     const val DEFAULT_MAX_BYTES: Long = 2L * 1024 * 1024 * 1024
 
+    /**
+     * 山寨假容量红线:一个**绝对**的保守上限,任何 operator 配额 / 空间百分比都
+     * **不得把有效配额抬高到它之上**。这些盒子 `df`/`usableSpace` 上报的容量是假的
+     * (真实颗粒可能只有 8G/16G),所以我们永远不信任设备上报的剩余空间去放大配额。
+     * 2 GiB 是按最坏情况的真实颗粒设想的保守值;operator 只能在 Settings 里往**更小**调。
+     */
+    const val ABSOLUTE_MAX_BYTES: Long = 2L * 1024 * 1024 * 1024
+
     /** Fraction (percent) of currently-available space the cache may occupy. */
     const val DEFAULT_SPACE_PERCENT: Int = 50
 
@@ -42,28 +50,74 @@ object CacheEviction {
     )
 
     /**
-     * Effective quota = the *smaller* of the configured absolute cap and a
-     * percentage of what's physically available (current cache + free disk).
-     * Keeps headroom on a nearly-full small disk so we never fill it to 100%.
+     * Effective quota under the 山寨假容量红线. The result is the **smaller** of:
+     *   1. the configured operator cap, and
+     *   2. a conservative [absoluteMaxBytes] hard ceiling (never信任设备上报容量),
+     * and the space-percentage may **only tighten** it further — never抬高。
      *
-     * @param configuredMaxBytes operator cap (Settings.cacheMaxBytes).
+     * Concretely: `min(configuredMax, absoluteMax)` sets the ceiling; the
+     * %-of-available term can pull the quota *below* that ceiling when the disk
+     * is genuinely small, but it can NEVER raise the quota above the ceiling
+     * (which is the old bug: a fake 100G `usableSpace` computed a huge spaceCap
+     * that let an inflated operator cap write straight through the real颗粒).
+     *
+     * @param configuredMaxBytes operator cap (Settings.cacheMaxBytes). 0 → treat
+     *        as "use the absolute ceiling" (the operator didn't tighten).
      * @param usableSpaceBytes free bytes on the cache volume right now
-     *        (File.usableSpace — excludes what the cache already occupies).
+     *        (File.usableSpace). **Untrusted** on fake-capacity boxes — used only
+     *        to tighten, never to grow, the quota. The write-probe in the
+     *        Downloader is the real "can we still write?" check.
      * @param currentCacheBytes bytes the cache currently occupies.
+     * @param absoluteMaxBytes the conservative hard ceiling (defaults to
+     *        [ABSOLUTE_MAX_BYTES]); the quota can never exceed it.
      */
     fun effectiveQuota(
         configuredMaxBytes: Long,
         usableSpaceBytes: Long,
         currentCacheBytes: Long,
         spacePercent: Int = DEFAULT_SPACE_PERCENT,
+        absoluteMaxBytes: Long = ABSOLUTE_MAX_BYTES,
     ): Long {
+        val absolute = absoluteMaxBytes.coerceAtLeast(0)
+        // 0 = operator didn't set a smaller cap → fall back to the absolute
+        // ceiling (which itself is the最 permissive we ever allow).
+        val configured = configuredMaxBytes.coerceAtLeast(0)
+            .let { if (it == 0L) absolute else it }
+        // Ceiling = the smaller of operator cap and the conservative hard cap.
+        // The operator can only ever move this *down* (a bigger cap is clamped).
+        val ceiling = minOf(configured, absolute)
+
+        // Space-percentage may only *tighten*: compute a %-of-available cap and
+        // take the min with the ceiling. On a fake 100G box the spaceCap is
+        // huge, so min() just yields the ceiling — the fake space can NEVER
+        // raise us above it. On a genuinely tiny disk the spaceCap is small and
+        // pulls the quota below the ceiling for headroom.
+        // Multiply-before-divide so the %-cap is exact (the old `/100*pct` form
+        // double-truncated). Clamp `available` to 1 PiB first so `available*pct`
+        // can't overflow Long even when usableSpace is the Long.MAX_VALUE probe
+        // fallback — 1 PiB ≫ any real ceiling, so the clamp never changes the
+        // min() result on a real box.
         val available = (usableSpaceBytes + currentCacheBytes).coerceAtLeast(0)
+            .coerceAtMost(1L shl 50)
         val pct = spacePercent.coerceIn(1, 100)
-        val spaceCap = available / 100 * pct
-        val cap = minOf(configuredMaxBytes.coerceAtLeast(0), spaceCap)
-        // never return a negative/zero-only-because-of-math quota
-        return cap.coerceAtLeast(0)
+        val spaceCap = available * pct / 100
+        return minOf(ceiling, spaceCap).coerceAtLeast(0)
     }
+
+    /**
+     * 孤儿媒体选择(纯函数,便于单测)。回收**不再被任何活跃 playlist 引用**的媒体:
+     * 从 [files] 中挑出既不在 [referencedIds] 中、又未被 [CacheFile.protected] 保护
+     * 的文件。protected 覆盖当前 playlist 媒体、`.part` 在传文件、last_task 指向的
+     * 文件与探针文件(黑屏红线:绝不误删将要播的媒体)。
+     *
+     * 与 [selectEvictions] 的区别:这里**不看配额/大小**,纯按"是否还被引用"回收,
+     * 是新内容投送前给假闪存腾真实余量的主动清理。
+     */
+    fun selectOrphans(files: List<CacheFile>, referencedIds: Set<String>): List<String> =
+        files.asSequence()
+            .filter { !it.protected && it.id !in referencedIds }
+            .map { it.id }
+            .toList()
 
     /**
      * Decide which files to evict so the *unprotected* footprint fits under

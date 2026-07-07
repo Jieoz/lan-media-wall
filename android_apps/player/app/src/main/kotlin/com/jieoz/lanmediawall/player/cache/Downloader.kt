@@ -130,13 +130,136 @@ class Downloader(
         return if (e?.state == "ready") e.path else null
     }
 
+    /**
+     * §10/§11 重启恢复:进程重来后 [entries] 是空的(纯内存索引),但媒体文件仍在
+     * [cacheDir]。对给定 playlist 的每个 item,按 [localPath] 算出期望文件路径,
+     * 若文件已存在且(有 size 时)大小匹配、且没有对应的 `.part` 未完成文件,就在
+     * [entries] 里登记为 ready —— 使 [readyPath] 重启后仍能命中磁盘缓存,而不是回退到
+     * 早已失效的 `item.url`(黑屏根因)。
+     *
+     * 纯**读**操作:只 stat 文件、写内存索引,不碰磁盘内容(不违反假闪存防过度写红线)。
+     * 已是 ready 的 item 跳过;已在下载中的 item 不动。返回本次新登记的条数。
+     */
+    fun restoreReadyFromDisk(items: List<MediaItem>): Int {
+        var restored = 0
+        for (item in items) {
+            val itemId = item.itemId
+            // 已 ready 或正在处理 → 别覆盖内存里的活状态。
+            val cur = entries[itemId]
+            if (cur != null && cur.state in setOf("ready", "downloading", "verifying")) continue
+            if (inFlight[itemId] == true) continue
+            val target = localPath(item)
+            val part = File(target.parentFile, target.name + ".part")
+            // 完整文件必须存在、无对应 .part、且大小匹配(有 size 时)才算 ready。
+            if (!target.exists() || part.exists()) continue
+            val size = item.size
+            if (size != null && target.length() != size) continue
+            entries[itemId] = CacheEntry(itemId).apply {
+                state = "ready"; progress = 100; path = target
+            }
+            restored++
+        }
+        if (restored > 0) notifyChange()
+        return restored
+    }
+
     /** Queue a batch (§6.2). Ready items are skipped; others get a worker. */
     fun prefetch(items: List<MediaItem>) {
-        // §6: reclaim space before pulling new media so a churning wall never
-        // hits Storage Full. Protect what the incoming batch will reference so
-        // we don't evict a file we're about to (re)use.
+        // §6 假闪存红线:拉新内容**之前**先给真实颗粒腾余量,顺序很重要 ——
+        //  1) 孤儿回收:删掉不再被任何活跃 playlist 引用的旧媒体(reclaimOrphans
+        //     由 service 在收到新 playlist 时先调好,这里只做配额兜底);
+        //  2) 配额 LRU:超出保守硬上限的部分按 LRU 删;
+        //  3) 写前探针:因为不能信 usableSpace,真写一小块验证闪存还能写 —— 探不过
+        //     就判定真实空间已满,跳过这批下载(受保护的当前 playlist 若已缓存则照播,
+        //     不缓存也不会因灌爆假容量把盒子写坏)。
+        // Protect what the incoming batch will reference so we don't evict a file
+        // we're about to (re)use.
         enforceQuota(extraProtected = items.map { localPath(it).absolutePath })
+        if (!probeWritable()) {
+            Log.w(TAG, "prefetch skipped: write-probe failed (real flash full?) — " +
+                "reclaim ran, not writing new media to a fake-capacity volume")
+            return
+        }
         for (item in items) ensureEntryAndStart(item)
+    }
+
+    /**
+     * §6 假闪存红线:反向验证**真实可写空间**。因为 `usableSpace` 在假容量盒子上是
+     * 假的,不能信它放行写入 —— 这里真写一个小测试文件、fsync、读回校验、删除。写失败
+     * 或校验不符 → 真实颗粒已满,返回 false 让调用方停止写入。
+     *
+     * 探针刻意**轻量、低频**(每次 prefetch 批次一次,不是每文件),用完即删,自身
+     * 不产生持续写量(防过度写自身红线)。unlimited(quota=0)时跳过探针(operator
+     * 明确要求不限,不替他做主)。
+     */
+    private fun probeWritable(): Boolean {
+        if (quotaMaxBytes <= 0L) return true // unlimited: operator opted out
+        val probe = File(cacheDir, ".lmw_write_probe")
+        return try {
+            val payload = ByteArray(PROBE_BYTES) { (it and 0x7f).toByte() }
+            java.io.FileOutputStream(probe).use { fos ->
+                fos.write(payload)
+                fos.flush()
+                fos.fd.sync() // force to real颗粒, not just page cache
+            }
+            // read back + verify a fake-capacity volume didn't silently drop it.
+            val readBack = probe.readBytes()
+            readBack.size == payload.size && readBack.first() == payload.first() &&
+                readBack.last() == payload.last()
+        } catch (e: Exception) {
+            Log.w(TAG, "write-probe failed: ${e.javaClass.simpleName}")
+            false
+        } finally {
+            try { probe.delete() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * §6 主动清理孤儿媒体(新):删掉**不再被任何活跃 playlist 引用**的缓存文件,给
+     * 假闪存腾真实余量。由 service 在收到新 playlist/prepare 时、拉新内容之前调用。
+     *
+     * [referencedPaths] 是所有仍需保留的媒体的绝对路径(当前 + 最近 N 条 playlist +
+     * last_task 指向的)。protected 路径、`.part` 在传文件、探针文件永不回收(黑屏红线)。
+     * 纯**读+删**,不产生额外写。返回删除的文件数。
+     */
+    @Synchronized
+    fun reclaimOrphans(referencedPaths: Set<String>): Int {
+        val protectedNow = HashSet(protectedPaths)
+        val onDisk = cacheDir.listFiles()?.filter { it.isFile } ?: return 0
+        val files = onDisk.map { f ->
+            val abs = f.absolutePath
+            val isPart = f.name.endsWith(".part")
+            val isProbe = f.name == ".lmw_write_probe"
+            CacheEviction.CacheFile(
+                id = abs,
+                sizeBytes = f.length(),
+                lastAccessMs = f.lastModified(),
+                // never reclaim: .part in flight, the probe file, protected media.
+                protected = isPart || isProbe || protectedNow.contains(abs),
+            )
+        }
+        val orphans = CacheEviction.selectOrphans(files, referencedPaths)
+        if (orphans.isEmpty()) return 0
+        var deleted = 0
+        var freed = 0L
+        for (path in orphans) {
+            val f = File(path)
+            val len = f.length()
+            if (f.delete()) {
+                deleted++
+                freed += len
+                val it = entries.entries.iterator()
+                while (it.hasNext()) {
+                    if (it.next().value.path?.absolutePath == path) it.remove()
+                }
+            }
+        }
+        if (deleted > 0) {
+            Log.i(TAG, "orphan reclaim: freed ~${freed / (1024 * 1024)}MB " +
+                "($deleted/${orphans.size} unreferenced files)")
+            notifyChange()
+        }
+        return deleted
     }
 
     /**
@@ -354,5 +477,7 @@ class Downloader(
 
     companion object {
         private const val TAG = "lmw.Downloader"
+        /** §6 写前探针大小:够小以免自身造成过度写,够大以真触达闪存写路径。4 MiB。 */
+        private const val PROBE_BYTES = 4 * 1024 * 1024
     }
 }
