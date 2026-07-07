@@ -58,6 +58,10 @@
 | 运维(Phase 2) | 远程重启 / 断电恢复上次任务 / 定时编排(OTA 远程更新已在 v1.10 落地,见上) |
 | 遥控键位与设置入口(v1.10.3) | 被控端 **上上下下(或左上角连点7下)= 打开设置页**(不再 `finish()` 杀进程,YunOS 盒不再"看着像退出软件");**遥控主页键 = 回到播放墙**(`HomeAlias` 默认启用为 HOME 候选,配合禁用 OEM 桌面即直达)。控制端播放编排按钮去歧义:`①仅下发缓存 (不播)` / `②推送并播放` |
 | 推图目标匹配兜底(v1.10.5+) | 扫码直连盒子后「推送并播放」若因 group_id / 连接 key 漂移算出 0 台目标,自动**回退到全部已直连被控端**,绝不静默不发;`GroupExpander` group 比较容忍空格/大小写。`startSync` 与普通 `playlist`/`cache_prefetch`/`set_volume` 下发都带兜底与决定性诊断日志,控制端诊断日志页支持「复制全部」+ 单行选中复制 |
+| P2P 缩略图 & 主动重连(v1.12) | 无 broker/P2P 直连下也能看到设备墙缩略图:把 `thumb_meta`+紧跟二进制帧的两帧配对逻辑抽成共享 `ThumbPairing` 状态机,broker 与 p2p 两路复用同一实现(此前 p2p 路径把 `thumb_meta` 丢进 default 分支丢弃)。P2P 断线新增指数退避主动重连(1s→30s)+ 端点去重防双连接,不再干等下一轮 UDP discover |
+| 重启自动恢复播放(v1.12) | 被控端(Android player)重启后 `Downloader` 按 last_task playlist 从磁盘按内容寻址文件名重建 ready 索引,`readyPath` 命中本地已缓存文件而非回退到已失效的临时 url,修「重启丢内容黑屏」。纯读、幂等,不额外写盘 |
+| 假容量闪存写安全(v1.12,红线) | 扩容/假容量盒子 `df` 报的巨大剩余是假的:配额重构为 `min(configuredMax, 保守绝对上限)`,空间百分比只能**往下收紧绝不放大**;下载前做「真实可写」探针(小文件写+fsync+读回+删,低频);投新内容前主动回收不再被最近 playlist 引用的孤儿媒体(保护当前/`.part`/last_task 引用文件不误删),防写穿真实颗粒变砖 |
+| 升级入口可发现性(v1.12) | 遥控端顶部远程更新按钮从纯图标改为带「更新固件」文字标签;单设备详情弹窗新增「推送升级」入口,走同一 `update_app` 流程但目标预锁定该台(协议不变,仅改可达性) |
 | peer 身份归一 · 根治黑屏+双卡(v1.11.0) | 扫码直连的连接以拨号端点 `host:port` 当占位 key,收到 `welcome`/`status` 拿到**真实 device_id** 后把连接**重绑定**到真实 id,使 `connectedIds` 与 `WallAggregator`/`GroupExpander` 同命名空间:组扇出正常命中、握手目标集匹配 `ready` → `play_at` 正常下发(**不再黑屏**),设备墙**同一盒子只剩一张卡**。v1.10.5 兜底保留但归一后不再是唯一推图路径 |
 | 稳定 release 签名 · 根治覆盖升级(v1.11.0) | player release 改用 CI 从 Secret 解码的**固定 keystore** 签名(替换每版指纹都变的 debug 签名),覆盖安装不再 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`、远程 `update_app`(§23)可升级。无 secret 优雅降级为 debug 签名;公开仓 keystore/密码绝不入库(只走 `${{ secrets.X }}` + `$RUNNER_TEMP`) |
 

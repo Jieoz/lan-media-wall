@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.12.0] — 2026-07-07
+
+### Added
+- **P2P 缩略图**: 把 `thumb_meta`(JSON 文本帧)+ 紧跟二进制 JPEG 帧的两帧配对逻辑抽成共享纯 Dart `ThumbPairing` 状态机(`remote_flutter/lib/protocol/thumb_pairing.dart`),broker 直连与 p2p 直连两路复用同一实现(无分叉)。此前 p2p 路径把 `thumb_meta` 丢进 `default` 分支直接丢弃,是「P2P 看不到设备墙缩略图」的根因。`ws_link` 新增 `binaryStream`(广播流拆 text/binary),`wall_state` 接 `onThumb`。
+- **P2P 断线主动重连**: p2p 协调端断线后按指数退避(1s→30s)主动重拨同一端点,连上清退避;重连前检查端点是否已有活连接(去重防双连接),对端从发现列表移除后不再重连。补 `fakeAsync` 单测覆盖「drop→退避→重拨、不双连接」与「已移除端点不重连」。
+- **重启后自动恢复播放(Android player)**: `Downloader` 启动时按 last_task playlist 从磁盘按内容寻址文件名(`$sha256.$ext`)重建 ready 索引,`readyPath` 重启后命中本地已缓存文件而非回退到已失效的临时媒体 url。纯读、幂等,不额外写盘。
+- **升级入口可发现性(遥控端)**: 顶部远程更新按钮从纯图标 `IconButton` 改为带「更新固件」文字标签的 `OutlinedButton.icon`;单设备详情弹窗新增「推送升级」入口,走同一 `update_app` 流程但 target 预锁定该台(`_remoteUpdateDialog` 加可选 `lockDevice`),协议与下发逻辑不变,仅改可达性。
+
+### Fixed (红线)
+- **假容量闪存写安全**: 扩容/假容量盒子 `df` 上报的巨大剩余空间不可信。`CacheEviction.effectiveQuota` 重构为 `min(configuredMax, 保守绝对上限 2GiB)`,空间百分比只能往下收紧、绝不把配额抬到硬上限之上;`Downloader.probeWritable()` 下载前做真实可写探针(小文件写+fsync+读回+删,每 prefetch 批次一次,低频);`Downloader.reclaimOrphans` + `MediaStore.pruneAndListReferenced` 投新内容前主动回收不再被最近 N 条 playlist 引用的孤儿媒体,保护当前 playlist/`.part`/last_task 引用文件不误删。防止持续写穿真实闪存颗粒把盒子写坏变砖。补 `CacheEvictionTest` 假容量钳制/百分比只下调/孤儿保护单测。
+
+### CI
+- **修复控制端 release 签名注入**: 生成的 `android/app/build.gradle` 用 `signingConfig = signingConfigs.debug`(带 `=`)的新式写法,但 flutter-build 的签名注入正则只匹配旧的无 `=` 空格写法,导致 release keystore 从未接线、APK 一直被 debug 签名,卡在「Verify APK signing identity」门禁。正则改为容忍可选 `= `,替换文本也用 `=` 形式,固定签名恢复生效(跨版本覆盖升级依赖它)。
+
 ## [v1.11.2] — 2026-07-07
 
 ### Fixed
