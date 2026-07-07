@@ -224,7 +224,35 @@ class MainActivity : AppCompatActivity() {
             }
             return true // consume arrows in kiosk
         }
+        // §v1.13 HOME/SETUP 键:QZX_C1 等盒子的物理"回主页"键实测发的是 KEY_SETUP=
+        // KEYCODE_SETTINGS(176),而不是 KEY_HOME。在播放墙上按它:消费掉(别让它弹出
+        // 系统设置/漏进播放器)并把墙重新拉到前台(等价"回到播放墙")。KEY_HOME 仍由
+        // HomeAlias(category HOME)兜底——双键兜底,哪个键位都能回墙。
+        if (keyCode == KeyEvent.KEYCODE_SETTINGS) {
+            goToWall()
+            return true
+        }
         return super.onKeyDown(keyCode, event)
+    }
+
+    /**
+     * 回到播放墙:清掉 kiosk 挂起态并把 MainActivity(singleTask)重新拉到前台。
+     * 已在前台时相当于无害的自我重排;从设置页/其它界面回来时把墙盖回最上层。
+     */
+    private fun goToWall() {
+        KioskState.suspended = false
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                    )
+                },
+            )
+        } catch (_: Throwable) {
+            // 拉墙失败也绝不让 kiosk 崩溃退出。
+        }
     }
 
     /**
