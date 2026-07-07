@@ -1,18 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:remote_flutter/p2p/p2p_coordinator.dart';
 import 'package:remote_flutter/p2p/ws_link.dart';
 import 'package:remote_flutter/protocol/auth_mode.dart';
 import 'package:remote_flutter/protocol/envelope.dart';
 
-/// 内存 fake：记录出站文本，并可注入入站文本。
+/// 内存 fake：记录出站文本，并可注入入站文本/二进制帧。
 class FakeWsLink implements WsLink {
   FakeWsLink(this.uri);
   final Uri uri;
   final List<String> sent = [];
   final _ctrl = StreamController<String>.broadcast();
+  final _bin = StreamController<Uint8List>.broadcast();
   final _ready = Completer<void>();
 
   void completeReady() {
@@ -22,8 +25,19 @@ class FakeWsLink implements WsLink {
   /// 模拟收到一帧。
   void inject(String text) => _ctrl.add(text);
 
+  /// 模拟收到一个二进制帧（§6.4 缩略图 JPEG 字节）。
+  void injectBinary(Uint8List bytes) => _bin.add(bytes);
+
+  /// 模拟连接被动断开（onDone 触发 → 协调端走重连路径）。
+  void drop() {
+    _ctrl.close();
+    _bin.close();
+  }
+
   @override
   Stream<String> get textStream => _ctrl.stream;
+  @override
+  Stream<Uint8List> get binaryStream => _bin.stream;
   @override
   Future<void> get ready => _ready.future;
   @override
@@ -31,6 +45,7 @@ class FakeWsLink implements WsLink {
   @override
   Future<void> close() async {
     await _ctrl.close();
+    await _bin.close();
   }
 }
 
@@ -412,6 +427,49 @@ void main() {
       expect(coord.connectedIds, {'and-b87bfc8e49'});
     });
 
+    test('缩略图(B): thumb_meta + 紧跟二进制帧配对 → onThumb 交出 JPEG', () async {
+      late FakeWsLink link;
+      final thumbs = <String, Uint8List>{};
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onThumb = (id, jpeg) => thumbs[id] = jpeg;
+      coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+
+      final jpeg = Uint8List.fromList(List<int>.generate(16, (i) => i));
+      // 先 thumb_meta（文本帧），紧跟二进制帧。
+      coord.handleFrame(
+          'a',
+          frame(openCodec(), 'thumb_meta',
+              {'device_id': 'a', 'seq': 1, 'bytes': jpeg.length}));
+      link.injectBinary(jpeg);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(thumbs['a'], jpeg);
+    });
+
+    test('缩略图(B): 无配对 thumb_meta 的二进制帧被丢弃(不崩)', () async {
+      late FakeWsLink link;
+      final thumbs = <String, Uint8List>{};
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onThumb = (id, jpeg) => thumbs[id] = jpeg;
+      coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+
+      link.injectBinary(Uint8List.fromList([1, 2, 3]));
+      await Future<void>.delayed(Duration.zero);
+      expect(thumbs, isEmpty);
+    });
+
     test('对端消失 → 断开并 markOffline', () async {
       final links = <String, FakeWsLink>{};
       var lastWall = 0;
@@ -434,6 +492,84 @@ void main() {
       // 移除该对端
       coord.setPeers(const []);
       expect(coord.connectedCount, 0);
+    });
+
+    test('断线主动重连(C): drop 后经退避 timer 主动重拨同一端点，且不产生双连接', () {
+      fakeAsync((async) {
+        var dialCount = 0;
+        final created = <FakeWsLink>[];
+        final coord = P2pCoordinator(
+          codec: openCodec(),
+          controllerId: 'c1',
+          nowFn: () => 1,
+          linkFactory: (uri) {
+            dialCount++;
+            final l = FakeWsLink(uri);
+            created.add(l);
+            return l;
+          },
+        );
+        coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+        expect(dialCount, 1);
+        expect(coord.connectedCount, 1);
+        created.last.completeReady();
+        async.flushMicrotasks();
+
+        // 断线：关 text+binary 流 → onDone → 协调端排一次退避重连。
+        created.last.drop();
+        async.flushMicrotasks();
+        expect(coord.connectedCount, 0); // link 已随 onDone 移除
+
+        // 尚未到退避(首次 1s)：不应重拨。
+        async.elapse(const Duration(milliseconds: 500));
+        expect(dialCount, 1);
+
+        // 过退避 → 主动重拨同一端点 → 新连接建立。
+        async.elapse(const Duration(milliseconds: 600));
+        expect(dialCount, 2);
+        expect(coord.connectedCount, 1);
+        expect(created.length, 2);
+
+        // 端点去重:discover 驱动的 setPeers 再拨同一端点时,因已有活连接被跳过。
+        coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+        expect(dialCount, 2); // 不重复拨号
+        expect(coord.connectedCount, 1); // 无双连接
+
+        coord.dispose();
+      });
+    });
+
+    test('断线主动重连(C): 对端已从发现列表移除后再断，不重连', () {
+      fakeAsync((async) {
+        var dialCount = 0;
+        late FakeWsLink link;
+        final coord = P2pCoordinator(
+          codec: openCodec(),
+          controllerId: 'c1',
+          nowFn: () => 1,
+          linkFactory: (uri) {
+            dialCount++;
+            return link = FakeWsLink(uri);
+          },
+        );
+        coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+        link.completeReady();
+        async.flushMicrotasks();
+        expect(dialCount, 1);
+        expect(coord.connectedCount, 1);
+
+        // 对端从发现列表移除 → _disconnect 清 peer + 关连接 + 清退避定时器。
+        // 随后 link.close() 触发的 onDone 里,peer 已不在 → _scheduleReconnect 早退。
+        coord.setPeers(const []);
+        async.flushMicrotasks();
+        expect(coord.connectedCount, 0);
+
+        // 即便过了远超退避上限的时间,也不应重拨(peer 已不被期望连接)。
+        async.elapse(const Duration(seconds: 60));
+        expect(dialCount, 1);
+
+        coord.dispose();
+      });
     });
   });
 }
