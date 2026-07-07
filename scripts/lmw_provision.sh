@@ -5,21 +5,27 @@
 #
 #  Runs INSIDE the box (toybox sh). Push it once, then run the SAME single
 #  command; it advances one phase per run via a phase file, surviving the one
-#  reboot it triggers. This avoids Windows adb multi-line-paste problems.
+#  restart it triggers. This avoids Windows adb multi-line-paste problems.
 #
-#  SETUP (from the PC, once — two single-line pushes):
-#     adb push LANMediaWall-v1.11.2-Player-Android.apk /data/local/tmp/lmw_player.apk
-#     adb push lmw_provision.sh /data/local/tmp/lmw_provision.sh
+#  The version is read from the pushed APK itself — you never type a version
+#  number. Whatever APK you push is what gets installed; the script prints the
+#  resulting versionName so you can see what landed.
 #
-#  RUN this ONE command; after the box reboots, run the SAME line again until
+#  SETUP (from the PC, once — two single-line pushes; APK name can be anything):
+#     adb push <whatever-name>.apk /data/local/tmp/lmw_player.apk
+#     adb push lmw_provision.sh    /data/local/tmp/lmw_provision.sh
+#
+#  RUN this ONE command; after the box restarts, run the SAME line again until
 #  it prints "PROVISION COMPLETE":
-#     adb shell sh /data/local/tmp/lmw_provision.sh VERSION=1.11.2
+#     adb shell sh /data/local/tmp/lmw_provision.sh
+#
+#  (Or just use scripts/lmw_update.bat on the PC, which bridges the restart
+#   and runs both phases for you as a single command.)
 #
 #  Flags (optional):
-#     VERSION=x.y.z  fail if installed package versionName is not x.y.z
-#     NOCLEAN        keep the bloat/mining/launcher packages (cleaning is ON default)
-#     FORCE          clean reinstall (uninstall+wipe first) — for signature-mismatch
-#                    upgrades that would otherwise be rejected by KitKat
+#     NOCLEAN  keep the bloat/mining/launcher packages (cleaning is ON default)
+#     FORCE    clean reinstall (uninstall+wipe first) — for signature-mismatch
+#              upgrades that would otherwise be rejected by KitKat
 #
 #  Undo everything: use lmw_restore.sh (re-enables all + removes player).
 # ===========================================================================
@@ -31,7 +37,6 @@ MAIN=$PKG/$PKG.MainActivity
 APK_SRC=/data/local/tmp/lmw_player.apk
 DST=/data/app/$PKG-1.apk
 PHASE=/data/local/tmp/lmw_phase
-EXPECT_FILE=/data/local/tmp/lmw_expected_version
 BEFORE_FILE=/data/local/tmp/lmw_before_version
 
 # Packages disabled by default (all reversible). Confirmed on QZX_C1:
@@ -44,20 +49,15 @@ CLEANLIST="com.youku.taitan.tv com.youku.cloud.dog com.ktcp.tvvideo cn.miguvideo
 
 DO_CLEAN=1
 DO_FORCE=0
-EXPECT_VERSION=""
 for a in "$@"; do
   [ "$a" = "NOCLEAN" ] && DO_CLEAN=0
   [ "$a" = "FORCE" ] && DO_FORCE=1
-  case "$a" in
-    VERSION=*) EXPECT_VERSION="${a#VERSION=}" ;;
-    EXPECT=*) EXPECT_VERSION="${a#EXPECT=}" ;;
-  esac
 done
 
 # Match the package line WITHOUT a trailing `$` anchor. YunOS/toybox `pm list`
 # often emits a trailing CR (\r), so the old "package:<pkg>$" never matched even
 # when the package WAS installed -> the script falsely reported "still not
-# present" and drove an endless FORCE/reboot loop. Leading-anchored, NO trailing
+# present" and drove an endless FORCE/restart loop. Leading-anchored, NO trailing
 # anchor: exact enough and naturally CR-proof. No `tr`/`sed` needed — toybox on
 # these boxes is stripped down (no which/sed/head), only grep is safe.
 pkg_present() {
@@ -89,14 +89,8 @@ start)
 
   before="$(pkg_version "$PKG")"
   echo "$before" > "$BEFORE_FILE"
-  if [ -n "$EXPECT_VERSION" ]; then
-    echo "$EXPECT_VERSION" > "$EXPECT_FILE"
-    echo "  expected versionName after reboot: $EXPECT_VERSION"
-  else
-    rm -f "$EXPECT_FILE" 2>/dev/null
-    echo "  no expected version set; pass VERSION=x.y.z to make upgrade verification strict."
-  fi
   echo "  current installed versionName: ${before:-not-installed}"
+  echo "  installing whatever version the pushed APK contains."
 
   # A signature mismatch on KitKat makes the boot scan reject the new APK AND
   # drop the old package. Detect that (apk in /data/app but pkg not registered),
@@ -127,41 +121,27 @@ start)
   chown system:system "$DST"
   echo "  APK placed at $DST"
   echo installed > "$PHASE"
-  echo "  rebooting to let the boot scan adopt the package..."
+  echo "  restarting to let the boot scan adopt the package..."
   echo ">>> after the box comes back, RUN THE SAME COMMAND AGAIN <<<"
   sync; reboot
   ;;
 
 installed)
   if ! pkg_present "$PKG"; then
-    echo "ERROR: $PKG still not present after reboot." >&2
+    echo "ERROR: $PKG still not present after restart." >&2
     echo "  If this repeats, a signature mismatch is likely — rerun with FORCE:" >&2
-    echo "    adb shell \"rm -f $PHASE\" && adb shell sh $0 FORCE VERSION=${EXPECT_VERSION:-x.y.z}" >&2
+    echo "    adb shell \"rm -f $PHASE\" && adb shell sh $0 FORCE" >&2
     echo start > "$PHASE"
     exit 1
   fi
 
   ver="$(pkg_version "$PKG")"
   before="$(cat "$BEFORE_FILE" 2>/dev/null)"
-  expected="$(cat "$EXPECT_FILE" 2>/dev/null)"
   echo "[phase installed] $PKG versionName=${ver:-?}"
 
-  if [ -n "$expected" ] && [ "$ver" != "$expected" ]; then
-    echo "ERROR: installed versionName mismatch." >&2
-    echo "  expected: $expected" >&2
-    echo "  actual:   ${ver:-?}" >&2
-    echo "  This usually means the pushed APK itself has the wrong internal version," >&2
-    echo "  or the boot scan rejected it. Re-push the correct APK, then rerun:" >&2
-    echo "    adb push LANMediaWall-v$expected-Player-Android.apk $APK_SRC" >&2
-    echo "    adb shell \"rm -f $PHASE\"" >&2
-    echo "    adb shell sh $0 VERSION=$expected" >&2
-    echo start > "$PHASE"
-    exit 1
-  fi
-
-  if [ -z "$expected" ] && [ -n "$before" ] && [ "$before" = "$ver" ]; then
-    echo "WARNING: versionName did not change (${ver:-?})." >&2
-    echo "  If this was meant to be an upgrade, rerun with VERSION=x.y.z so the script can fail loudly." >&2
+  if [ -n "$before" ] && [ "$before" = "$ver" ]; then
+    echo "NOTE: versionName is unchanged (${ver:-?})." >&2
+    echo "  If you expected an upgrade, the pushed APK may be the same build as before." >&2
   fi
 
   # Prime autostart: lift out of Android's stopped-state so BOOT_COMPLETED is
@@ -179,10 +159,9 @@ installed)
     echo "  (undo any with: adb shell pm enable <pkg>; full undo: lmw_restore.sh)"
   fi
 
-  rm -f "$PHASE" "$EXPECT_FILE" "$BEFORE_FILE" 2>/dev/null
+  rm -f "$PHASE" "$BEFORE_FILE" 2>/dev/null
   echo "PROVISION COMPLETE."
-  echo "  The box now boots straight into the media wall. Reboot to verify:"
-  echo "    adb reboot"
+  echo "  Installed versionName=${ver:-?}. The box now boots straight into the media wall."
   ;;
 
 *)
