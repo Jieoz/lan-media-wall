@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.11.1] — 2026-07-07
+
+### Fixed
+- **P2P「②推送并播放」ACK 正常但不起播的栅栏透传缺口**: 控制端 UI 已按 §21 调用预缓存栅栏,但 P2P 本地编排路径只把 `readyTimeoutMsOverride=120s` 传给协调器,实际发给被控端的 `prepare` 没有携带 `prefetch:true` / `barrier_timeout_ms`。Android 端因此走普通 prepare 分支:首项未缓存时会立刻 `ready:false`,协调端继续等到超时且无就绪目标,最终不下发 `play_at`；日志表面只有 `playlist/cache_prefetch/prepare/resume` ACK,看起来像“功能异常”。
+  - 修复: `Commands.prepare` 支持 `prefetch` 与 `barrier_timeout_ms`; `WallState.prepareWithBarrier` 在 P2P 下通过 `P2pCoordinator.startSync(... prefetchBarrier:true ...)` 透传到被控端。Android 端收到后进入已有后台缓存等待逻辑,缓存完成再回 `ready:true`,随后协调端下发 `play_at`。
+  - 诊断增强: 控制端现在记录 `ready:false`、ready 命中数量、未匹配 ready 的 `prepare_id` 与最终 `play_at` 下发日志。以后同类问题不再只剩 ACK 盲区。
+  - 回归: 新增协议层 `Commands.prepare(prefetch)` 测试与 P2P 栅栏测试，覆盖“携带栅栏参数”和“ready=false 不应点火”。
+
 ## [v1.11.0] — 2026-07-06
 
 ### Fixed (CRITICAL — 两个根因,真机 logcat + 控制端诊断逐字确认)
