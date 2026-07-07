@@ -101,6 +101,10 @@ class DeviceStatus {
   final List<String> errors;
   final int? lastSeen;
 
+  /// 被控端上报的应用版本号（§4 hello / §5 status 的 `app_version`）。
+  /// 单台状态弹窗展示用；缺失时为 null（老端/未上报，防御式处理）。
+  final String? appVersion;
+
   const DeviceStatus({
     required this.deviceId,
     this.deviceName,
@@ -117,6 +121,7 @@ class DeviceStatus {
     this.cpu = 0,
     this.errors = const [],
     this.lastSeen,
+    this.appVersion,
   });
 
   static DeviceStatus fromMap(Map<String, dynamic> m) {
@@ -142,6 +147,7 @@ class DeviceStatus {
           .map((e) => e.toString())
           .toList(),
       lastSeen: m['last_seen'] == null ? null : _asInt(m['last_seen']),
+      appVersion: m['app_version'] as String?,
     );
   }
 
@@ -171,6 +177,7 @@ class DeviceStatus {
         cpu: cpu,
         errors: errors,
         lastSeen: lastSeen ?? this.lastSeen,
+        appVersion: appVersion,
       );
 }
 
@@ -358,6 +365,7 @@ class Commands {
     String? prepareId,
     bool prefetch = false,
     int? barrierTimeoutMs,
+    String? deviceId,
   }) =>
       {
         'playlist_id': playlistId,
@@ -367,6 +375,9 @@ class Commands {
         if (prepareId != null && prepareId.isNotEmpty) 'prepare_id': prepareId,
         if (prefetch) 'prefetch': true,
         if (barrierTimeoutMs != null) 'barrier_timeout_ms': barrierTimeoutMs,
+        // §9.4b 单台推送：带 device_id 时 broker 只把这一台纳入 ready 会话并单发
+        // play_at（不牵动整组）；p2p 下协调端直接把 targets 锁到这一台。
+        if (deviceId != null && deviceId.isNotEmpty) 'device_id': deviceId,
       };
 
   /// play_at（§9.2）。p2p 模式下遥控端收齐 ready 后直接下发给各成员。
@@ -412,6 +423,11 @@ class Commands {
       _target(groupId: groupId, deviceId: deviceId);
 
   static Map<String, dynamic> prev({String? groupId, String? deviceId}) =>
+      _target(groupId: groupId, deviceId: deviceId);
+
+  /// restart（§9.4）：重启被控端**播放软件/服务**（拉起 PlayerService + kiosk
+  /// MainActivity），不 reboot 整台盒子。仿 pause/resume 走 [_target] 单播/组播。
+  static Map<String, dynamic> restart({String? groupId, String? deviceId}) =>
       _target(groupId: groupId, deviceId: deviceId);
 
   static Map<String, dynamic> setVolume({

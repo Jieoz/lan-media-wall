@@ -523,15 +523,20 @@ class P2pCoordinator {
     int? readyTimeoutMsOverride,
     bool prefetchBarrier = false,
     int barrierTimeoutMs = 120000,
+    String? deviceId,
   }) {
     final prepareId = uuid4();
     final devices =
         aggregator.snapshot(serverTime: clock.serverTime()).devices;
-    var targets = GroupExpander.expand(
-      'group:$groupId',
-      devices: devices,
-      connected: connectedIds,
-    ).toSet();
+    // §9.4b 单台推送:targets 锁到这一台(仍要求它已直连),不走 group 展开,
+    // 也不触发下方"匹配为空回退到全部已连接"——单台就该只发这一台。
+    var targets = (deviceId != null && deviceId.isNotEmpty)
+        ? (connectedIds.contains(deviceId) ? {deviceId} : <String>{})
+        : GroupExpander.expand(
+            'group:$groupId',
+            devices: devices,
+            connected: connectedIds,
+          ).toSet();
     // §诊断:targets 为空是"点了推送盒子没反应"的头号原因。把决定 targets 的三个
     // 值原样打出来,一眼看出到底是 groupId 对不上、还是 connected 不含它。
     _log('startSync gid="$groupId" '
@@ -542,7 +547,9 @@ class P2pCoordinator {
     // 就把"当前所有已直连的设备"作为目标——扫码直连一台盒子却因 group_id 漂移
     // (空串/大小写/前后空格)被过滤,是绝不该让"推图完全没反应"的。宁可多发给已连的,
     // 也不要静默 0 台。真机上"列表里有、连上了、却推不动"正是被这一层救回。
-    if (targets.isEmpty && connectedIds.isNotEmpty) {
+    // §9.4b 单台推送不吃这层兜底:deviceId 明确锁定一台,回退到"全部已连接"会误伤别台。
+    final isUnicast = deviceId != null && deviceId.isNotEmpty;
+    if (!isUnicast && targets.isEmpty && connectedIds.isNotEmpty) {
       targets = connectedIds.toSet();
       _log('startSync group 匹配为空 → 回退到全部已连接 ${targets.length} 台: ${targets.toList()}');
     }

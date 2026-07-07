@@ -581,17 +581,21 @@ class WallState extends ChangeNotifier {
   }
 
   // ---- 出站命令(供 UI 调用) ----
-  void cachePrefetch(List<MediaItem> items, {String? groupId}) {
-    _send('cache_prefetch', Commands.cachePrefetch(items), groupId: groupId);
+  /// 预缓存下发(§21)。[deviceId] 非空 → 只发这一台(单播,§9.4b 单台推送)。
+  void cachePrefetch(List<MediaItem> items, {String? groupId, String? deviceId}) {
+    _send('cache_prefetch', Commands.cachePrefetch(items),
+        groupId: groupId, deviceId: deviceId);
   }
 
-  /// 下发 playlist(§6.3)。
+  /// 下发 playlist(§6.3)。[deviceId] 非空 → 单播给这一台(§9.4b 单台推送);
+  /// player 侧 hPlaylist 不做 targetsMe 过滤,靠信封 `to: player:<id>` 精确投递。
   void sendPlaylist({
     required String playlistId,
     required String groupId,
     required bool sync,
     required bool loop,
     required List<MediaItem> items,
+    String? deviceId,
   }) {
     _send(
       'playlist',
@@ -603,6 +607,7 @@ class WallState extends ChangeNotifier {
         items: items,
       ),
       groupId: groupId,
+      deviceId: deviceId,
     );
   }
 
@@ -654,6 +659,11 @@ class WallState extends ChangeNotifier {
 
   void prev({String? groupId, String? deviceId}) => _send(
       'prev', Commands.prev(groupId: groupId, deviceId: deviceId),
+      groupId: groupId, deviceId: deviceId);
+
+  /// restart(§9.4)：重启被控端播放软件/服务(非整机 reboot)。单台或整组。
+  void restart({String? groupId, String? deviceId}) => _send(
+      'restart', Commands.restart(groupId: groupId, deviceId: deviceId),
       groupId: groupId, deviceId: deviceId);
 
   void setVolume(int volume, {String? groupId, String? deviceId}) => _send(
@@ -821,11 +831,15 @@ class WallState extends ChangeNotifier {
 
   /// 一键同步播放的**预缓存栅栏**版(§21):下发 playlist(标记 sync) → 发
   /// prepare(prefetch:true),让 broker/协调端等**全员 cache=ready** 才统一起播。
+  /// [deviceId] 非空 → §9.4b 单台推送起播:只把这一台纳入 ready 会话、只给它发
+  /// play_at(不牵动整组)。p2p 下协调端把 targets 锁到这一台;broker 下 prepare
+  /// payload 带 device_id,broker 收敛成员到该台。
   void prepareWithBarrier({
     required String playlistId,
     required String groupId,
     int startIndex = 0,
     int seekMs = 0,
+    String? deviceId,
   }) {
     if (isP2p) {
       // p2p 下由协调端本地编排;用长栅栏超时(120s)等各台缓存+校验完成再回 ready(§21.3)。
@@ -837,6 +851,7 @@ class WallState extends ChangeNotifier {
         readyTimeoutMsOverride: 120000,
         prefetchBarrier: true,
         barrierTimeoutMs: 120000,
+        deviceId: deviceId,
       );
       return;
     }
@@ -848,10 +863,12 @@ class WallState extends ChangeNotifier {
           groupId: groupId,
           startIndex: startIndex,
           seekMs: seekMs,
+          deviceId: deviceId,
         ),
         'prefetch': true, // §21.2 走长栅栏超时,等全员缓存就绪
       },
       groupId: groupId,
+      deviceId: deviceId,
     );
   }
 

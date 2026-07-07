@@ -339,6 +339,9 @@ class Hub:
             "stop": self._on_route_to_players,
             "next": self._on_route_to_players,
             "prev": self._on_route_to_players,
+            # §9.4 restart：重启被控端播放软件/服务（单台/整组）。纯转发给目标 player，
+            # player 侧 hRestart 自行重拉 PlayerService+MainActivity（不 reboot 整机）。
+            "restart": self._on_route_to_players,
             "set_volume": self._on_route_to_players,
             "set_mute": self._on_route_to_players,
             "set_audio_master": self._on_route_to_players,
@@ -459,11 +462,21 @@ class Hub:
         playlist_id = p.get("playlist_id")
         if not group_id:
             return
-        members = set(self.reg.members(group_id, online_only=True))
+        # §9.4b 单台推送起播：prepare 带 device_id 时，只把这一台纳入 ready 会话、
+        # 只给它发 play_at（不牵动整组）。ready 帧靠 dev.group_id 回落到本会话，
+        # play_at 只发 sorted(session.ready)=[这一台]。仍复用同一套栅栏/超时机制。
+        target_device = p.get("device_id")
+        if target_device:
+            dev = self.reg.get(target_device)
+            online = self.players.get(target_device) is not None
+            members = {target_device} if (dev is not None and online) else set()
+        else:
+            members = set(self.reg.members(group_id, online_only=True))
         # group sync mode: default true unless explicitly false in meta.
         meta = next((g for g in self.reg.groups_snapshot()
                      if g["group_id"] == group_id), None)
-        sync_flag = meta["sync"] if meta else True
+        # 单台推送等价于"只有这一台的同步组"，强制走 handshake 收 ready 再 play_at。
+        sync_flag = True if target_device else (meta["sync"] if meta else True)
         start_index = p.get("start_index", 0)
         seek_ms = p.get("seek_ms", 0)
 
@@ -485,8 +498,10 @@ class Hub:
         self.sync.start(env["msg_id"], group_id, playlist_id, members,
                         start_index=start_index, seek_ms=seek_ms,
                         timeout_ms=timeout_ms)
-        fwd = self.make_env("prepare", p, f"group:{group_id}")
-        await self.fanout_players(f"group:{group_id}", fwd)
+        # §9.4b 单台推送：只 fan 给这一台（player:<id>），不广播整组。
+        to = f"player:{target_device}" if target_device else f"group:{group_id}"
+        fwd = self.make_env("prepare", p, to)
+        await self.fanout_players(to, fwd)
 
     async def _on_ready(self, conn: ClientConn, env: dict) -> None:
         if conn.role != "player":

@@ -557,6 +557,7 @@ class PlayerService : Service() {
             "stop" -> hStop(payload)
             "next" -> hAdvance(payload, +1)
             "prev" -> hAdvance(payload, -1)
+            "restart" -> hRestart(payload)
             "set_volume" -> hSetVolume(payload)
             "set_mute" -> hSetMute(payload)
             "set_audio_master" -> hSetAudioMaster(payload)
@@ -853,6 +854,35 @@ class PlayerService : Service() {
     }
 
     /**
+     * §9.4 restart：重启**播放端软件**（本进程：PlayerService + kiosk MainActivity），
+     * **不** reboot 整台盒子。做法：用 AlarmManager 排一枚 ~700ms 后拉起 MainActivity 的
+     * PendingIntent（MainActivity.onCreate 会重新 startForegroundService 起本服务），再延迟
+     * 杀掉当前进程，让系统按 alarm 冷启动一个全新进程。ack 由分发器在本方法返回后同步下发，
+     * 延迟杀进程保证 ack 先 flush 出去。KitKat 4.4 无 root 亦可（不依赖 su）。
+     */
+    private fun hRestart(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val launch = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val pi = PendingIntent.getActivity(
+            this, RESTART_REQ, launch,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE or
+                PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val am = getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
+        val fireAt = android.os.SystemClock.elapsedRealtime() + 700L
+        am?.set(android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP, fireAt, pi)
+        // 让 ack 先 flush，再自杀进程；alarm 到点冷启动全新进程。
+        scope.launch {
+            delay(1000)
+            stopForeground(true)
+            stopSelf()
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+    }
+
+    /**
      * §6.3 carousel step. Shared by external next/prev and the automatic
      * progressors (image dwell timer, video end-of-media). Moves [index] by
      * [delta] (wrapping when the playlist loops), then plays the new item:
@@ -1121,6 +1151,8 @@ class PlayerService : Service() {
 
     companion object {
         const val ACTION_START = "com.jieoz.lanmediawall.player.START"
+        /** §9.4 restart：拉起 MainActivity 的 alarm PendingIntent 请求码。 */
+        private const val RESTART_REQ = 42
         private const val CHANNEL_ID = "lmw_player"
         private const val NOTIF_ID = 1001
 
@@ -1130,7 +1162,7 @@ class PlayerService : Service() {
         /** §6 孤儿回收:保留最近 N 条 playlist 的媒体(+ last_task),其余视为孤儿。 */
         private const val KEEP_RECENT_PLAYLISTS = 3
         private val ACKABLE = setOf(
-            "prepare", "pause", "resume", "stop", "next", "prev",
+            "prepare", "pause", "resume", "stop", "next", "prev", "restart",
             "set_volume", "set_mute", "set_audio_master", "assign_group",
             "configure_device", "cache_prefetch", "playlist", "update_app",
         )
