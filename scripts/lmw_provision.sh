@@ -159,6 +159,36 @@ installed)
     echo "  (undo any with: adb shell pm enable <pkg>; full undo: lmw_restore.sh)"
   fi
 
+  # ---- Make the player the default HOME so the remote's 主页/HOME key works ----
+  # After the stock youku launcher is disabled the system has NO default HOME
+  # left, so pressing KEY_HOME resolves to nothing (confirmed on QZX_C1:
+  # `cmd package resolve-activity -c android.intent.category.HOME` returned
+  # empty). The player ships a HomeAlias with the HOME/DEFAULT/MAIN intent-filter
+  # but it was never bound as the preferred HOME. Bind it now, with fallbacks
+  # because KitKat/YunOS varies in which command exists.
+  HOME_ALIAS=$PKG/$PKG.HomeAlias
+  bound=0
+  # (a) Newer surface: cmd package set-home-activity (present on some AliOS builds)
+  if cmd package set-home-activity "$HOME_ALIAS" >/dev/null 2>&1; then
+    bound=1
+  fi
+  # (b) Clear any stale preferred-app associations so the system re-resolves HOME
+  #     to our now-only candidate instead of a remembered (disabled) launcher.
+  if [ "$bound" = 0 ]; then
+    pm clear-preferred-activities >/dev/null 2>&1 || pm clear com.android.settings >/dev/null 2>&1
+  fi
+  # (c) Fire a HOME intent once: with youku disabled, HomeAlias is the sole
+  #     candidate, so the system settles it as the default without a chooser.
+  am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1
+  # (d) Verify what the system now resolves HOME to.
+  home_now="$(cmd package resolve-activity -c android.intent.category.HOME 2>/dev/null | grep -m1 -o "$PKG")"
+  if [ -n "$home_now" ] || [ "$bound" = 1 ]; then
+    echo "  default HOME bound to the player (主页键将返回媒体墙)."
+  else
+    echo "  NOTE: could not confirm default HOME binding; the remote 主页键 may" >&2
+    echo "        still need a one-time chooser press to 'always' select the wall." >&2
+  fi
+
   rm -f "$PHASE" "$BEFORE_FILE" 2>/dev/null
   echo "PROVISION COMPLETE."
   echo "  Installed versionName=${ver:-?}. The box now boots straight into the media wall."
