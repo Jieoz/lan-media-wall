@@ -1,5 +1,6 @@
 package com.jieoz.lanmediawall.player.net
 
+import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -57,10 +58,12 @@ class Discovery(
                 bind(InetSocketAddress(port))
             }
         } catch (e: Exception) {
+            Log.w(TAG, "UDP discovery bind failed on $port: ${e.javaClass.simpleName}: ${e.message}")
             running = false
             return
         }
         socket = sock
+        Log.i(TAG, "UDP discovery responder listening on $port topology=${topology ?: "broker"} authMode=${authMode.wire} keyMode=${keyMode.wire}")
         val buf = ByteArray(8192)
         while (running) {
             val packet = DatagramPacket(buf, buf.size)
@@ -78,16 +81,31 @@ class Discovery(
 
     private fun handle(packet: DatagramPacket, sock: DatagramSocket) {
         val text = String(packet.data, packet.offset, packet.length, Charsets.UTF_8)
-        val result = Envelope.verify(psk, text, replay = replay, firstConnect = true)
-        if (!result.ok || result.parsed == null) return
+        val result = Envelope.verify(
+            psk,
+            text,
+            replay = replay,
+            firstConnect = true,
+            authMode = authMode,
+            keyMode = keyMode,
+            verifyKeyFor = ::verifyKeyFor,
+        )
+        if (!result.ok || result.parsed == null) {
+            val peek = Envelope.peekTypeFrom(text)
+            Log.w(TAG, "DROP discovery inbound: reason=${result.reason} type=${peek?.first ?: "?"} from=${peek?.second ?: "?"} sigLen=${peek?.third ?: -1} authMode=${authMode.wire} keyMode=${keyMode.wire}")
+            return
+        }
         if (result.parsed.type != "discover") return
         val reply = makeAnnounce()
         try {
             val out = DatagramPacket(reply, reply.size, packet.address, packet.port)
             sock.send(out) // unicast reply
+            Log.i(TAG, "RX discover from=${result.parsed.from} ${packet.address.hostAddress}:${packet.port}; TX announce topology=${topology ?: "broker"} broker_hint=$brokerHint")
         } catch (_: Exception) {
         }
     }
+
+    private fun verifyKeyFor(fromIdentity: String): ByteArray? = null
 
     private fun makeAnnounce(): ByteArray {
         val topo = topology
@@ -124,5 +142,9 @@ class Discovery(
     fun stop() {
         running = false
         try { socket?.close() } catch (_: Exception) {}
+    }
+
+    companion object {
+        private const val TAG = "lmw.Discovery"
     }
 }

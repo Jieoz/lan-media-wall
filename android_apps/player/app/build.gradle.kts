@@ -21,6 +21,24 @@ val keystoreProps = Properties().apply {
 val hasReleaseKeystore: Boolean =
     keystoreProps.getProperty("storeFile")?.let { file(it).exists() } ?: false
 
+// Release version single source of truth: reuse remote_flutter/pubspec.yaml
+// (`version: X.Y.Z+N`) so player/controller/tag never drift again.
+val repoRoot: File = rootProject.projectDir.parentFile.parentFile
+val releaseVersionLine: String? = repoRoot.resolve("remote_flutter/pubspec.yaml")
+    .takeIf { it.exists() }
+    ?.readLines()
+    ?.firstOrNull { it.trimStart().startsWith("version:") }
+    ?.substringAfter("version:")
+    ?.trim()
+val releaseVersionName: String = releaseVersionLine
+    ?.substringBefore("+")
+    ?.takeIf { it.isNotBlank() }
+    ?: "1.11.0"
+val releaseVersionCode: Int = releaseVersionLine
+    ?.substringAfter("+", "")
+    ?.toIntOrNull()
+    ?: 28
+
 android {
     namespace = "com.jieoz.lanmediawall.player"
     // SDK 34 platform is not in this build image; compile against 35 which is
@@ -33,8 +51,8 @@ android {
         // the target 1688 外贸盒. targetSdk stays high for modern-OS behavior.
         minSdk = 19
         targetSdk = 34
-        versionCode = 28
-        versionName = "1.11.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // §6: on minSdk 19 the merged dex can exceed the 65k method limit
         // (exoplayer2 + appcompat + okhttp + coroutines). Pre-21 has no native

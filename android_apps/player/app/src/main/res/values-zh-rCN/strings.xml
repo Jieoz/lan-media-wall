@@ -5,7 +5,7 @@
     <!-- §4.2/§7 首启中文提示:stopped-state 规则 + 仅内网。 -->
     <string name="first_boot_notice">装完后请先手动打开本应用一次 —— 否则安卓不会下发开机广播,重启后无法自启。仅限内网使用:切勿把本播放器暴露到公网。</string>
     <!-- §2 零配置状态行:本机 IP / device_id / 组名。 -->
-    <string name="device_info_fmt">本机 IP:%1$s\n设备 ID:%2$s\n分组:%3$s</string>
+    <string name="device_info_fmt">版本:v%4$s (build %5$d)\n本机 IP:%1$s\n设备 ID:%2$s\n分组:%3$s</string>
 
     <string name="label_device_name">设备名称</string>
     <string name="hint_device_name">例如 大厅左屏</string>

@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.11.2] — 2026-07-07
+
+### Fixed
+- **控制端完全搜不出播放端的 UDP 发现断点**: Android 播放端 `Discovery` responder 构造时已经拿到了实际 `authMode/keyMode`(P2P/零配置为 `open/global`),但处理 `discover` 时调用 `Envelope.verify(...)` 没有把这两个参数传进去,导致实际走默认 `REQUIRED` 验签。控制端零配置发现包是空签名 open discover,因此被播放端静默丢弃,表现为控制端周期广播但设备列表为空。
+  - 修复: `Discovery.handle()` 按当前 `authMode/keyMode` 验 discover,open 模式正确接受空签名;同时补 `DROP discovery inbound`、`RX discover`、`TX announce` 与 UDP bind 日志,以后 logcat 能直接看出发现包到没到、为何丢、有没有回 announce。
+- **Player APK 文件名版本与包内 versionName 漂移**: `v1.11.1` tag 的 Release 文件名是 `LANMediaWall-v1.11.1-Player-Android.apk`,但 Android player 的 `build.gradle.kts` 仍硬编码 `versionName="1.11.0"` / `versionCode=28`,所以盒子无论怎么覆盖安装,`dumpsys package` 都只会显示 `1.11.0`。
+  - 修复: Android player 版本号改为从 `remote_flutter/pubspec.yaml` 的 `version: X.Y.Z+N` 派生,controller/player/tag 使用同一真相源;中文设置页补上 `版本:vX.Y.Z (build N)` 显示。
+
 ## [v1.11.1] — 2026-07-07
 
 ### Fixed
