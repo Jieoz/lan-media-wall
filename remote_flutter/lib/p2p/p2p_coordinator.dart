@@ -487,6 +487,7 @@ class P2pCoordinator {
   /// 把一条命令按 `to` 地址在客户端侧扇出（group→逐成员；player→单条；all→全体）。
   /// payload 由调用方按 §6/§9 构造（与 broker 模式同一套 [Commands]）。
   void send(String type, {required String to, Map<String, dynamic> payload = const {}}) {
+    if (_handleLocalGroupCommand(type, payload)) return;
     final devices = aggregator.snapshot(serverTime: clock.serverTime()).devices;
     var targets = GroupExpander.expand(
       to,
@@ -506,6 +507,45 @@ class P2pCoordinator {
     }
     for (final id in targets) {
       _sendTo(id, type, to: 'player:$id', payload: payload);
+    }
+  }
+
+  bool _handleLocalGroupCommand(String type, Map<String, dynamic> payload) {
+    switch (type) {
+      case 'create_group':
+        final groupId = _asStr(payload['group_id']).trim();
+        if (groupId.isEmpty) return true;
+        aggregator.createGroup(
+          groupId,
+          name: payload['name'] as String?,
+          sync: payload['sync'] is bool ? payload['sync'] as bool : null,
+        );
+        _emitWall();
+        _log('p2p 本地新建分组 $groupId');
+        return true;
+      case 'update_group':
+        final groupId = _asStr(payload['group_id']).trim();
+        if (groupId.isEmpty) return true;
+        aggregator.updateGroup(
+          groupId,
+          name: payload['name'] as String?,
+          sync: payload['sync'] is bool ? payload['sync'] as bool : null,
+        );
+        _emitWall();
+        _log('p2p 本地更新分组 $groupId');
+        return true;
+      case 'delete_group':
+        final groupId = _asStr(payload['group_id']).trim();
+        if (groupId.isEmpty) return true;
+        aggregator.deleteGroup(
+          groupId,
+          reassignTo: _asStr(payload['reassign_to'], 'default'),
+        );
+        _emitWall();
+        _log('p2p 本地删除分组 $groupId');
+        return true;
+      default:
+        return false;
     }
   }
 

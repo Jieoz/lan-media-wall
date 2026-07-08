@@ -10,6 +10,11 @@ class WallAggregator {
   /// device_id → 最近一帧 DeviceStatus。
   final Map<String, DeviceStatus> _devices = {};
 
+  /// Explicit group metadata created by the controller in p2p mode. In broker
+  /// mode the broker registry owns this; in p2p there is no registry, so empty
+  /// groups must live here or they never appear in the wall snapshot.
+  final Map<String, WallGroup> _groupMeta = {};
+
   /// device_id → 该设备最近活跃时刻（epoch ms），用于在线判定/排序。
   final Map<String, int> _lastSeen = {};
 
@@ -41,9 +46,45 @@ class WallAggregator {
     _lastSeen.remove(deviceId);
   }
 
+  void createGroup(String groupId, {String? name, bool? sync}) {
+    final id = groupId.trim();
+    if (id.isEmpty) return;
+    final prev = _groupMeta[id];
+    _groupMeta[id] = WallGroup(
+      groupId: id,
+      name: name ?? prev?.name ?? id,
+      sync: sync ?? prev?.sync ?? true,
+      playlistId: prev?.playlistId,
+      members: prev?.members ?? const [],
+    );
+  }
+
+  void updateGroup(String groupId, {String? name, bool? sync}) {
+    final id = groupId.trim();
+    if (id.isEmpty) return;
+    createGroup(
+      id,
+      name: name ?? _groupMeta[id]?.name,
+      sync: sync ?? _groupMeta[id]?.sync,
+    );
+  }
+
+  void deleteGroup(String groupId, {String reassignTo = 'default'}) {
+    final id = groupId.trim();
+    if (id.isEmpty || id == 'default') return;
+    _groupMeta.remove(id);
+    for (final entry in _devices.entries.toList()) {
+      final d = entry.value;
+      if (d.groupId == id) {
+        _devices[entry.key] = d.copyWith(groupId: reassignTo);
+      }
+    }
+  }
+
   void clear() {
     _devices.clear();
     _lastSeen.clear();
+    _groupMeta.clear();
   }
 
   /// 把当前所有设备按 group_id 归并成 [WallGroup] 列表。
@@ -65,12 +106,23 @@ class WallAggregator {
           break;
         }
       }
+      final meta = _groupMeta[entry.key];
       groups.add(WallGroup(
         groupId: entry.key,
-        name: entry.key,
-        sync: true,
+        name: meta?.name ?? entry.key,
+        sync: meta?.sync ?? true,
         playlistId: playlistId,
         members: members,
+      ));
+    }
+    for (final meta in _groupMeta.values) {
+      if (byGroup.containsKey(meta.groupId)) continue;
+      groups.add(WallGroup(
+        groupId: meta.groupId,
+        name: meta.name,
+        sync: meta.sync,
+        playlistId: meta.playlistId,
+        members: const [],
       ));
     }
     groups.sort((a, b) => a.groupId.compareTo(b.groupId));

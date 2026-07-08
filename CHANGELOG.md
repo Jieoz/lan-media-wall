@@ -11,6 +11,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 - **旧盒子重启后不恢复播放**: `PlayerService.resumeLast()` 在 `MainActivity` / `PlayerController` 尚未就绪时不再丢掉恢复机会;Activity 创建好播放控制器后主动通知 Service 再执行一次 `resume_last`。
 - **QZX HOME/主页键绑定**: provision 脚本在绑定默认 HOME 前显式 `pm enable com.jieoz.lanmediawall.player/.HomeAlias`,避免设置里曾关闭 HomeAlias 后禁用原厂桌面导致主页键无解析目标。
 - **控制端删除播放端**: 单台设备面板新增“从控制端移除”,清本机发现缓存、P2P 连接、聚合状态、缩略图和占位卡;不卸载盒子端 App,后续重新广播/扫码/手动添加仍可回来。
+- **P2P 模式新建组不显示**: 无 broker 时控制端本地聚合器原先只从设备状态反推分组,空组没有注册表可落,所以“新建组”像没生效。P2P 侧现在维护本地 group meta,`create_group` / `update_group` / `delete_group` 会立即更新本地 wall snapshot,空组也能显示。
 
 ### Changed
 - **版本单一真相源升到 `1.13.2+34`**: patch release 覆盖两台 QZX/YunOS 盒子的网络发现/恢复播放/HOME 绑定问题,并给控制端补设备移除入口。

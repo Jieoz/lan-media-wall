@@ -8,6 +8,7 @@ import 'package:remote_flutter/p2p/p2p_coordinator.dart';
 import 'package:remote_flutter/p2p/ws_link.dart';
 import 'package:remote_flutter/protocol/auth_mode.dart';
 import 'package:remote_flutter/protocol/envelope.dart';
+import 'package:remote_flutter/protocol/messages.dart';
 
 /// 内存 fake：记录出站文本，并可注入入站文本/二进制帧。
 class FakeWsLink implements WsLink {
@@ -139,6 +140,48 @@ void main() {
       coord.handleFrame('a',
           frame(openCodec(), 'status', {'device_id': 'a', 'group_id': 'lobby', 'state': 'playing', 'online': true}));
       expect(wallDevices, 1);
+    });
+
+    test('p2p create_group creates visible empty group locally', () async {
+      WallSnapshot? wall;
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => FakeWsLink(uri),
+      )..onWall = (snap) => wall = snap;
+
+      coord.send('create_group',
+          to: 'broker', payload: {'group_id': 'hall-2', 'name': '二号厅', 'sync': false});
+
+      final groups = {for (final g in wall!.groups) g.groupId: g};
+      expect(groups.containsKey('hall-2'), isTrue);
+      expect(groups['hall-2']!.name, '二号厅');
+      expect(groups['hall-2']!.sync, isFalse);
+      expect(groups['hall-2']!.members, isEmpty);
+    });
+
+    test('p2p update_group and delete_group update local wall snapshot', () async {
+      WallSnapshot? wall;
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => FakeWsLink(uri),
+      )..onWall = (snap) => wall = snap;
+
+      coord.send('create_group',
+          to: 'broker', payload: {'group_id': 'hall-2', 'name': '二号厅'});
+      coord.send('update_group',
+          to: 'broker', payload: {'group_id': 'hall-2', 'name': '二号厅改', 'sync': false});
+      var groups = {for (final g in wall!.groups) g.groupId: g};
+      expect(groups['hall-2']!.name, '二号厅改');
+      expect(groups['hall-2']!.sync, isFalse);
+
+      coord.send('delete_group',
+          to: 'broker', payload: {'group_id': 'hall-2', 'reassign_to': 'default'});
+      groups = {for (final g in wall!.groups) g.groupId: g};
+      expect(groups.containsKey('hall-2'), isFalse);
     });
 
     test('send group 扇出为逐成员 play 控制', () async {
