@@ -46,8 +46,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -105,7 +103,7 @@ class PlayerService : Service() {
         mediaStore = MediaStore(applicationContext)
         downloader = Downloader(mediaStore.mediaCacheDir, onChange = { /* status loop reads */ })
         controllerPresent = settings.alwaysCollectThumbnails
-        deviceIp = detectIp()
+        deviceIp = AndroidNet.detectLanIp()
         // §14: the transport (BrokerClient vs P2pServer) is not chosen here — it
         // depends on a UDP discovery probe that must run off the main thread.
         // startSubsystems() probes, selects, and builds `link` on a coroutine.
@@ -200,7 +198,8 @@ class PlayerService : Service() {
             }
             is TransportSelector.Plan.P2pServer -> {
                 // §14.3: no broker — we're the p2p server waiting for a controller.
-                ConnState.set(ConnState.Phase.P2P_WAITING, "$deviceIp:${plan.listenPort}")
+                val ip = refreshDeviceIp()
+                ConnState.set(ConnState.Phase.P2P_WAITING, "$ip:${plan.listenPort}")
                 P2pServer(
                     psk = settings.psk,
                     deviceId = settings.deviceId,
@@ -366,20 +365,13 @@ class PlayerService : Service() {
         multicastLock = null
     }
 
-    private fun detectIp(): String {
-        try {
-            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return "0.0.0.0"
-            for (iface in ifaces) {
-                if (!iface.isUp || iface.isLoopback) continue
-                for (addr in iface.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        return addr.hostAddress ?: continue
-                    }
-                }
-            }
-        } catch (_: Exception) {
+    private fun refreshDeviceIp(): String {
+        val ip = AndroidNet.detectLanIp()
+        if (ip != deviceIp) {
+            deviceIp = ip
+            discovery?.updateIp(ip)
         }
-        return "0.0.0.0"
+        return ip
     }
 
     // --- §4 hello on (re)connect -------------------------------------
@@ -389,13 +381,14 @@ class PlayerService : Service() {
      *  wired for the client path. */
     private fun onCoordinatorConnected() {
         ConnState.set(ConnState.Phase.CONNECTED_BROKER, ConnState.detail)
+        val ip = refreshDeviceIp()
         val payload = jsonObj {
             put("role", "player")
             put("device_id", settings.deviceId)
             put("device_name", settings.deviceName)
             put("platform", "android")
             put("app_version", Settings.APP_VERSION)
-            put("ip", deviceIp)
+            put("ip", ip)
             put("screen", screenJson())
             put("capabilities", jsonStrArr(listOf("video", "image", "audio", "thumbnail")))
             put("group_id", settings.groupId)
@@ -452,6 +445,7 @@ class PlayerService : Service() {
     }
 
     private fun sendStatus() {
+        val ip = refreshDeviceIp()
         val ctl = controllerRef
         val snap = ctl?.snapshot()
         val item = currentItem()
@@ -479,6 +473,7 @@ class PlayerService : Service() {
             put("cache", cacheJson())
             put("clock_offset_ms", clock.offsetMs)
             put("app_version", Settings.APP_VERSION)
+            put("ip", ip)
             // §5.1: resource telemetry. `cpu` kept for backward-compat with the
             // documented shape; low-end boxes can't read per-app CPU without
             // root, so we report an honest 0 rather than a fabricated value.
@@ -1115,6 +1110,15 @@ class PlayerService : Service() {
      *  never the desktop. Falls back to the idle (black) screen. */
     private suspend fun resumeLast() {
         val ctl = controllerRef
+        if (ctl == null) {
+            // BootReceiver starts PlayerService and MainActivity almost together.
+            // On 4.4/YunOS the service can win that race: if we return after
+            // reading last_task but before MainActivity creates PlayerController,
+            // resume is lost until a manual command arrives. Leave the task
+            // intact and let MainActivity call onPlayerUiReady() once its surface
+            // is attached.
+            return
+        }
         val task = mediaStore.getLastTask()
         if (task == null) {
             MainActivity.instance?.showIdle()
@@ -1135,18 +1139,23 @@ class PlayerService : Service() {
         val source = readyFile?.absolutePath ?: item.url
         settings.volume = task.volume
         settings.muted = task.muted
-        ctl?.currentVolumePercent = task.volume
+        ctl.currentVolumePercent = task.volume
         if (item.type == "image") {
-            ctl?.showImage(source)
+            ctl.showImage(source)
             armDwell(item)
         } else {
-            ctl?.onVideoEnded = { onCurrentEnded() }
-            ctl?.loadAndPlay(source, task.seekMs, singleLoop(pl))
+            ctl.onVideoEnded = { onCurrentEnded() }
+            ctl.loadAndPlay(source, task.seekMs, singleLoop(pl))
         }
-        ctl?.setVolume(task.volume)
-        ctl?.setMuted(task.muted)
+        ctl.setVolume(task.volume)
+        ctl.setMuted(task.muted)
         playState = "playing"
         MainActivity.instance?.hideIdle()
+    }
+
+    /** Called by MainActivity after PlayerController + surfaces are ready. */
+    fun onPlayerUiReady() {
+        scope.launch { resumeLast() }
     }
 
     companion object {

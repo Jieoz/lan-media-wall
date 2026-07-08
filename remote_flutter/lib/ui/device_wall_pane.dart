@@ -670,6 +670,16 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         _confirmRestartDevice(context, state, device);
                       },
                     ),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red),
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('从控制端移除'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _confirmForgetDevice(context, state, device);
+                      },
+                    ),
                   ],
                 ),
               ],
@@ -734,6 +744,38 @@ class _DeviceTransportRow extends StatelessWidget {
             () => act(() => state.next(deviceId: deviceId), '下一项')),
       ],
     );
+  }
+}
+
+/// 从控制端忘记一台设备:清本机发现缓存/直连/状态卡,不卸载盒子端 App。
+Future<void> _confirmForgetDevice(
+    BuildContext context, WallState state, WallDevice device) async {
+  final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('从控制端移除「$name」?'),
+      content: const Text(
+        '只会从这个控制端的设备列表/发现缓存里移除,不会卸载或停止盒子上的播放端。'
+        '以后这台盒子重新广播、扫码或手动添加时还会回来。',
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消')),
+        FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('移除')),
+      ],
+    ),
+  );
+  if (ok != true) return;
+  await state.forgetDevice(device.deviceId);
+  if (context.mounted) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text('已从控制端移除「$name」')));
   }
 }
 

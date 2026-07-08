@@ -81,6 +81,11 @@ class MainActivity : AppCompatActivity() {
             },
         )
 
+        // Service boot can beat Activity/surface creation on Android 4.4 boxes.
+        // Tell it the UI controller is now ready so reboot recovery gets a
+        // second chance instead of losing resume_last in that race.
+        PlayerService.instance?.onPlayerUiReady()
+
         // Block back → never drop to the launcher (§11).
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { /* swallow */ }

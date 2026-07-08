@@ -178,6 +178,20 @@ class Discovery {
     onDevices?.call(devices);
   }
 
+  /// Forget a device from the controller-side discovery cache. This does not
+  /// uninstall or stop the player; a later UDP announce / QR scan may add it
+  /// back intentionally.
+  Future<void> forget(String deviceId) async {
+    if (deviceId.isEmpty) return;
+    final before = _devices.length;
+    _devices.remove(deviceId);
+    if (_devices.length != before) {
+      _log('已从发现缓存移除设备 $deviceId');
+      await _persist();
+      onDevices?.call(devices);
+    }
+  }
+
   Future<void> _loadCached() async {
     try {
       final prefs = await SharedPreferences.getInstance();

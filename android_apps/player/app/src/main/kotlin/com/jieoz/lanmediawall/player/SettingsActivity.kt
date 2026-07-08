@@ -13,8 +13,7 @@ import androidx.core.content.ContextCompat
 import com.jieoz.lanmediawall.player.databinding.ActivitySettingsBinding
 import com.jieoz.lanmediawall.player.net.DiscoveryDecision
 import com.jieoz.lanmediawall.player.pair.QrEncoder
-import java.net.Inet4Address
-import java.net.NetworkInterface
+
 
 /**
  * First-boot setup — protocol_spec §4 / redesign §2, §4.2: custom device_name
@@ -100,7 +99,7 @@ class SettingsActivity : AppCompatActivity() {
      * one types the connection details.
      */
     private fun showDeviceInfoAndQr() {
-        val ip = detectIp()
+        val ip = AndroidNet.detectLanIp()
         // 版本号来自 BuildConfig(单一真相源:gradle versionName/Code),永不漂移。
         binding.textDeviceInfo.text = getString(
             R.string.device_info_fmt, ip, settings.deviceId, settings.groupId,
@@ -273,22 +272,6 @@ class SettingsActivity : AppCompatActivity() {
         } catch (_: Exception) {
             // Some ROMs restrict alias toggling; soft kiosk still applies.
         }
-    }
-
-    private fun detectIp(): String {
-        try {
-            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return "0.0.0.0"
-            for (iface in ifaces) {
-                if (!iface.isUp || iface.isLoopback) continue
-                for (addr in iface.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress) {
-                        return addr.hostAddress ?: continue
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-        return "0.0.0.0"
     }
 
     private fun toast(msg: String) =

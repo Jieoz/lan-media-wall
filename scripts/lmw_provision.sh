@@ -206,6 +206,9 @@ installed)
   # but it was never bound as the preferred HOME. Bind it now, with fallbacks
   # because KitKat/YunOS varies in which command exists.
   HOME_ALIAS=$PKG/$PKG.HomeAlias
+  # Settings 里可能曾把 HomeAlias 关掉；provision 是盒子的权威 kiosk 初始化路径，
+  # 这里必须显式打开 HOME 候选，否则禁用原厂桌面后 主页键 仍可能无解析目标。
+  pm enable "$HOME_ALIAS" >/dev/null 2>&1 || true
   bound=0
   # (a) Newer surface: cmd package set-home-activity (present on some AliOS builds)
   if cmd package set-home-activity "$HOME_ALIAS" >/dev/null 2>&1; then

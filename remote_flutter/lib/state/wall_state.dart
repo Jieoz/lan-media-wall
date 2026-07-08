@@ -114,6 +114,7 @@ class WallState extends ChangeNotifier {
   /// broker 模式下由 wall 快照的 online 推断）。与 _discovered/_wall 合并成 [wallDevices]。
   final Map<String, LinkPhase> _linkPhase = {};
   final Map<String, String> _linkError = {};
+  final Set<String> _forgottenDevices = {};
 
   /// 根因 A 修复:占位 id(`host:port`,扫码无真实 device_id 时的兜底键) → 真实
   /// device_id 的别名映射。p2p 归一([P2pCoordinator.onPeerIdentified])发生时登记。
@@ -151,6 +152,7 @@ class WallState extends ChangeNotifier {
     final seen = <String>{};
     // 1. WS 已回传状态的设备优先，DeviceStatus 覆盖占位。
     for (final d in _wall.devices) {
+      if (_forgottenDevices.contains(d.deviceId)) continue;
       seen.add(d.deviceId);
       // broker 模式无逐台直连回调：online 即视为已连接，否则回落到记录的相位。
       final phase = _linkPhase[d.deviceId] ??
@@ -170,6 +172,7 @@ class WallState extends ChangeNotifier {
     //    id 取(归一时已迁移过去)。
     for (final a in _discovered) {
       final id = _resolveId(a.deviceId);
+      if (_forgottenDevices.contains(a.deviceId) || _forgottenDevices.contains(id)) continue;
       if (seen.contains(id)) continue;
       seen.add(id);
       out.add(WallDevice(
@@ -245,6 +248,7 @@ class WallState extends ChangeNotifier {
     final deviceId = (uri.id != null && uri.id!.isNotEmpty)
         ? uri.id!
         : '${uri.connHost}:${uri.port}';
+    _forgottenDevices.remove(deviceId);
     final name =
         (uri.name != null && uri.name!.isNotEmpty) ? uri.name! : deviceId;
     _discovery.addManual(AnnounceInfo(
@@ -453,6 +457,32 @@ class WallState extends ChangeNotifier {
 
   /// 手动触发一次设备发现广播。
   void refreshDiscovery() => _discovery.discover();
+
+  /// Forget/remove a player from this controller. This clears controller-side
+  /// discovery cache, P2P connection/status, placeholders, errors, and thumbs;
+  /// it does not uninstall or stop the player box.
+  Future<void> forgetDevice(String deviceId) async {
+    if (deviceId.isEmpty) return;
+    final resolved = _resolveId(deviceId);
+    _forgottenDevices
+      ..add(deviceId)
+      ..add(resolved);
+    await _discovery.forget(deviceId);
+    if (resolved != deviceId) await _discovery.forget(resolved);
+    _discovered.removeWhere((a) => a.deviceId == deviceId || a.deviceId == resolved || _resolveId(a.deviceId) == resolved);
+    _idAlias.removeWhere((k, v) => k == deviceId || k == resolved || v == deviceId || v == resolved);
+    _linkPhase.remove(deviceId);
+    _linkPhase.remove(resolved);
+    _linkError.remove(deviceId);
+    _linkError.remove(resolved);
+    _thumbs.remove(deviceId);
+    _thumbs.remove(resolved);
+    _p2p.forgetDevice(deviceId);
+    if (resolved != deviceId) _p2p.forgetDevice(resolved);
+    _pushLog('已从控制端移除设备 $resolved');
+    _evaluateTopology();
+    notifyListeners();
+  }
 
   void reconnect() {
     if (isP2p) {

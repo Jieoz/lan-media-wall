@@ -122,6 +122,17 @@ class P2pCoordinator {
   Set<String> get connectedIds => _links.keys.toSet();
   int get connectedCount => _links.length;
 
+  /// Controller-side forget/remove: drop the live P2P connection, pending
+  /// reconnect, and locally aggregated status. This is not a remote uninstall;
+  /// discovery/QR can add the player back later.
+  void forgetDevice(String deviceId) {
+    if (deviceId.isEmpty) return;
+    _disconnect(deviceId, removeStatus: true);
+    aggregator.remove(deviceId);
+    _emitWall();
+    _emitPeers();
+  }
+
   // ---- 连接管理 ----
 
   /// 用一组发现到的对端刷新连接：新增的拨号，消失的断开。
@@ -311,13 +322,17 @@ class P2pCoordinator {
 
   /// 主动断开（对端从发现列表消失）：这是「不再期望连接」，因此清 peer + 退避 +
   /// 待重连定时器，绝不重连（否则会和 setPeers 的意图打架、拨一台已被移除的设备）。
-  void _disconnect(String deviceId) {
+  void _disconnect(String deviceId, {bool removeStatus = false}) {
     _subs.remove(deviceId)?.cancel();
     final link = _links.remove(deviceId);
     link?.close();
     _peers.remove(deviceId);
     _cancelReconnect(deviceId);
-    aggregator.markOffline(deviceId);
+    if (removeStatus) {
+      aggregator.remove(deviceId);
+    } else {
+      aggregator.markOffline(deviceId);
+    }
   }
 
   /// 某端点当前是否已有一条活连接（按 host:port 归一，与 setPeers 对账口径一致）。

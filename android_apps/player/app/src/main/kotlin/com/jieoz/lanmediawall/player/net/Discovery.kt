@@ -3,7 +3,6 @@ package com.jieoz.lanmediawall.player.net
 import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.InetSocketAddress
 import kotlin.concurrent.thread
 
 /**
@@ -51,11 +50,14 @@ class Discovery(
 
     private fun run() {
         val sock = try {
-            DatagramSocket(null).apply {
+            // QZX_C1/YunOS 4.4 can throw IllegalArgumentException("port=-1")
+            // from the DatagramSocket(null)+InetSocketAddress(port) path even
+            // when [port] is 8772. The one-arg constructor is the older Android
+            // code path and binds INADDR_ANY:port directly, matching what we need.
+            DatagramSocket(port).apply {
                 reuseAddress = true
                 broadcast = true
                 soTimeout = 1000
-                bind(InetSocketAddress(port))
             }
         } catch (e: Exception) {
             Log.w(TAG, "UDP discovery bind failed on $port: ${e.javaClass.simpleName}: ${e.message}")

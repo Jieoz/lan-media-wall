@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.13.2] — 2026-07-08
+
+### Fixed
+- **QZX/YunOS 新盒子 IP 显示与发现慢/失败**: Android player 的局域网 IP 探测从只依赖 `NetworkInterface` 改为 Java 枚举优先,再回退 `dhcp.wlan0.ipaddress` / `dhcp.eth0.ipaddress` / `netcfg` / `ip addr`;命中后短缓存,避免状态循环反复跑 shell。修复真机 `wlan0=10.10.8.137` 但 UI 显示 `0.0.0.0:8770` 的问题。
+- **Android 4.4 UDP discovery bind 兼容**: `Discovery` 由 `DatagramSocket(null)+InetSocketAddress(port)` 改为旧 Android 更稳的 `DatagramSocket(port)` 绑定路径,修复 `UDP discovery bind failed on 8772: IllegalArgumentException: port=-1`。
+- **旧盒子重启后不恢复播放**: `PlayerService.resumeLast()` 在 `MainActivity` / `PlayerController` 尚未就绪时不再丢掉恢复机会;Activity 创建好播放控制器后主动通知 Service 再执行一次 `resume_last`。
+- **QZX HOME/主页键绑定**: provision 脚本在绑定默认 HOME 前显式 `pm enable com.jieoz.lanmediawall.player/.HomeAlias`,避免设置里曾关闭 HomeAlias 后禁用原厂桌面导致主页键无解析目标。
+- **控制端删除播放端**: 单台设备面板新增“从控制端移除”,清本机发现缓存、P2P 连接、聚合状态、缩略图和占位卡;不卸载盒子端 App,后续重新广播/扫码/手动添加仍可回来。
+
+### Changed
+- **版本单一真相源升到 `1.13.2+34`**: patch release 覆盖两台 QZX/YunOS 盒子的网络发现/恢复播放/HOME 绑定问题,并给控制端补设备移除入口。
+
 ## [v1.13.1] — 2026-07-08
 
 ### Fixed
