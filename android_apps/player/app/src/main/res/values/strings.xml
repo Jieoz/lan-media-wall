@@ -63,6 +63,18 @@
 
     <!-- §9 self-recovery: wipe broker config back to zero-config / QR pairing. -->
     <string name="action_reset_conn">Reset connection config</string>
+    <string name="action_refresh_diag">Refresh diagnostics</string>
+    <string name="label_diag_status">Local diagnostics</string>
+    <string name="diag_hint">Shows the currently readable helper / restart / update / playback state on this device. No export required.</string>
+    <string name="diag_unavailable">Unavailable</string>
+    <string name="diag_refreshing">Refreshing diagnostics…</string>
+    <string name="diag_helper_fmt">Helper: %1$s</string>
+    <string name="diag_restart_fmt">Restart: %1$s</string>
+    <string name="diag_update_fmt">Update: %1$s</string>
+    <string name="diag_playback_fmt">Playback: %1$s</string>
+    <string name="diag_cache_fmt">Cache: %1$s</string>
+    <string name="diag_errors_fmt">Recent errors: %1$s</string>
+    <string name="diag_probe_fmt">Probe: %1$s</string>
     <string name="reset_conn_confirm_title">Reset connection config?</string>
     <string name="reset_conn_confirm_msg">Clears the broker address, key, and group so this box returns to auto-discovery / QR pairing. Device identity and cached media are kept.</string>
     <string name="reset_conn_done">Connection config reset — showing the pairing QR again.</string>

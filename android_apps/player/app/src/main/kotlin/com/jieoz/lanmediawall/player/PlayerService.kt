@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.jieoz.lanmediawall.player.cache.Downloader
+import java.io.File
 import com.jieoz.lanmediawall.player.cache.LastTask
 import com.jieoz.lanmediawall.player.cache.MediaItem
 import com.jieoz.lanmediawall.player.cache.MediaStore
@@ -85,6 +86,10 @@ class PlayerService : Service() {
     @Volatile private var audioMaster = true
     @Volatile private var controllerPresent = false
     private val errors = java.util.concurrent.ConcurrentLinkedDeque<String>()
+    private val logBuffer = java.util.concurrent.ConcurrentLinkedDeque<String>()
+    private val logLock = Any()
+    private val logDir by lazy { File(filesDir, "logs") }
+    private val logFile by lazy { File(logDir, "player.log") }
 
     private val scheduledStart = AtomicReference<Job?>(null)
     /** §6.3 carousel: pending "hold this image for duration_ms, then advance"
@@ -105,6 +110,7 @@ class PlayerService : Service() {
         downloader = Downloader(mediaStore.mediaCacheDir, onChange = { /* status loop reads */ })
         controllerPresent = settings.alwaysCollectThumbnails
         deviceIp = AndroidNet.detectLanIp()
+        logEvent("service_create ip=$deviceIp group=${settings.groupId}")
         // §14: the transport (BrokerClient vs P2pServer) is not chosen here — it
         // depends on a UDP discovery probe that must run off the main thread.
         // startSubsystems() probes, selects, and builds `link` on a coroutine.
@@ -553,6 +559,8 @@ class PlayerService : Service() {
             "stop" -> hStop(payload)
             "next" -> hAdvance(payload, +1)
             "prev" -> hAdvance(payload, -1)
+            "debug_snapshot" -> hDebugSnapshot(payload)
+            "download_logs" -> hDownloadLogs(payload)
             "restart" -> hRestart(payload)
             "set_volume" -> hSetVolume(payload)
             "set_mute" -> hSetMute(payload)
@@ -866,8 +874,98 @@ class PlayerService : Service() {
         }
     }
 
+    private fun hDebugSnapshot(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val snapshot = buildDebugSnapshot()
+        link?.send("diagnostic_status", jsonObj {
+            put("device_id", settings.deviceId)
+            put("detail", snapshot)
+            put("app_version", BuildConfig.VERSION_NAME)
+        })
+    }
+
     /**
-     * §6.3 carousel step. Shared by external next/prev and the automatic
+     * Append a timestamped line to the rolling in-memory log ring and mirror it
+     * to the on-disk player.log so [hDownloadLogs] can hand the controller a
+     * persisted copy even across process restarts. Best-effort: disk errors are
+     * swallowed (the box may be low on space) but still recorded to [errors].
+     */
+    private fun logEvent(msg: String) {
+        val line = "${System.currentTimeMillis()} $msg"
+        logBuffer.addLast(line)
+        while (logBuffer.size > 500) logBuffer.pollFirst()
+        synchronized(logLock) {
+            try {
+                if (!logDir.exists()) logDir.mkdirs()
+                // Rotate once the file grows past ~256 KB so a long-running box
+                // never fills storage with an unbounded log.
+                if (logFile.exists() && logFile.length() > 256 * 1024L) {
+                    val rotated = File(logDir, "player.log.1")
+                    if (rotated.exists()) rotated.delete()
+                    logFile.renameTo(rotated)
+                }
+                logFile.appendText(line + "\n")
+            } catch (e: Exception) {
+                errors.addLast("log:${e.message}")
+                while (errors.size > 10) errors.pollFirst()
+            }
+        }
+    }
+
+    /**
+     * Build the one-line structured diagnostic string returned to the controller
+     * for a debug_snapshot request. Aggregates the existing debug* accessors so
+     * a field added there shows up here without touching the wire format.
+     */
+    private fun buildDebugSnapshot(): String {
+        val item = currentItemForDebug()
+        return buildString {
+            append("v="); append(BuildConfig.VERSION_NAME)
+            append("("); append(BuildConfig.VERSION_CODE); append(")")
+            append("; play="); append(debugPlayState())
+            append("; idx="); append(debugIndex())
+            append("; item="); append(item ?: "none")
+            append("; ctrl="); append(debugControllerPresent())
+            append("; audio_master="); append(debugAudioMaster())
+            append("; cache="); append(debugCacheSummary())
+            append("; errors="); append(debugErrorsSummary())
+            append("; "); append(debugHealthProbeSummary())
+        }
+    }
+
+    /**
+     * §debug: return the persisted player.log (plus any rotated tail) to the
+     * controller as a single text blob via download_logs_result. Capped so the
+     * broker frame never blows past a sane size; the controller writes it to a
+     * local file for offline inspection.
+     */
+    private fun hDownloadLogs(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val text = synchronized(logLock) {
+            val sb = StringBuilder()
+            val rotated = File(logDir, "player.log.1")
+            if (rotated.exists()) {
+                try { sb.append(rotated.readText()) } catch (_: Exception) {}
+            }
+            if (logFile.exists()) {
+                try { sb.append(logFile.readText()) } catch (_: Exception) {}
+            }
+            // Fall back to the in-memory ring if nothing landed on disk yet.
+            if (sb.isEmpty()) sb.append(logBuffer.joinToString("\n"))
+            val full = sb.toString()
+            // Keep only the last ~128 KB so the transport frame stays bounded.
+            val cap = 128 * 1024
+            if (full.length > cap) full.substring(full.length - cap) else full
+        }
+        link?.send("download_logs_result", jsonObj {
+            put("device_id", settings.deviceId)
+            put("text", text)
+            put("file_name", "player-${settings.deviceId}.log")
+        })
+    }
+
+
+    /** §6.3 carousel step. Shared by external next/prev and the automatic
      * progressors (image dwell timer, video end-of-media). Moves [index] by
      * [delta] (wrapping when the playlist loops), then plays the new item:
      * an image is shown + its dwell armed; a video is loaded and auto-advances
@@ -1082,6 +1180,27 @@ class PlayerService : Service() {
         return pl.items.getOrNull(index)
     }
 
+    fun currentItemForDebug(): MediaItem? = currentItem()
+    fun debugPlayState(): String = playState
+    fun debugIndex(): Int = index
+    fun debugControllerPresent(): Boolean = controllerPresent
+    fun debugAudioMaster(): Boolean = audioMaster
+    fun debugErrorsSummary(): String = errors.toList().takeLast(5).joinToString(" | ").ifBlank { "none" }
+    fun debugCacheSummary(): String = downloader.cacheStatus().entries
+        .joinToString(", ") { (k, v) -> "$k=$v" }
+        .ifBlank { "empty" }
+    fun debugHealthProbeSummary(): String {
+        val helper = java.io.File("/data/local/tmp/lmw_root_helper")
+        val helperState = if (helper.exists()) {
+            "exists:${if (helper.canExecute()) "exec" else "no-exec"}:${if (helper.canRead()) "read" else "no-read"}:${helper.length()}B"
+        } else {
+            "missing"
+        }
+        val restart = if (helper.exists() && helper.canExecute()) "probe=ready" else "probe=blocked"
+        val update = "update_ready=${BuildConfig.VERSION_CODE}"
+        return "helper=$helperState; restart=$restart; update=$update"
+    }
+
     private fun persistLastTask(pid: String, idx: Int, seekMs: Long) {
         mediaStore.setLastTask(
             LastTask(pid, idx, seekMs, settings.volume, settings.muted),
@@ -1161,6 +1280,7 @@ class PlayerService : Service() {
             "prepare", "pause", "resume", "stop", "next", "prev", "restart",
             "set_volume", "set_mute", "set_audio_master", "assign_group",
             "configure_device", "cache_prefetch", "playlist", "update_app",
+            "debug_snapshot", "download_logs",
         )
 
         @Volatile

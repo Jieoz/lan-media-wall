@@ -1,4 +1,5 @@
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -109,6 +110,17 @@ class WallState extends ChangeNotifier {
   final List<String> _log = [];
   ConnState _conn = ConnState.disconnected;
   int _p2pPeers = 0;
+  final Map<String, Completer<String>> _pendingDebugSnapshot = {};
+  final Map<String, Completer<File>> _pendingLogDownload = {};
+  final Map<String, String> _updateStatus = {};
+  final Map<String, String> _updateDetail = {};
+
+  /// broker 单播只按 device_id 路由；同一台设备同一时刻只挂一个 pending 请求，
+  /// 因此用 device_id 作 key。空 device_id（组播/广播场景）统一落到 '*' 桶，
+  /// 保证回调必能找到对应 completer 完成它，而不是永远超时。
+  static const String _anyDeviceKey = '*';
+  String _pendingKey(String? deviceId) =>
+      (deviceId == null || deviceId.isEmpty) ? _anyDeviceKey : deviceId;
 
   /// §14.5 可见性：每台 device_id 的接入进度与失败原因（p2p 直连回调驱动；
   /// broker 模式下由 wall 快照的 online 推断）。与 _discovered/_wall 合并成 [wallDevices]。
@@ -304,6 +316,9 @@ class WallState extends ChangeNotifier {
     _broker = BrokerClient(codec: _codec, controllerId: controllerId)
       ..onWall = _onWall
       ..onThumb = _onThumb
+      ..onDiagnostic = _onDiagnostic
+      ..onUpdateStatus = _onUpdateStatus
+      ..onLogDownload = _onLogDownload
       ..onState = _onConn
       ..onAuthMode = _onAuthMode
       ..onKeyMode = _onKeyMode
@@ -537,6 +552,55 @@ class WallState extends ChangeNotifier {
     _p2pPeers = count;
     notifyListeners();
   }
+
+  void _onDiagnostic(String deviceId, String detail) {
+    if (deviceId.isEmpty) return;
+    _pushLog('[$deviceId] 调试快照: $detail');
+    // 完成对应的 pending 请求（优先精确 device_id，回退广播桶）。
+    final c = _pendingDebugSnapshot.remove(deviceId) ??
+        _pendingDebugSnapshot.remove(_anyDeviceKey);
+    if (c != null && !c.isCompleted) c.complete(detail);
+  }
+
+  void _onUpdateStatus(String deviceId, String state, String detail, int versionCode) {
+    if (deviceId.isEmpty) return;
+    _updateStatus[deviceId] = state;
+    _updateDetail[deviceId] = detail;
+    _pushLog('[$deviceId] 升级状态: $state v$versionCode $detail');
+    notifyListeners();
+  }
+
+  void _onLogDownload(String deviceId, String text, String fileName) {
+    if (deviceId.isEmpty) return;
+    _pushLog('[$deviceId] 已收到日志 $fileName (${text.length} 字符)');
+    final c = _pendingLogDownload.remove(deviceId) ??
+        _pendingLogDownload.remove(_anyDeviceKey);
+    if (c == null || c.isCompleted) {
+      notifyListeners();
+      return;
+    }
+    // 把回传文本落到本地临时目录的真实文件，再用 File 完成 Future。
+    // 在 Android/桌面上 Directory.systemTemp 都可写，且无需额外插件依赖。
+    () async {
+      try {
+        final dir = Directory('${Directory.systemTemp.path}/lan_media_wall_logs');
+        if (!await dir.exists()) await dir.create(recursive: true);
+        final safeName = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+        final f = File('${dir.path}/$safeName');
+        await f.writeAsString(text);
+        _pushLog('[$deviceId] 日志已保存: ${f.path}');
+        c.complete(f);
+      } catch (e) {
+        _pushLog('[$deviceId] 日志写盘失败: $e');
+        c.completeError(e);
+      }
+      notifyListeners();
+    }();
+  }
+
+  /// 供 UI 卡片读取某台设备最近一次升级状态/详情（无则返回 null）。
+  String? updateStatusFor(String deviceId) => _updateStatus[deviceId];
+  String? updateDetailFor(String deviceId) => _updateDetail[deviceId];
 
   /// §14.5 可见性：p2p 直连逐台上报接入态 → 更新占位卡的相位与失败原因。
   void _onPeerState(String deviceId, PeerLinkState state, String? reason) {
@@ -795,17 +859,72 @@ class WallState extends ChangeNotifier {
     String? deviceId,
   }) =>
       _send(
-          'update_app',
-          Commands.updateApp(
-            url: url,
-            versionCode: versionCode,
-            sha256: sha256,
-            versionName: versionName,
-            groupId: groupId,
-            deviceId: deviceId,
-          ),
+        'update_app',
+        Commands.updateApp(
+          url: url,
+          versionCode: versionCode,
+          sha256: sha256,
+          versionName: versionName,
           groupId: groupId,
-          deviceId: deviceId);
+          deviceId: deviceId,
+        ),
+        groupId: groupId,
+        deviceId: deviceId,
+      );
+
+  /// 请求被控端回传调试快照，包含可下载的本地日志路径和摘要。
+  Future<String> requestDebugSnapshot({String? groupId, String? deviceId}) async {
+    final key = _pendingKey(deviceId);
+    // 若上一次同键请求还挂着，先让它失败释放，避免回调只喂给旧 completer。
+    final prevDebug = _pendingDebugSnapshot.remove(key);
+    if (prevDebug != null && !prevDebug.isCompleted) {
+      prevDebug.completeError(StateError('superseded'));
+    }
+    final completer = Completer<String>();
+    _pendingDebugSnapshot[key] = completer;
+    _send(
+      'debug_snapshot',
+      const {},
+      groupId: groupId,
+      deviceId: deviceId,
+    );
+    try {
+      return await completer.future.timeout(const Duration(seconds: 10));
+    } finally {
+      // 无论完成还是超时，都从 map 里摘掉，避免泄漏。
+      if (identical(_pendingDebugSnapshot[key], completer)) {
+        _pendingDebugSnapshot.remove(key);
+      }
+    }
+  }
+
+  /// 请求被控端把日志内容回传并保存到控制端本地文件。
+  Future<File> downloadPlayerLogs({
+    String? groupId,
+    String? deviceId,
+    String? fileName,
+  }) async {
+    final key = _pendingKey(deviceId);
+    final prevLog = _pendingLogDownload.remove(key);
+    if (prevLog != null && !prevLog.isCompleted) {
+      prevLog.completeError(StateError('superseded'));
+    }
+    final completer = Completer<File>();
+    _pendingLogDownload[key] = completer;
+    _send(
+      'download_logs',
+      const {},
+      groupId: groupId,
+      deviceId: deviceId,
+    );
+    try {
+      return await completer.future.timeout(const Duration(seconds: 30));
+    } finally {
+      if (identical(_pendingLogDownload[key], completer)) {
+        _pendingLogDownload.remove(key);
+      }
+    }
+  }
 
   // ---- 本地媒体上传(§20 A+B) ----
   /// 模式 A 的控制端临时 HTTP 服务(p2p / 无 broker 时用)。按需惰性启动。

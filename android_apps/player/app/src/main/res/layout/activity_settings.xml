@@ -69,6 +69,71 @@
             android:textSize="13sp"
             android:paddingBottom="12dp" />
 
+        <TextView style="@style/SettingLabel" android:text="@string/label_diag_status" />
+        <TextView
+            android:id="@+id/text_diag_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/accent"
+            android:textSize="13sp"
+            android:paddingBottom="4dp" />
+        <TextView
+            android:id="@+id/text_diag_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingBottom="8dp" />
+        <TextView
+            android:id="@+id/text_diag_helper"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:paddingBottom="2dp" />
+        <TextView
+            android:id="@+id/text_diag_restart"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:paddingBottom="2dp" />
+        <TextView
+            android:id="@+id/text_diag_update"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:paddingBottom="2dp" />
+        <TextView
+            android:id="@+id/text_diag_playback"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:paddingBottom="2dp" />
+        <TextView
+            android:id="@+id/text_diag_cache"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:paddingBottom="2dp" />
+        <TextView
+            android:id="@+id/text_diag_errors"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            android:paddingBottom="8dp" />
+        <TextView
+            android:id="@+id/text_diag_probe"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingBottom="12dp" />
+
         <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
         <EditText
             android:id="@+id/input_device_name"

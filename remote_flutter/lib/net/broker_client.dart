@@ -25,11 +25,20 @@ class BrokerClient {
   /// 本遥控端 id（用于 hello）。
   String controllerId;
 
-  /// 收到设备墙快照(welcome.snapshot 或 wall)。
+  /// 收到设备墙快照(welcome.snapshot 或 wall).
   void Function(WallSnapshot snapshot)? onWall;
 
   /// 收到某台设备的缩略图 JPEG(thumb_meta + 二进制帧配对完成后)。
   void Function(String deviceId, Uint8List jpeg)? onThumb;
+
+  /// 收到被控端回传的诊断快照文本。
+  void Function(String deviceId, String detail)? onDiagnostic;
+
+  /// 收到被控端更新状态。
+  void Function(String deviceId, String state, String detail, int versionCode)? onUpdateStatus;
+
+  /// 收到被控端回传的日志文件内容。
+  void Function(String deviceId, String text, String fileName)? onLogDownload;
 
   /// 连接态变化。
   void Function(ConnState state)? onState;
@@ -219,6 +228,27 @@ class BrokerClient {
         break;
       case 'thumb_meta':
         _thumbs.onMeta(env.payload);
+        break;
+      case 'diagnostic_status':
+        onDiagnostic?.call(
+          env.payload['device_id']?.toString() ?? '',
+          env.payload['detail']?.toString() ?? '',
+        );
+        break;
+      case 'update_status':
+        onUpdateStatus?.call(
+          env.payload['device_id']?.toString() ?? '',
+          env.payload['state']?.toString() ?? '',
+          env.payload['detail']?.toString() ?? '',
+          (env.payload['version_code'] as num?)?.toInt() ?? 0,
+        );
+        break;
+      case 'download_logs_result':
+        onLogDownload?.call(
+          env.payload['device_id']?.toString() ?? '',
+          env.payload['text']?.toString() ?? '',
+          env.payload['file_name']?.toString() ?? 'player.log',
+        );
         break;
       case 'ack':
         _log('ack: ${env.payload}');

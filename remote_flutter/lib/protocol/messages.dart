@@ -425,6 +425,11 @@ class Commands {
   static Map<String, dynamic> prev({String? groupId, String? deviceId}) =>
       _target(groupId: groupId, deviceId: deviceId);
 
+  /// debug_snapshot：请求被控端返回一段结构化诊断文本。
+  /// 走同样的 group/device 目标路由，不新增传输层。
+  static Map<String, dynamic> debugSnapshot({String? groupId, String? deviceId}) =>
+      _target(groupId: groupId, deviceId: deviceId);
+
   /// restart（§9.4）：重启被控端整台设备。仿 pause/resume 走 [_target] 单播/组播。
   static Map<String, dynamic> restart({String? groupId, String? deviceId}) =>
       _target(groupId: groupId, deviceId: deviceId);

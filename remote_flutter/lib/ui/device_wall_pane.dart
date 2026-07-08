@@ -659,6 +659,49 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         _remoteUpdateDialog(context, state, lockDevice: device);
                       },
                     ),
+                    // §debug 单台下载日志:请求被控端回传 player.log 并落到本地文件。
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.download_outlined),
+                      label: const Text('下载日志'),
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        try {
+                          final f = await state.downloadPlayerLogs(deviceId: device.deviceId);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context)
+                              ..clearSnackBars()
+                              ..showSnackBar(SnackBar(content: Text('日志已保存到 ${f.path}')));
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context)
+                              ..clearSnackBars()
+                              ..showSnackBar(SnackBar(content: Text('下载日志失败: $e')));
+                          }
+                        }
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.bug_report_outlined),
+                      label: const Text('调试快照'),
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        try {
+                          final text = await state.requestDebugSnapshot(deviceId: device.deviceId);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context)
+                              ..clearSnackBars()
+                              ..showSnackBar(SnackBar(content: Text('调试快照: $text')));
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context)
+                              ..clearSnackBars()
+                              ..showSnackBar(SnackBar(content: Text('调试快照失败: $e')));
+                          }
+                        }
+                      },
+                    ),
                     // §9.4 重启整台设备,二次确认。
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(

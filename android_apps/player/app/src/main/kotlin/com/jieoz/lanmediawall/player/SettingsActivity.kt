@@ -3,6 +3,7 @@ package com.jieoz.lanmediawall.player
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,6 +14,7 @@ import androidx.core.content.ContextCompat
 import com.jieoz.lanmediawall.player.databinding.ActivitySettingsBinding
 import com.jieoz.lanmediawall.player.net.DiscoveryDecision
 import com.jieoz.lanmediawall.player.pair.QrEncoder
+import java.io.File
 
 
 /**
@@ -59,12 +61,14 @@ class SettingsActivity : AppCompatActivity() {
         showDeviceInfoAndQr()
         showHardwareSelfCheck()
         showBloatware()
+        renderDiagnostics()
 
         // HomeAlias 现在 manifest 默认启用(v1.10.3+),所以首次进设置也应勾上;
         // 保留读取当前实际状态,便于用户主动关掉(极少数不想抢 HOME 的场景)。
         binding.inputSetAsHome.isChecked = isHomeAliasEnabled()
         binding.btnSave.setOnClickListener { save() }
         binding.btnResetConn.setOnClickListener { confirmResetConnection() }
+        binding.btnRefreshDiag.setOnClickListener { renderDiagnostics() }
     }
 
     override fun onResume() {
@@ -171,9 +175,98 @@ class SettingsActivity : AppCompatActivity() {
         binding.textConnStatus.text = text
     }
 
-    /**
-     * §9 self-recovery: confirm, then wipe the connection config and bounce back
-     * to a clean first-boot setup (unconfigured → auto-discover / QR pairing).
+    private fun renderDiagnostics() {
+        binding.textDiagStatus.text = getString(R.string.diag_refreshing)
+        val helper = describeHelper()
+        val restart = describeRestart()
+        val update = describeUpdate()
+        val playback = describePlayback()
+        val cache = describeCache()
+        val errors = describeErrors()
+        val probe = describeProbe()
+        binding.textDiagHint.text = getString(R.string.diag_hint)
+        binding.textDiagHelper.text = getString(R.string.diag_helper_fmt, helper)
+        binding.textDiagRestart.text = getString(R.string.diag_restart_fmt, restart)
+        binding.textDiagUpdate.text = getString(R.string.diag_update_fmt, update)
+        binding.textDiagPlayback.text = getString(R.string.diag_playback_fmt, playback)
+        binding.textDiagCache.text = getString(R.string.diag_cache_fmt, cache)
+        binding.textDiagErrors.text = getString(R.string.diag_errors_fmt, errors)
+        binding.textDiagProbe.text = getString(R.string.diag_probe_fmt, probe)
+        binding.textDiagStatus.text = when {
+            probe.contains("helper=", ignoreCase = true) -> probe
+            probe.isNotBlank() -> probe
+            else -> getString(R.string.label_diag_status)
+        }
+    }
+
+    private fun describeHelper(): String {
+        val f = File("/data/local/tmp/lmw_root_helper")
+        return buildList {
+            add(if (f.exists()) "exists" else "missing")
+            add(if (f.canExecute()) "exec" else "no-exec")
+            add(if (f.canRead()) "read" else "no-read")
+            val len = if (f.exists()) f.length() else -1L
+            if (len >= 0) add("${len}B")
+        }.joinToString(", ")
+    }
+
+    private fun describeRestart(): String {
+        val helper = File("/data/local/tmp/lmw_root_helper")
+        return when {
+            !helper.exists() -> "helper missing"
+            !helper.canExecute() -> "helper not executable"
+            else -> "helper present; reboot command routed via RootInstaller"
+        }
+    }
+
+    private fun describeUpdate(): String {
+        return buildString {
+            append("version=")
+            append(BuildConfig.VERSION_NAME)
+            append("(")
+            append(BuildConfig.VERSION_CODE)
+            append(")")
+        }
+    }
+
+    private fun describePlayback(): String {
+        val service = PlayerService.instance
+        return if (service == null) {
+            "service not ready"
+        } else {
+            val item = service.currentItemForDebug()
+            buildString {
+                append("state=")
+                append(service.debugPlayState())
+                append(", index=")
+                append(service.debugIndex())
+                append(", item=")
+                append(item ?: "none")
+                append(", controller=")
+                append(service.debugControllerPresent())
+                append(", audio_master=")
+                append(service.debugAudioMaster())
+            }
+        }
+    }
+
+    private fun describeCache(): String {
+        val service = PlayerService.instance ?: return "service not ready"
+        return service.debugCacheSummary()
+    }
+
+    private fun describeErrors(): String {
+        val service = PlayerService.instance ?: return "service not ready"
+        return service.debugErrorsSummary()
+    }
+
+    private fun describeProbe(): String {
+        val service = PlayerService.instance ?: return "service not ready"
+        return service.debugHealthProbeSummary()
+    }
+
+    /** §9 self-recovery: confirm, then wipe the connection config and bounce back
+     *  to a clean first-boot setup (unconfigured → auto-discover / QR pairing).
      * Restarts the service so it re-selects a transport under the reset state.
      */
     private fun confirmResetConnection() {
