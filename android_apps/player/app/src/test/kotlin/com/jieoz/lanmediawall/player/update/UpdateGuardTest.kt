@@ -167,6 +167,15 @@ class UpdateGuardTest {
     // --- guardrail 4: install command shape -----------------------------
 
     @Test
+    fun helperCommand_targets_provisioned_setuid_helper() {
+        val c = RootInstaller.helperCommand(
+            "com.jieoz.lanmediawall.player", "/data/data/com.jieoz.lanmediawall.player/cache/update/x.apk")
+        assertEquals("/data/local/tmp/lmw_root_helper", c[0])
+        assertEquals("com.jieoz.lanmediawall.player", c[1])
+        assertEquals("/data/data/com.jieoz.lanmediawall.player/cache/update/x.apk", c[2])
+    }
+
+    @Test
     fun installScript_targets_data_app_and_reboots() {
         val s = RootInstaller.installScript(
             "com.jieoz.lanmediawall.player", "/data/data/pkg/cache/update/x.apk")

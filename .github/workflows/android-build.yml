@@ -127,6 +127,39 @@ jobs:
             echo "::notice::apksigner not found; skipping fingerprint echo."
           fi
 
+      - name: Build QZX root update helper
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        run: |
+          NDK_BIN="$(find "$ANDROID_HOME/ndk" -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin' -type d | sort | tail -1)"
+          if [ -z "$NDK_BIN" ]; then
+            echo "Android NDK linux-x86_64 toolchain not found" >&2
+            exit 1
+          fi
+          CC="$NDK_BIN/armv7a-linux-androideabi21-clang"
+          "$CC" -Os -fPIE -Wall -Wextra -Werror \
+            -o scripts/lmw_root_helper scripts/lmw_root_helper.c
+          file scripts/lmw_root_helper
+          chmod 755 scripts/lmw_root_helper
+
+      - name: Package QZX updater tools
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        run: |
+          mkdir -p dist_tools
+          cp scripts/lmw_update.bat scripts/lmw_provision.sh scripts/lmw_root_helper dist_tools/
+          (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
+            lmw_update.bat lmw_provision.sh lmw_root_helper)
+          ls -la LANMediaWall-QZX-Update-Tools.zip
+
+      - name: Upload QZX updater tools
+        if: steps.detect.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-qzx-update-tools
+          path: LANMediaWall-QZX-Update-Tools.zip
+          if-no-files-found: error
+
       - name: Upload release APK
         if: steps.detect.outputs.present == 'true'
         uses: actions/upload-artifact@v4
