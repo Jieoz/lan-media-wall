@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.13.1] — 2026-07-08
+
+### Fixed
+- **QZX/YunOS 播放端推送升级失败**: 针对盒子 stock `su` 拒绝普通 App UID(`su: uid N not allowed to su`)导致 `update:install-failed` 的根因,新增一次性 PC/ADB root 引导的 `lmw_root_helper`。`lmw_update.bat` 会把 helper 推到盒子并按 Player Linux UID 设为 root-owned setuid helper;之后 Player 收到 `update_app` 时优先调用 helper 完成 `/data/app` 覆盖+reboot,不再依赖 App 直接 `su`。
+- **Release 工具包资产**: `android-build` 云编译现在同时编译 ARM helper,打包 `lmw_update.bat` / `lmw_provision.sh` / `lmw_root_helper` 为 `LANMediaWall-vX.Y.Z-QZX-Update-Tools.zip`,并挂到正式 GitHub Release。用户仍只安装一个 Player APK;helper 是脚本工具包里的辅助二进制,不是第二个 APK。
+
+### Changed
+- **版本单一真相源升到 `1.13.1+33`**: patch release 专用于推送升级修复;versionCode +1 保证被控端把新版 APK 识别为可升级目标。
+
 ## [v1.13.0] — 2026-07-07
 
 ### Added
