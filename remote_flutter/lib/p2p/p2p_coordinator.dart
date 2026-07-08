@@ -99,6 +99,15 @@ class P2pCoordinator {
   /// （否则设备墙会同时出现「占位卡(恒连)」+「真实卡(随 status 时断)」两张）。
   void Function(String placeholderId, String realId)? onPeerIdentified;
 
+  /// §debug: 被控端回传的调试快照（diagnostic_status）。与 broker 路径
+  /// [BrokerClient.onDiagnostic] 语义一致，供上层喂给挂起的 completer。
+  void Function(String deviceId, String detail)? onDiagnostic;
+
+  /// §debug: 被控端回传的日志内容（download_logs_result）。与 broker 路径
+  /// [BrokerClient.onLogDownload] 语义一致。p2p 模式若不接住这两类回帧，
+  /// 控制端的挂起 completer 必然 30s 超时（与 broker dispatch 漏表同因）。
+  void Function(String deviceId, String text, String fileName)? onLogDownload;
+
   /// 诊断日志。
   void Function(String line)? onLog;
 
@@ -457,6 +466,22 @@ class P2pCoordinator {
         break;
       case 'error':
         _log('error($deviceId): ${env.payload}');
+        break;
+      case 'diagnostic_status':
+        // §debug: 被控端回传调试快照。带回帧自己的 device_id（缺省回落到连接归一
+        // 后的 deviceId），供上层匹配挂起的 requestDebugSnapshot completer。
+        onDiagnostic?.call(
+          _asStr(env.payload['device_id'], deviceId),
+          _asStr(env.payload['detail']),
+        );
+        break;
+      case 'download_logs_result':
+        // §debug: 被控端回传日志文本，供上层落盘完成 downloadPlayerLogs。
+        onLogDownload?.call(
+          _asStr(env.payload['device_id'], deviceId),
+          _asStr(env.payload['text']),
+          _asStr(env.payload['file_name'], 'player.log'),
+        );
         break;
       default:
         _log('忽略入站类型($deviceId): ${env.type}');

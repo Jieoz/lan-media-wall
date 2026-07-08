@@ -333,6 +333,8 @@ class WallState extends ChangeNotifier {
       ..onPeers = _onP2pPeers
       ..onPeerState = _onPeerState
       ..onPeerIdentified = _onPeerIdentified
+      ..onDiagnostic = _onDiagnostic
+      ..onLogDownload = _onLogDownload
       ..onLog = _pushLog;
 
     await _discovery.start();

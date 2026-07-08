@@ -357,6 +357,14 @@ class Hub:
             "update_app": self._on_route_to_players,
             "update_status": self._on_update_status,
             "resume_last": self._on_route_to_players,
+            # §debug: remote log download + debug snapshot. Controller->player
+            # requests fan out to the addressed players; player->controller
+            # results relay back to controllers (else broker mode drops them
+            # and the controller's pending completer always hits its timeout).
+            "debug_snapshot": self._on_route_to_players,
+            "download_logs": self._on_route_to_players,
+            "diagnostic_status": self._on_relay_to_controllers,
+            "download_logs_result": self._on_relay_to_controllers,
             "ack": self._on_ack,
             "error": self._on_error,
         }.get(mtype)
@@ -722,6 +730,16 @@ class Hub:
         if conn.role == "player":
             fwd = self.make_env("error", env["payload"], "all")
             await self.broadcast_controllers(fwd)
+
+    async def _on_relay_to_controllers(self, conn: ClientConn, env: dict) -> None:
+        """§debug: relay a player->controller result (diagnostic_status /
+        download_logs_result) to all connected controllers, preserving the
+        original type + payload. Without this the broker would drop the reply
+        and the controller's pending completer would always hit its timeout."""
+        if conn.role != "player":
+            return
+        fwd = self.make_env(env["type"], env["payload"], "all")
+        await self.broadcast_controllers(fwd)
 
     # ---- background loops ------------------------------------------------
     async def wall_loop(self) -> None:
