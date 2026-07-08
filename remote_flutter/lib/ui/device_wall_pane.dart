@@ -557,7 +557,7 @@ Future<void> _confirmDeleteGroup(
 }
 
 /// 单台面板(§v1.13):一处集中该 deviceId 的 状态/版本 展示、播放控制(暂停/恢复/
-/// 停止/上一项/下一项)、重启播放端(§9.4,二次确认)、单播推送内容(§9.4b)、单台
+/// 停止/上一项/下一项)、重启设备(§9.4,二次确认)、单播推送内容(§9.4b)、单台
 /// 推送升级(§23),外加原有的 改名/设组/音量(§19 configure_device)。
 ///
 /// 「应用」只提交改名/设组/音量;播放控制与重启是即时动作(点了就下发),推送内容/
@@ -659,12 +659,12 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         _remoteUpdateDialog(context, state, lockDevice: device);
                       },
                     ),
-                    // §9.4 重启播放端软件(非整机 reboot),二次确认。
+                    // §9.4 重启整台设备,二次确认。
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.orange),
                       icon: const Icon(Icons.restart_alt),
-                      label: const Text('重启播放端'),
+                      label: const Text('重启设备'),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _confirmRestartDevice(context, state, device);
@@ -779,18 +779,17 @@ Future<void> _confirmForgetDevice(
   }
 }
 
-/// §9.4 重启播放端二次确认:重启的是**播放软件/服务**(PlayerService + kiosk
-/// MainActivity),不是整机 reboot;当前播放会被打断,进程冷启后自动 resume_last。
+/// §9.4 重启设备二次确认:重启的是整台盒子,不是只重启播放软件。
 Future<void> _confirmRestartDevice(
     BuildContext context, WallState state, WallDevice device) async {
   final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: Text('重启「$name」的播放端?'),
+      title: Text('重启「$name」这台设备?'),
       content: const Text(
-        '将重启这一台的播放软件/服务(不是整机重启)。当前播放会短暂中断,'
-        '进程冷启动后会自动恢复到上一个任务(resume_last)。',
+        '将重启整台盒子。当前播放会中断,开机后播放端会通过开机自启回到媒体墙,'
+        '并按 last_task 尝试恢复上一个任务。',
       ),
       actions: [
         TextButton(
@@ -799,7 +798,7 @@ Future<void> _confirmRestartDevice(
         FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.orange),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('重启播放端')),
+            child: const Text('重启设备')),
       ],
     ),
   );
@@ -808,7 +807,7 @@ Future<void> _confirmRestartDevice(
   if (context.mounted) {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text('已下发重启指令给「$name」')));
+      ..showSnackBar(SnackBar(content: Text('已下发设备重启指令给「$name」')));
   }
 }
 

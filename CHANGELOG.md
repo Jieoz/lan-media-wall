@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
 
+## [v1.13.3] — 2026-07-08
+
+### Fixed
+- **`restart` 改为重启整台盒子**: 单台设备面板里的 restart 不再只重启播放软件/服务,Android player 收到 `restart` 后优先调用 provision 过的 `lmw_root_helper reboot`,再回退 `su -c reboot`。若两条 root 路径都失败,只记录 `restart:reboot-failed`,不杀掉当前播放端进程,避免 QZX/YunOS 上 alarm/自启不可靠导致播放墙彻底起不来。
+
+### Changed
+- **版本单一真相源升到 `1.13.3+35`**: patch release 专用于把控制端按钮、协议注释、broker 转发说明、Android helper 与 README 统一到“重启整台设备”语义。
+
 ## [v1.13.2] — 2026-07-08
 
 ### Fixed

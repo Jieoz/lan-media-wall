@@ -1,7 +1,7 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-version: 1.13.2+34
+version: 1.13.3+35
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

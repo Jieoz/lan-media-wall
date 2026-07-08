@@ -8,7 +8,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.13.2 / versionCode 34`** — derived from
+> **Current build: `versionName 1.13.3 / versionCode 35`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -26,9 +26,10 @@ prefetch barrier §21, remote self-update §23).
 > | SINGLE_TOP` 重新拉到前台。`KEY_HOME` 仍由 `HomeAlias`(category HOME)兜底——**双键
 > 兜底**,哪种键位的盒子都能回墙。
 
-> **`restart` 命令(v1.13).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
-> 命令白名单含 `"restart"` → `hRestart` 分支**重启播放软件(重进播放墙,非整机 reboot)**。
-> 与「重启后自动恢复播放」(v1.12)配合:重启后按 last_task 从磁盘内容寻址重建 ready 索引续播。
+> **`restart` 命令(v1.13.3).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
+> 命令白名单含 `"restart"` → `hRestart` 分支**重启整台设备**。优先调用 provision
+> 过的 `lmw_root_helper reboot`,再回退 `su -c reboot`;若两者都失败,只上报错误,
+> 绝不杀掉播放端进程。
 
 > **Release signing (v1.11.0, §根因B — 覆盖升级/远程 update_app 的前提).** The
 > `release` buildType signs with a **fixed production certificate** decoded by CI

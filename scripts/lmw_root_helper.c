@@ -10,12 +10,14 @@
 //   * chmod 6750 + chown root:<playerUid> in lmw_provision.sh limits execution to
 //     the Player app uid at the filesystem layer.
 //   * /data/local/tmp/lmw_root_helper.uid is root-owned and must match getuid().
-//   * only com.jieoz.lanmediawall.player is accepted.
-//   * source APK must live in the Player app's own update cache.
-//   * destination is fixed to /data/app/com.jieoz.lanmediawall.player-1.apk.
+//   * only two operations are accepted:
+//       - install <package> <source-apk> for verified self-update
+//       - reboot for controller-triggered whole-device restart
+//   * install source APK must live in the Player app's own update cache.
+//   * install destination is fixed to /data/app/com.jieoz.lanmediawall.player-1.apk.
 //
 // Build (inside android-builder):
-//   $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang \
+//   $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang
 //     -Os -fPIE -pie -static -s -o scripts/lmw_root_helper scripts/lmw_root_helper.c
 
 #include <errno.h>
@@ -95,8 +97,22 @@ static int copy_file(const char *src, const char *dst) {
 }
 
 int main(int argc, char **argv) {
+    uid_t ruid = getuid();
+    uid_t euid = geteuid();
+    int allowed = read_allowed_uid();
+    if (allowed <= 0) return fail_msg("missing allowed uid file; reprovision with lmw_update.bat");
+    if ((int)ruid != allowed) return fail_msg("caller uid not allowed");
+    if (euid != 0) return fail_msg("helper is not setuid root; reprovision with lmw_update.bat");
+
+    if (argc == 2 && strcmp(argv[1], "reboot") == 0) {
+        sync();
+        execl("/system/bin/reboot", "reboot", (char *)NULL);
+        execl("/sbin/reboot", "reboot", (char *)NULL);
+        return fail("exec reboot");
+    }
+
     if (argc != 3) {
-        return fail_msg("usage: lmw_root_helper <package> <source-apk>");
+        return fail_msg("usage: lmw_root_helper reboot | <package> <source-apk>");
     }
 
     const char *pkg = argv[1];
@@ -104,13 +120,6 @@ int main(int argc, char **argv) {
 
     if (strcmp(pkg, PKG) != 0) return fail_msg("refusing unknown package");
     if (!starts_with(src, CACHE_PREFIX)) return fail_msg("source apk outside player update cache");
-
-    uid_t ruid = getuid();
-    uid_t euid = geteuid();
-    int allowed = read_allowed_uid();
-    if (allowed <= 0) return fail_msg("missing allowed uid file; reprovision with lmw_update.bat");
-    if ((int)ruid != allowed) return fail_msg("caller uid not allowed");
-    if (euid != 0) return fail_msg("helper is not setuid root; reprovision with lmw_update.bat");
 
     struct stat st;
     if (stat(src, &st) != 0) return fail("stat source apk");

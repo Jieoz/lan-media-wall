@@ -38,6 +38,8 @@ object RootInstaller {
      */
     fun helperCommand(pkg: String, srcApk: String): List<String> = listOf(HELPER, pkg, srcApk)
 
+    fun rebootCommand(): List<String> = listOf(HELPER, "reboot")
+
     /**
      * The fallback shell script piped to `su`. Pure string builder so it's unit-testable
      * with no device. Mirrors deploy_player.sh: copy into /data/app under the
@@ -85,6 +87,43 @@ object RootInstaller {
         }
         if (installViaHelper(pkg, apk)) return true
         return installViaSu(pkg, apk)
+    }
+
+    fun rebootDevice(): Boolean {
+        if (rebootViaHelper()) return true
+        return rebootViaSu()
+    }
+
+    private fun rebootViaHelper(): Boolean = try {
+        val p = ProcessBuilder(rebootCommand())
+            .redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText()
+        val code = p.waitFor()
+        if (code != 0) {
+            Log.e(TAG, "helper reboot exited $code: ${out.take(200)}")
+            false
+        } else {
+            true
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "helper reboot unavailable: ${e.javaClass.simpleName}")
+        false
+    }
+
+    private fun rebootViaSu(): Boolean = try {
+        val p = ProcessBuilder("su", "-c", "reboot")
+            .redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText()
+        val code = p.waitFor()
+        if (code != 0) {
+            Log.e(TAG, "su reboot exited $code: ${out.take(200)}")
+            false
+        } else {
+            true
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "su reboot failed: ${e.javaClass.simpleName}")
+        false
     }
 
     private fun installViaHelper(pkg: String, apk: File): Boolean = try {

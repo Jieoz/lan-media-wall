@@ -176,6 +176,14 @@ class UpdateGuardTest {
     }
 
     @Test
+    fun rebootCommand_targets_provisioned_setuid_helper() {
+        val c = RootInstaller.rebootCommand()
+        assertEquals("/data/local/tmp/lmw_root_helper", c[0])
+        assertEquals("reboot", c[1])
+        assertEquals(2, c.size)
+    }
+
+    @Test
     fun installScript_targets_data_app_and_reboots() {
         val s = RootInstaller.installScript(
             "com.jieoz.lanmediawall.player", "/data/data/pkg/cache/update/x.apk")

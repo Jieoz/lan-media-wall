@@ -2,7 +2,6 @@ package com.jieoz.lanmediawall.player
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.app.ActivityManager
 import android.content.Context
@@ -38,6 +37,7 @@ import com.jieoz.lanmediawall.player.net.jsonArr
 import com.jieoz.lanmediawall.player.net.jsonObj
 import com.jieoz.lanmediawall.player.net.jsonStrArr
 import com.jieoz.lanmediawall.player.sync.ClockSync
+import com.jieoz.lanmediawall.player.update.RootInstaller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -848,32 +848,20 @@ class PlayerService : Service() {
         advance(delta)
     }
 
-    /**
-     * §9.4 restart：重启**播放端软件**（本进程：PlayerService + kiosk MainActivity），
-     * **不** reboot 整台盒子。做法：用 AlarmManager 排一枚 ~700ms 后拉起 MainActivity 的
-     * PendingIntent（MainActivity.onCreate 会重新 startForegroundService 起本服务），再延迟
-     * 杀掉当前进程，让系统按 alarm 冷启动一个全新进程。ack 由分发器在本方法返回后同步下发，
-     * 延迟杀进程保证 ack 先 flush 出去。KitKat 4.4 无 root 亦可（不依赖 su）。
+    /** §9.4 restart：重启整台盒子，不再尝试“只重启播放软件”。
+     *
+     * 旧的软件重启依赖 AlarmManager 再拉起进程；QZX/YunOS 真机上会出现进程退出后
+     * alarm/自启不可靠，结果播放端彻底没起来。整机 reboot 才会走已经验证过的
+     * BootReceiver + HOME/kiosk provision 链路。若 helper/su 都失败，只记录错误，绝不
+     * 杀掉当前播放端进程。
      */
     private fun hRestart(payload: Json.Obj) {
         if (!targetsMe(payload)) return
-        val launch = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        }
-        val pi = PendingIntent.getActivity(
-            this, RESTART_REQ, launch,
-            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE or
-                PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val am = getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager
-        val fireAt = android.os.SystemClock.elapsedRealtime() + 700L
-        am?.set(android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP, fireAt, pi)
-        // 让 ack 先 flush，再自杀进程；alarm 到点冷启动全新进程。
         scope.launch {
-            delay(1000)
-            stopForeground(true)
-            stopSelf()
-            android.os.Process.killProcess(android.os.Process.myPid())
+            val ok = RootInstaller.rebootDevice()
+            if (!ok) {
+                errors.add("restart:reboot-failed")
+            }
         }
     }
 
@@ -1160,8 +1148,6 @@ class PlayerService : Service() {
 
     companion object {
         const val ACTION_START = "com.jieoz.lanmediawall.player.START"
-        /** §9.4 restart：拉起 MainActivity 的 alarm PendingIntent 请求码。 */
-        private const val RESTART_REQ = 42
         private const val CHANNEL_ID = "lmw_player"
         private const val NOTIF_ID = 1001
 

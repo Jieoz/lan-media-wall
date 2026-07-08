@@ -691,7 +691,7 @@ class WallState extends ChangeNotifier {
       'prev', Commands.prev(groupId: groupId, deviceId: deviceId),
       groupId: groupId, deviceId: deviceId);
 
-  /// restart(§9.4)：重启被控端播放软件/服务(非整机 reboot)。单台或整组。
+  /// restart(§9.4)：重启被控端整台设备。单台或整组。
   void restart({String? groupId, String? deviceId}) => _send(
       'restart', Commands.restart(groupId: groupId, deviceId: deviceId),
       groupId: groupId, deviceId: deviceId);

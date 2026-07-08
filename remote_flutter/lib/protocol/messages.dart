@@ -425,8 +425,7 @@ class Commands {
   static Map<String, dynamic> prev({String? groupId, String? deviceId}) =>
       _target(groupId: groupId, deviceId: deviceId);
 
-  /// restart（§9.4）：重启被控端**播放软件/服务**（拉起 PlayerService + kiosk
-  /// MainActivity），不 reboot 整台盒子。仿 pause/resume 走 [_target] 单播/组播。
+  /// restart（§9.4）：重启被控端整台设备。仿 pause/resume 走 [_target] 单播/组播。
   static Map<String, dynamic> restart({String? groupId, String? deviceId}) =>
       _target(groupId: groupId, deviceId: deviceId);
 
