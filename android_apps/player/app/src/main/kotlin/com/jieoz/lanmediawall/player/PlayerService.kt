@@ -2,6 +2,7 @@ package com.jieoz.lanmediawall.player
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.app.ActivityManager
 import android.content.Context
