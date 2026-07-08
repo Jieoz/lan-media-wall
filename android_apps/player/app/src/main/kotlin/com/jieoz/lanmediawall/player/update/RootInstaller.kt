@@ -28,9 +28,18 @@ import java.io.File
  */
 object RootInstaller {
     private const val TAG = "lmw.RootInstaller"
+    private const val HELPER = "/data/local/tmp/lmw_root_helper"
 
     /**
-     * The shell script piped to `su`. Pure string builder so it's unit-testable
+     * The helper argv used by the preferred install path. lmw_update.bat arms
+     * this helper once using adb/root: owner root, group = Player app uid,
+     * mode 6750. That is the durable fix for QZX_C1 stock su, which rejects
+     * normal app UIDs (`su: uid N not allowed to su`).
+     */
+    fun helperCommand(pkg: String, srcApk: String): List<String> = listOf(HELPER, pkg, srcApk)
+
+    /**
+     * The fallback shell script piped to `su`. Pure string builder so it's unit-testable
      * with no device. Mirrors deploy_player.sh: copy into /data/app under the
      * package-scanner-adopted name, world-read so the scanner can read it at
      * boot, then reboot to trigger adoption.
@@ -64,17 +73,37 @@ object RootInstaller {
     }
 
     /**
-     * Install [apk] for package [pkg] via root, then reboot. Returns false
-     * (without rebooting) if the APK is missing or `su` can't be run — the
-     * caller reports that back over the wire. On success the box reboots and
-     * the package scanner adopts the new APK; the return here is effectively
-     * "reboot dispatched".
+     * Install [apk] for package [pkg], then reboot. Preferred path is the
+     * provisioned setuid helper because QZX_C1 stock `su` grants root to adb/shell
+     * but rejects normal app UIDs. If an older box has real app-visible su, keep
+     * the old path as a fallback.
      */
     fun install(pkg: String, apk: File): Boolean {
         if (!apk.exists() || apk.length() <= 0) {
             Log.e(TAG, "apk missing/empty: ${apk.absolutePath}")
             return false
         }
+        if (installViaHelper(pkg, apk)) return true
+        return installViaSu(pkg, apk)
+    }
+
+    private fun installViaHelper(pkg: String, apk: File): Boolean = try {
+        val p = ProcessBuilder(helperCommand(pkg, apk.absolutePath))
+            .redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText()
+        val code = p.waitFor()
+        if (code != 0) {
+            Log.e(TAG, "helper install exited $code: ${out.take(200)}")
+            false
+        } else {
+            true // reboot dispatched
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "helper install unavailable: ${e.javaClass.simpleName}")
+        false
+    }
+
+    private fun installViaSu(pkg: String, apk: File): Boolean {
         val script = installScript(pkg, apk.absolutePath)
         return try {
             val p = ProcessBuilder("su", "-c", script)

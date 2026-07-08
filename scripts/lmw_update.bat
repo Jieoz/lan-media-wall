@@ -49,12 +49,20 @@ if not exist "%SCRIPT_DIR%lmw_provision.sh" (
   exit /b 1
 )
 
+if not exist "%SCRIPT_DIR%lmw_root_helper" (
+  echo ERROR: lmw_root_helper not found next to this script.
+  echo        Re-download the full tools bundle; this helper arms in-app push update.
+  pause
+  exit /b 1
+)
+
 echo === Checking device ===
 adb get-state 1>nul 2>nul || ( echo ERROR: no adb device. Plug in / enable adb. & pause & exit /b 1 )
 
-echo === Pushing APK + provisioner ===
+echo === Pushing APK + provisioner + update helper ===
 adb push "%APK%" /data/local/tmp/lmw_player.apk || ( pause & exit /b 1 )
 adb push "%SCRIPT_DIR%lmw_provision.sh" /data/local/tmp/lmw_provision.sh || ( pause & exit /b 1 )
+adb push "%SCRIPT_DIR%lmw_root_helper" /data/local/tmp/lmw_root_helper.new || ( pause & exit /b 1 )
 
 echo === Reset phase (fresh run) ===
 adb shell "rm -f /data/local/tmp/lmw_phase"

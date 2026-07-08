@@ -38,6 +38,9 @@ APK_SRC=/data/local/tmp/lmw_player.apk
 DST=/data/app/$PKG-1.apk
 PHASE=/data/local/tmp/lmw_phase
 BEFORE_FILE=/data/local/tmp/lmw_before_version
+HELPER_SRC=/data/local/tmp/lmw_root_helper.new
+HELPER_DST=/data/local/tmp/lmw_root_helper
+HELPER_UID=/data/local/tmp/lmw_root_helper.uid
 
 # Packages disabled by default (all reversible). Confirmed on QZX_C1:
 #   youku.taitan.tv = stock HOME launcher (ALSO a PCDN host) — disabling it is
@@ -70,6 +73,37 @@ pkg_version() {
   ver="${ver%% *}"
   [ "$ver" = "$verline" ] && ver=""
   echo "$ver"
+}
+
+pkg_uid() {
+  uidline="$(dumpsys package "$1" 2>/dev/null | grep -m1 userId=)"
+  uid="${uidline#*userId=}"
+  uid="${uid%% *}"
+  [ "$uid" = "$uidline" ] && uid=""
+  echo "$uid"
+}
+
+install_helper() {
+  uid="$(pkg_uid "$PKG")"
+  if [ -z "$uid" ]; then
+    echo "  NOTE: package uid not found; cannot arm in-app push-update helper yet." >&2
+    return 0
+  fi
+  if [ ! -f "$HELPER_SRC" ]; then
+    echo "  NOTE: $HELPER_SRC missing; push-update helper not armed." >&2
+    echo "        Update lmw_update.bat/lmw_root_helper together, then rerun once." >&2
+    return 0
+  fi
+  cp "$HELPER_SRC" "$HELPER_DST" || { echo "  WARN: helper copy failed" >&2; return 0; }
+  chown 0:$uid "$HELPER_DST" 2>/dev/null || chown root:$uid "$HELPER_DST" 2>/dev/null || {
+    echo "  WARN: helper chown root:$uid failed" >&2
+    return 0
+  }
+  chmod 6750 "$HELPER_DST" || { echo "  WARN: helper chmod 6750 failed" >&2; return 0; }
+  echo "$uid" > "$HELPER_UID"
+  chown 0:0 "$HELPER_UID" 2>/dev/null || chown root:root "$HELPER_UID" 2>/dev/null
+  chmod 644 "$HELPER_UID"
+  echo "  in-app push-update helper armed for uid=$uid."
 }
 
 id | grep -q "uid=0" || { echo "ERROR: not root (uid!=0). This box needs root adb." >&2; exit 1; }
@@ -143,6 +177,11 @@ installed)
     echo "NOTE: versionName is unchanged (${ver:-?})." >&2
     echo "  If you expected an upgrade, the pushed APK may be the same build as before." >&2
   fi
+
+  # Arm the setuid-root helper used by in-app push updates. The current box has
+  # stock su behavior (`uid N not allowed to su`), so future update_app calls need
+  # this one-time PC/root provisioned bridge instead of calling su from the app.
+  install_helper
 
   # Prime autostart: lift out of Android's stopped-state so BOOT_COMPLETED is
   # delivered on every future boot -> box comes up into the media wall.

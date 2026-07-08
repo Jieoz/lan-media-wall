@@ -127,6 +127,39 @@ jobs:
             echo "::notice::apksigner not found; skipping fingerprint echo."
           fi
 
+      - name: Build QZX root update helper
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        run: |
+          NDK_BIN="$(find "$ANDROID_HOME/ndk" -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin' -type d | sort | tail -1)"
+          if [ -z "$NDK_BIN" ]; then
+            echo "Android NDK linux-x86_64 toolchain not found" >&2
+            exit 1
+          fi
+          CC="$NDK_BIN/armv7a-linux-androideabi21-clang"
+          "$CC" -Os -fPIE -Wall -Wextra -Werror \
+            -o scripts/lmw_root_helper scripts/lmw_root_helper.c
+          file scripts/lmw_root_helper
+          chmod 755 scripts/lmw_root_helper
+
+      - name: Package QZX updater tools
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        run: |
+          mkdir -p dist_tools
+          cp scripts/lmw_update.bat scripts/lmw_provision.sh scripts/lmw_root_helper dist_tools/
+          (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
+            lmw_update.bat lmw_provision.sh lmw_root_helper)
+          ls -la LANMediaWall-QZX-Update-Tools.zip
+
+      - name: Upload QZX updater tools
+        if: steps.detect.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-qzx-update-tools
+          path: LANMediaWall-QZX-Update-Tools.zip
+          if-no-files-found: error
+
       - name: Upload release APK
         if: steps.detect.outputs.present == 'true'
         uses: actions/upload-artifact@v4
@@ -143,7 +176,7 @@ jobs:
       # shipping a release with no player APK (the v1.0.0 miss).
       # Rename to an intuitive, version-tagged asset name so the Release page
       # clearly shows what each file is (Android 被控端 / player).
-      - name: Rename player APK for Release
+      - name: Rename release assets
         id: rename
         if: steps.detect.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
@@ -151,14 +184,21 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           SRC="$(ls android_apps/player/app/build/outputs/apk/release/*.apk | head -1)"
           mkdir -p dist_release
-          DST="dist_release/LANMediaWall-${TAG}-Player-Android.apk"
-          cp "$SRC" "$DST"
-          echo "asset=$DST" >> "$GITHUB_OUTPUT"
-          ls -la "$DST"
+          APK_DST="dist_release/LANMediaWall-${TAG}-Player-Android.apk"
+          TOOLS_DST="dist_release/LANMediaWall-${TAG}-QZX-Update-Tools.zip"
+          cp "$SRC" "$APK_DST"
+          cp LANMediaWall-QZX-Update-Tools.zip "$TOOLS_DST"
+          {
+            echo "assets<<EOF"
+            echo "$APK_DST"
+            echo "$TOOLS_DST"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          ls -la "$APK_DST" "$TOOLS_DST"
 
-      - name: Attach release APK to Release (tags only)
+      - name: Attach release assets to Release (tags only)
         if: steps.detect.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.rename.outputs.asset }}
+          files: ${{ steps.rename.outputs.assets }}
           fail_on_unmatched_files: true
