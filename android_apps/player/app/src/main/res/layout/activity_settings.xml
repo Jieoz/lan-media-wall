@@ -134,6 +134,13 @@
             android:textSize="12sp"
             android:paddingBottom="12dp" />
 
+        <Button
+            android:id="@+id/btn_refresh_diag"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/action_refresh_diag" />
+
         <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
         <EditText
             android:id="@+id/input_device_name"
