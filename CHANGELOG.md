@@ -5,6 +5,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ## [Unreleased]
 
+## [v1.13.6] — 2026-07-09
+
+### Changed
+- **QZX/YunOS 盒子运维脚本整合为单一 `lmw_setup`(装升级 + 清理一体)**: 原先分离的 `lmw_update.bat`(装升级)+ `lmw_provision.sh`(ON-BOX 相位状态机,含写死 CLEANLIST)合并为 `scripts/lmw_setup.bat` / `lmw_setup.sh`。一条 PC 命令完成:推 APK+helper+脚本 → 装/升级 player(桥接一次重启)→ arm 推送升级 helper → **禁用媒体墙之外的一切程序** → 设媒体墙为默认桌面,直到 `SETUP COMPLETE`。清理改用**动态白名单**(硬白名单 = OS 地基 + player,其余全禁),取代写死清单,未来新增 bloat 也会被自动扫掉且绝不误伤系统件。参数:`FORCE` / `NOCLEAN` / `KEEPDEBUG` / `NOUNINST`。
+- **推送升级 helper 修复路径明确化**: `install-failed` 的根因是盒子上 arm 的是旧版 `lmw_root_helper`,而推送升级架构上永远碰不到 helper 自身(只往 `/data/app` 丢 APK)。`lmw_setup.bat` 每次都重新推送 + 重新 arm 当前 CI 编译的 helper(带 reboot 支持),这是修好 `install-failed` 的唯一路径。
+- **新增只读盘点与还原脚本**: `scripts/lmw_audit.bat` / `.sh`(toybox 安全的只读盘点)、`scripts/lmw_restore.bat` / `.sh`(动态 `pm enable` 把禁用项全部启用回来)。工具说明见 `scripts/QZX-KIOSK-TOOLS.md`。
+- **CI 工具包更新**: `android-build` 的 `QZX-Update-Tools.zip` 改为打包 `lmw_setup` / `lmw_restore` / `lmw_audit` + `QZX-KIOSK-TOOLS.md` + `lmw_root_helper`,移除已废弃的 `lmw_update.bat` / `lmw_provision.sh`。
+
 ### Fixed
 - **远程日志下载 / 调试快照在 broker + P2P 两种模式下真正闭环**: v1.13.4 引入的功能此前只有控制端与 Android 被控端实现,转发层是断的 —— (1) `broker.py` 的 dispatch 表缺 `download_logs` / `debug_snapshot` / `diagnostic_status` / `download_logs_result` 四个类型,handler 为 None 直接丢弃,broker 模式下请求到 broker 就没了、被控端回传也不转发回控制端 → 必然 30s 超时;(2) P2P 模式下 `P2pCoordinator._onText` 的 switch 没有 `diagnostic_status` / `download_logs_result` 分支,落入 default「忽略入站类型」,同样导致控制端挂起的 completer 永远收不到结果。现在 broker 把两类请求扇出给目标被控端、把两类结果广播回控制端(带 `role=="player"` 校验防伪造);P2P 侧新增 `onDiagnostic` / `onLogDownload` 回调,喂回与 broker 路径相同的 pending completer。新增 `broker/tests/test_debug_routing.py`(5 例)守护双向转发不再回退。
 

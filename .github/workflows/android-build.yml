@@ -147,9 +147,15 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist_tools
-          cp scripts/lmw_update.bat scripts/lmw_provision.sh scripts/lmw_root_helper dist_tools/
+          cp scripts/lmw_setup.bat scripts/lmw_setup.sh \
+             scripts/lmw_restore.bat scripts/lmw_restore.sh \
+             scripts/lmw_audit.bat scripts/lmw_audit.sh \
+             scripts/QZX-KIOSK-TOOLS.md scripts/lmw_root_helper dist_tools/
           (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
-            lmw_update.bat lmw_provision.sh lmw_root_helper)
+            lmw_setup.bat lmw_setup.sh \
+            lmw_restore.bat lmw_restore.sh \
+            lmw_audit.bat lmw_audit.sh \
+            QZX-KIOSK-TOOLS.md lmw_root_helper)
           ls -la LANMediaWall-QZX-Update-Tools.zip
 
       - name: Upload QZX updater tools
