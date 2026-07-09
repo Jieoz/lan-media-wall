@@ -232,7 +232,8 @@ class MainActivity : AppCompatActivity() {
         // §v1.13 HOME/SETUP 键:QZX_C1 等盒子的物理"回主页"键实测发的是 KEY_SETUP=
         // KEYCODE_SETTINGS(176),而不是 KEY_HOME。在播放墙上按它:消费掉(别让它弹出
         // 系统设置/漏进播放器)并把墙重新拉到前台(等价"回到播放墙")。KEY_HOME 仍由
-        // HomeAlias(category HOME)兜底——双键兜底,哪个键位都能回墙。
+        // MainActivity 自身的 category.HOME intent-filter(v1.13.7+)兜底——双键兜底,
+        // 哪个键位都能回墙。
         if (keyCode == KeyEvent.KEYCODE_SETTINGS) {
             goToWall()
             return true
@@ -267,7 +268,7 @@ class MainActivity : AppCompatActivity() {
      * YunOS 盒子上会让进程被系统回收,用户看到的就是"软件直接退出"而不是"进设置"。
      * 现在保留 MainActivity 在返回栈里,只是把设置页压在上面 + 挂起 kiosk 看门狗
      * (KioskState.suspended),这样进设置稳定可靠;用户在设置里按主页键即可回到播放墙
-     * (HomeAlias 默认启用),从设置返回也会落回底下的播放 Activity 而非黑屏。
+     * (MainActivity 自身即 HOME,v1.13.7+),从设置返回也会落回底下的播放 Activity 而非黑屏。
      */
     private fun openSettings() {
         KioskState.suspended = true

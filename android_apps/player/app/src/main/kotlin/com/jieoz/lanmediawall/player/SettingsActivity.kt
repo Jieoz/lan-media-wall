@@ -1,8 +1,6 @@
 package com.jieoz.lanmediawall.player
 
-import android.content.ComponentName
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -30,8 +28,8 @@ import java.io.File
  * its own enrollment QR (built by [QrEncoder]) plus its LAN IP / device_id /
  * group, so the phone controller scans it — the operator types nothing here.
  *
- * §4.1 mode 2: a "set as home" toggle flips the default-disabled HOME
- * [activity-alias] on/off at runtime via [PackageManager.setComponentEnabledSetting].
+ * §4.1: the kiosk player IS the box's HOME/launcher — the HOME intent-filter
+ * lives directly on [MainActivity] (v1.13.7+), so there is no runtime toggle.
  *
  * On save we mark the device configured, (re)start the service, and launch the
  * kiosk player.
@@ -63,9 +61,6 @@ class SettingsActivity : AppCompatActivity() {
         showBloatware()
         renderDiagnostics()
 
-        // HomeAlias 现在 manifest 默认启用(v1.10.3+),所以首次进设置也应勾上;
-        // 保留读取当前实际状态,便于用户主动关掉(极少数不想抢 HOME 的场景)。
-        binding.inputSetAsHome.isChecked = isHomeAliasEnabled()
         binding.btnSave.setOnClickListener { save() }
         binding.btnResetConn.setOnClickListener { confirmResetConnection() }
         binding.btnRefreshDiag.setOnClickListener { renderDiagnostics() }
@@ -325,9 +320,6 @@ class SettingsActivity : AppCompatActivity() {
         settings.alwaysCollectThumbnails = binding.inputAlwaysThumbs.isChecked
         settings.markConfigured()
 
-        // §4.1 mode 2: apply the "set as home" toggle (default-disabled alias).
-        setHomeAliasEnabled(binding.inputSetAsHome.isChecked)
-
         // Restart the service so it picks up the new connection settings.
         val svc = Intent(this, PlayerService::class.java).apply {
             action = PlayerService.ACTION_START
@@ -338,40 +330,6 @@ class SettingsActivity : AppCompatActivity() {
         finish()
     }
 
-    // --- §4.1 mode 2: HOME activity-alias runtime toggle -----------------
-
-    private fun homeAlias() = ComponentName(this, HOME_ALIAS)
-
-    private fun isHomeAliasEnabled(): Boolean =
-        packageManager.getComponentEnabledSetting(homeAlias()) ==
-            PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-
-    /**
-     * Flip the HOME [activity-alias] on/off. `setComponentEnabledSetting` is
-     * available since API 1 (works on 4.4). DONT_KILL_APP so we aren't
-     * terminated mid-settings. Enabling makes this box a HOME candidate; the
-     * user still picks it as default launcher once from the system chooser.
-     */
-    private fun setHomeAliasEnabled(enabled: Boolean) {
-        val state = if (enabled) {
-            PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-        } else {
-            PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-        }
-        try {
-            packageManager.setComponentEnabledSetting(
-                homeAlias(), state, PackageManager.DONT_KILL_APP,
-            )
-        } catch (_: Exception) {
-            // Some ROMs restrict alias toggling; soft kiosk still applies.
-        }
-    }
-
     private fun toast(msg: String) =
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-
-    companion object {
-        /** Fully-qualified name of the default-disabled HOME alias (§4.1). */
-        private const val HOME_ALIAS = "com.jieoz.lanmediawall.player.HomeAlias"
-    }
 }

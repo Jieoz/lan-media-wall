@@ -25,9 +25,6 @@
 
     <!-- §1 configuration reversal: this box shows its own pairing QR. -->
     <string name="label_pair_qr">Pairing QR — scan with the controller</string>
-    <!-- §4.1 mode 2: set as home / launcher toggle (default off). -->
-    <string name="label_set_as_home">Set as home screen (kiosk fallback)</string>
-    <string name="hint_set_as_home">Off by default. Turn on only if boot auto-start fails on this box; you\'ll then pick this app as the default launcher once.</string>
 
     <string name="notif_channel_name">Media Wall Player</string>
     <string name="notif_title">LAN Media Wall</string>

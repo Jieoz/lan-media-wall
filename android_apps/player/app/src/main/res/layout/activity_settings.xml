@@ -218,24 +218,9 @@
             android:paddingTop="8dp"
             android:gravity="center_horizontal" />
 
-        <!-- §4.1 mode 2 (fallback, default OFF): register as HOME/launcher via a
-             default-disabled activity-alias, toggled here at runtime with
-             PackageManager.setComponentEnabledSetting. Never on by default. -->
-        <CheckBox
-            android:id="@+id/input_set_as_home"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:textColor="@color/white"
-            android:text="@string/label_set_as_home" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/hint_set_as_home"
-            android:textColor="@color/idle_text"
-            android:textSize="12sp"
-            android:paddingBottom="8dp" />
+        <!-- §4.1 (v1.13.7+): the kiosk player IS the HOME/launcher — the HOME
+             intent-filter lives on MainActivity, so there is no runtime toggle
+             here. This box is a dedicated media wall; grabbing HOME is intended. -->
 
         <Button
             android:id="@+id/btn_save"

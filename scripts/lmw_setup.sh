@@ -33,7 +33,6 @@
 
 PKG=com.jieoz.lanmediawall.player
 MAIN=$PKG/$PKG.MainActivity
-HOME_ALIAS=$PKG/$PKG.HomeAlias
 APK_SRC=/data/local/tmp/lmw_player.apk
 DST=/data/app/$PKG-1.apk
 PHASE=/data/local/tmp/lmw_phase
@@ -80,7 +79,8 @@ com.android.provision \
 com.android.tv.factorytest \
 com.svox.pico"
 # NOTE: com.youku.taitan.tv (stock youku launcher) is intentionally NOT in the
-# whitelist — it is disabled, and the player's HomeAlias becomes HOME instead.
+# whitelist — it is disabled, and the player's MainActivity (which declares
+# category.HOME, v1.13.7+) becomes the sole HOME candidate instead.
 # com.svox.pico (TTS) kept to avoid any TTS-dependent boot hiccup; harmless.
 
 # Packages that live in /data/app and can actually be uninstalled (else disable).
@@ -165,21 +165,32 @@ run_cleanup() {
   echo "  cleanup summary: disabled=$n_dis uninstalled=$n_uni guarded(kept)=$n_guard"
 }
 
-# Bind the player as default HOME (best-effort across KitKat/YunOS variants).
+# Bind the player as default HOME. v1.13.7+: the HOME intent-filter lives on
+# a REAL Activity (MainActivity), not an activity-alias — the KitKat/YunOS
+# PackageManager DOES register a real Activity as an implicit HOME candidate
+# (it refused to do so for an activity-alias, which broke every prior attempt).
+# With the OEM desktop (youku SLauncher) disabled, MainActivity is the sole
+# CATEGORY_HOME target, so the system settles on it. This function just clears
+# any stale preferred-launcher association and nudges HOME to resolve.
 bind_home() {
-  cmd package set-home-activity "$HOME_ALIAS" >/dev/null 2>&1 \
-    && { echo "  default HOME set to media wall (set-home-activity)."; return; }
-  # fallback: clear stale preferred launcher assoc; with youku disabled the
-  # player's HomeAlias is the sole HOME candidate, system settles on it.
+  # 4.4 has no `cmd package set-home-activity` / `resolve-activity`; clearing
+  # preferred activities + firing a HOME intent is the portable path here.
   pm clear-preferred-activities >/dev/null 2>&1
   am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1
-  home_now="$(cmd package resolve-activity -c android.intent.category.HOME 2>/dev/null | grep -m1 -o "$PKG")"
-  if [ -n "$home_now" ]; then
-    echo "  default HOME resolved to media wall."
-  else
-    echo "  NOTE: could not confirm default HOME; press HOME once on the remote if the box" >&2
-    echo "        doesn't return to the wall (BootReceiver still autostarts it on boot)." >&2
+  # Verify via dumpsys: is our package the resolved HOME / on top of the HOME stack?
+  if dumpsys activity activities 2>/dev/null | grep -m1 -E "Hist|mResumedActivity|Home" | grep -q "$PKG"; then
+    echo "  default HOME = media wall (resolved on the HOME stack)."
+    return
   fi
+  # Second check: does an implicit HOME intent now resolve to us at all?
+  if am start -a android.intent.action.MAIN -c android.intent.category.HOME 2>&1 \
+       | grep -q "$PKG"; then
+    echo "  default HOME = media wall (implicit HOME resolves to player)."
+    return
+  fi
+  echo "  NOTE: could not confirm default HOME from shell; press the remote HOME" >&2
+  echo "        key once — MainActivity now declares category.HOME, so with the" >&2
+  echo "        OEM desktop disabled the box should land on the wall." >&2
 }
 
 # ---------------------------------------------------------------------------

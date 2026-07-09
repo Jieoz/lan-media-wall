@@ -40,8 +40,16 @@
         android:theme="@style/Theme.Player"
         tools:targetApi="34">
 
-        <!-- Kiosk fullscreen player. §4.1 mode 1 (default): LAUNCHER only — this
-             box never grabs HOME by default (avoids fighting the OEM desktop). -->
+        <!-- Kiosk fullscreen player = the box's HOME/launcher (v1.13.7+).
+             §4.1: HOME + LAUNCHER + DEFAULT live directly on MainActivity (a
+             REAL Activity, not an activity-alias). Rationale: the QZX_C1 /
+             Hi3798MV300 KitKat (4.4) ROM does NOT register an activity-alias as
+             an implicit HOME candidate — `am -c android.intent.category.HOME`
+             fails to resolve even with the alias enabled. Declaring the HOME
+             filter on the real Activity is honoured by the stock 4.4
+             PackageManager, so the remote HOME/SETUP key lands on the wall.
+             The OEM desktop (Youku SLauncher) is intentionally disabled on
+             these boxes, so grabbing HOME here is the desired behaviour. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -51,27 +59,11 @@
             android:theme="@style/Theme.Player.Fullscreen">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-
-        <!-- §4.1 mode 2 (fallback, default OFF): HOME/launcher capability lives
-             on this activity-alias, NOT on MainActivity, so we never seize the
-             desktop by default. android:enabled="false" — the "set as home"
-             toggle in SettingsActivity flips it at runtime via
-             PackageManager.setComponentEnabledSetting (works on 4.4). The alias
-             name is referenced from code as HomeAlias. -->
-        <activity-alias
-            android:name=".HomeAlias"
-            android:targetActivity=".MainActivity"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-        </activity-alias>
+        </activity>
 
         <!-- First-boot setup: device_name / broker / PSK -->
         <activity

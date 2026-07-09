@@ -5,6 +5,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ## [Unreleased]
 
+## [v1.13.7] — 2026-07-09
+
+### Fixed
+- **遥控物理主页键真正回到媒体墙(QZX_C1 / Hi3798MV300 / HiSTBAndroidV6,Android 4.4.2)—— 根因修复**: 此前 HOME/launcher 能力挂在 `activity-alias`(`.HomeAlias`,`targetActivity=".MainActivity"`)上。真机验证链锁定根因:这批 HiSilicon/YunOS 4.4 阉割固件的 `PackageManager` **不把 `activity-alias` 注册进隐式 `category.HOME` 解析表** —— 即便组件已 `pm enable`、已断电重启、`dumpsys activity activities` 显示 HomeAlias 已被系统当 HOME 坐进 HOME 栈(`mOnTopOfHome=true` / `STACK_STATE_HOME_IN_BACK`)、显式 `am start -n .../.HomeAlias` 也能拉起,但 `am start -a MAIN -c android.intent.category.HOME` 始终 `unable to resolve Intent`,物理主页键 / `input keyevent 3` 从其他 App 回不到墙。**修法**:把 `category.HOME` + `category.DEFAULT` 从 activity-alias 迁到**真正的 Activity**(`MainActivity` 的 intent-filter,与 `MAIN` + `LAUNCHER` 并列),删除 `.HomeAlias` 别名。4.4 的 stock PackageManager 认可真 Activity 作为隐式 HOME 候选;配合已禁用的 OEM 桌面(youku SLauncher),`MainActivity` 成为唯一 `CATEGORY_HOME` 目标,遥控主页键直达媒体墙。
+- **`lmw_setup.sh` 的 `bind_home` 改用可用路径**: 4.4 阉割盒无 `cmd package set-home-activity` / `resolve-activity`,原调用永远失败。改为 `pm clear-preferred-activities` + 触发 HOME intent + `dumpsys activity activities` 校验落栈,并在无法从 shell 确认时提示按一次遥控主页键(MainActivity 现声明 category.HOME,OEM 桌面已禁用,必落回墙)。
+
+### Removed
+- **播放端设置页「设为桌面(kiosk 兜底)」开关及其 activity-alias 运行时切换逻辑**: HOME 能力现在恒定挂在 `MainActivity` 上(专用媒体墙盒抢 HOME 即预期行为),不再需要运行时开关。移除 `SettingsActivity` 的 `isHomeAliasEnabled` / `setHomeAliasEnabled` / `HOME_ALIAS` 常量、布局 `input_set_as_home` CheckBox、`label_set_as_home` / `hint_set_as_home` 字符串(中英)。
+
 ## [v1.13.6] — 2026-07-09
 
 ### Changed

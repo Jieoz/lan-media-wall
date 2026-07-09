@@ -19,12 +19,16 @@ prefetch barrier §21, remote self-update §23).
 > newer". Bumping `versionName` alone can cause the update to be rejected as the same
 > version. See the release checklist in the root README.
 
-> **HOME/SETUP 物理键回播放墙(v1.13).** QZX_C1 等盒子的物理「回主页」键实测发的是
-> `KEY_SETUP` = `KEYCODE_SETTINGS`(176),**不是** `KEY_HOME`。`MainActivity.onKeyDown`
-> 新增 `KEYCODE_SETTINGS` 分支:消费该键(不让它弹系统设置/漏进播放器)并 `goToWall()`
-> 把播放墙(`MainActivity`,`launchMode=singleTask`)以 `FLAG_ACTIVITY_REORDER_TO_FRONT
-> | SINGLE_TOP` 重新拉到前台。`KEY_HOME` 仍由 `HomeAlias`(category HOME)兜底——**双键
-> 兜底**,哪种键位的盒子都能回墙。
+> **HOME/SETUP 物理键回播放墙(v1.13,HOME 绑定 v1.13.7 根因修复).** QZX_C1 等盒子的物理
+> 「回主页」键实测发的是 `KEY_SETUP` = `KEYCODE_SETTINGS`(176),**不是** `KEY_HOME`。
+> `MainActivity.onKeyDown` 新增 `KEYCODE_SETTINGS` 分支:消费该键(不让它弹系统设置/漏进
+> 播放器)并 `goToWall()` 把播放墙(`MainActivity`,`launchMode=singleTask`)以
+> `FLAG_ACTIVITY_REORDER_TO_FRONT | SINGLE_TOP` 重新拉到前台。`KEY_HOME` 由 `MainActivity`
+> 自身声明的 `category.HOME` intent-filter 兜底——**双键兜底**,哪种键位的盒子都能回墙。
+> **v1.13.7 起 HOME 能力直接挂在真 Activity(`MainActivity`)上,不再用 `activity-alias`**:
+> 这批 HiSilicon/YunOS 4.4 固件的 PackageManager 不把 activity-alias 注册进隐式
+> `category.HOME` 解析表(`am -c HOME` 恒 `unable to resolve`),迁到真 Activity 后
+> 4.4 stock 框架才认它作 HOME 候选。
 
 > **`restart` 命令(v1.13.3).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
 > 命令白名单含 `"restart"` → `hRestart` 分支**重启整台设备**。优先调用 provision
@@ -231,10 +235,12 @@ These can't be exercised in a headless CI/container and need a device:
   `Force finishing` → 表现为"上上下下退出软件"。现加 `SDK_INT >= LOLLIPOP` 版本守卫 +
   `catch(Throwable)` 双保险,并对 `tryLockTask()` 整条 Lock Task 链(start/stop/
   isInLockTaskMode/lockTaskModeState/setLockTaskPackages)在 4.4 上整体早返回跳过。
-- **遥控主页键真正回到播放墙。** 仅 manifest 启用 `HomeAlias` 不够——4.4 框架保留 preferred-HOME
+- **遥控主页键真正回到播放墙。** ~~仅 manifest 启用 `HomeAlias` 不够——4.4 框架保留 preferred-HOME
   关联。provision 脚本新增:禁用 OEM(youku)桌面后,用 `cmd package set-home-activity`(高版本)
-  或 `pm clear-preferred-activity`(4.4 回退,让唯一启用的 CATEGORY_HOME 目标=我们被自动选中)
-  把播放端设为默认 HOME。设置页「设为主页」开关随之默认勾选。
+  或 `pm clear-preferred-activity`(4.4 回退)把播放端设为默认 HOME。设置页「设为主页」开关随之默认勾选。~~
+  **(v1.13.7 已被根因修复取代)** 真机验证证明:这批 4.4 固件根本不把 `activity-alias` 注册进隐式
+  `category.HOME` 解析表,任何 `set-home-activity` / preferred 手段都无效。现把 `category.HOME` 直接挂
+  到 `MainActivity`(真 Activity),4.4 stock 框架即认它作 HOME;`activity-alias` 与「设为主页」开关一并删除。
 
 ## D-pad→Settings, HOME key→wall, kiosk-exit no longer kills the app (1.10.3)
 
