@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../protocol/envelope.dart';
@@ -689,9 +690,7 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         try {
                           final text = await state.requestDebugSnapshot(deviceId: device.deviceId);
                           if (context.mounted) {
-                            ScaffoldMessenger.of(context)
-                              ..clearSnackBars()
-                              ..showSnackBar(SnackBar(content: Text('调试快照: $text')));
+                            await _showCopyableDebugSnapshot(context, device, text);
                           }
                         } catch (e) {
                           if (context.mounted) {
@@ -820,6 +819,44 @@ Future<void> _confirmForgetDevice(
       ..clearSnackBars()
       ..showSnackBar(SnackBar(content: Text('已从控制端移除「$name」')));
   }
+}
+
+
+Future<void> _showCopyableDebugSnapshot(
+  BuildContext context,
+  WallDevice device,
+  String text,
+) async {
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('调试快照 · ${device.deviceName.isEmpty ? device.deviceId : device.deviceName}'),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: SelectableText(text.isEmpty ? '(空快照)' : text),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('关闭'),
+        ),
+        FilledButton.icon(
+          icon: const Icon(Icons.copy, size: 18),
+          label: const Text('复制全部'),
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: text));
+            if (ctx.mounted) {
+              ScaffoldMessenger.of(ctx)
+                ..clearSnackBars()
+                ..showSnackBar(const SnackBar(content: Text('调试快照已复制')));
+            }
+          },
+        ),
+      ],
+    ),
+  );
 }
 
 /// §9.4 重启设备二次确认:重启的是整台盒子,不是只重启播放软件。

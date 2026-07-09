@@ -934,34 +934,105 @@ class PlayerService : Service() {
     }
 
     /**
-     * §debug: return the persisted player.log (plus any rotated tail) to the
-     * controller as a single text blob via download_logs_result. Capped so the
-     * broker frame never blows past a sane size; the controller writes it to a
-     * local file for offline inspection.
+     * §debug: return a bounded diagnostics bundle, not just player.log. The
+     * controller persists it under Downloads so Jay can send one file back for
+     * root-cause debugging without re-running adb commands.
      */
     private fun hDownloadLogs(payload: Json.Obj) {
         if (!targetsMe(payload)) return
-        val text = synchronized(logLock) {
-            val sb = StringBuilder()
-            val rotated = File(logDir, "player.log.1")
-            if (rotated.exists()) {
-                try { sb.append(rotated.readText()) } catch (_: Exception) {}
-            }
-            if (logFile.exists()) {
-                try { sb.append(logFile.readText()) } catch (_: Exception) {}
-            }
-            // Fall back to the in-memory ring if nothing landed on disk yet.
-            if (sb.isEmpty()) sb.append(logBuffer.joinToString("\n"))
-            val full = sb.toString()
-            // Keep only the last ~128 KB so the transport frame stays bounded.
-            val cap = 128 * 1024
-            if (full.length > cap) full.substring(full.length - cap) else full
-        }
+        val text = buildDiagnosticLogBundle()
         link?.send("download_logs_result", jsonObj {
             put("device_id", settings.deviceId)
             put("text", text)
-            put("file_name", "player-${settings.deviceId}.log")
+            put("file_name", "lan-media-wall-player-${settings.deviceId}-${System.currentTimeMillis()}.log")
         })
+    }
+
+    private fun buildDiagnosticLogBundle(): String = buildString {
+        appendSection("summary") {
+            line("time_ms=${System.currentTimeMillis()}")
+            line("device_id=${settings.deviceId}")
+            line("device_name=${settings.deviceName}")
+            line("group_id=${settings.groupId}")
+            line("app_version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            line("android_sdk=${Build.VERSION.SDK_INT}")
+            line("ip=$deviceIp")
+            line("transport=${link?.javaClass?.simpleName ?: "none"} connected=${link?.isConnected ?: false}")
+            line("play_state=${debugPlayState()} index=${debugIndex()} controller_present=${debugControllerPresent()}")
+            line("current_item=${currentItemForDebug() ?: "none"}")
+            line("cache=${debugCacheSummary()}")
+            line("errors=${debugErrorsSummary()}")
+            line(debugHealthProbeSummary())
+        }
+        appendSection("paths") {
+            line("filesDir=${filesDir.absolutePath}")
+            line("cacheDir=${cacheDir.absolutePath}")
+            line("logDir=${logDir.absolutePath}")
+            line("mediaCacheDir=${mediaStore.mediaCacheDir.absolutePath}")
+        }
+        appendSection("helper") {
+            val helper = File("/data/local/tmp/lmw_root_helper")
+            val uid = File("/data/local/tmp/lmw_root_helper.uid")
+            line("helper_exists=${helper.exists()} canRead=${helper.canRead()} canExecute=${helper.canExecute()} size=${if (helper.exists()) helper.length() else 0}")
+            line("helper_uid_file=${readTail(uid, 4096).ifBlank { "missing-or-empty" }}")
+            line("helper_note=diagnostic export never invokes helper install/reboot; this section is file-state only")
+        }
+        appendSection("player_log") {
+            synchronized(logLock) {
+                val rotated = File(logDir, "player.log.1")
+                if (rotated.exists()) {
+                    line("--- player.log.1 tail ---")
+                    line(readTail(rotated, 96 * 1024))
+                }
+                if (logFile.exists()) {
+                    line("--- player.log tail ---")
+                    line(readTail(logFile, 160 * 1024))
+                }
+                if (!rotated.exists() && !logFile.exists()) {
+                    line(logBuffer.joinToString("\n").ifBlank { "no player log yet" })
+                }
+            }
+        }
+        appendSection("logcat_tail") {
+            line(runCommandTail(listOf("logcat", "-d", "-v", "time", "-t", "400"), 192 * 1024))
+        }
+    }.let { full ->
+        val cap = 384 * 1024
+        if (full.length > cap) "[TRUNCATED diagnostic bundle: kept last ${cap} chars]\n" + full.substring(full.length - cap) else full
+    }
+
+    private fun StringBuilder.appendSection(title: String, body: StringBuilder.() -> Unit) {
+        line()
+        line("===== $title =====")
+        body()
+    }
+
+    private fun StringBuilder.line(value: Any? = "") {
+        append(value ?: "")
+        append('\n')
+    }
+
+    private fun readTail(file: File, maxChars: Int): String {
+        return try {
+            if (!file.exists()) {
+                ""
+            } else {
+                val text = file.readText()
+                if (text.length > maxChars) "[TRUNCATED ${file.name}: kept last $maxChars chars]\n" + text.substring(text.length - maxChars) else text
+            }
+        } catch (e: Exception) {
+            "read ${file.absolutePath} failed: ${e.javaClass.simpleName}: ${e.message}"
+        }
+    }
+
+    private fun runCommandTail(cmd: List<String>, maxChars: Int): String = try {
+        val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText()
+        val code = p.waitFor()
+        val text = "exit=$code cmd=${cmd.joinToString(" ")}\n$out"
+        if (text.length > maxChars) "[TRUNCATED command output: kept last $maxChars chars]\n" + text.substring(text.length - maxChars) else text
+    } catch (e: Exception) {
+        "command ${cmd.joinToString(" ")} failed: ${e.javaClass.simpleName}: ${e.message}"
     }
 
 

@@ -73,7 +73,11 @@ class AppUpdater(
                 part.copyTo(apk, overwrite = true); part.delete()
             }
 
-            if (!RootInstaller.hasRoot()) return Result.Failed("no-root")
+            // Do NOT preflight `su` here. On QZX/YunOS boxes the app UID is
+            // usually denied by stock su, while the provisioned setuid helper is
+            // exactly the supported path for in-app push upgrades. RootInstaller
+            // tries the helper first and falls back to su only if helper is not
+            // available.
             return if (RootInstaller.install(pkg, apk)) Result.Installing
                    else Result.Failed("install-failed")
         } catch (e: Exception) {

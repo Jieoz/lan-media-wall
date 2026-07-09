@@ -581,16 +581,15 @@ class WallState extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    // 把回传文本落到本地临时目录的真实文件，再用 File 完成 Future。
-    // 在 Android/桌面上 Directory.systemTemp 都可写，且无需额外插件依赖。
+    // 把回传文本落到用户能找到的位置，而不是系统临时目录。
+    // Android 优先公共 Download/LANMediaWall/logs；桌面优先 ~/Downloads/LANMediaWall/logs。
+    // 若系统权限/存储策略拦截，再回退到 temp，并把实际路径回显给用户。
     () async {
       try {
-        final dir = Directory('${Directory.systemTemp.path}/lan_media_wall_logs');
-        if (!await dir.exists()) await dir.create(recursive: true);
         final safeName = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-        final f = File('${dir.path}/$safeName');
-        await f.writeAsString(text);
-        _pushLog('[$deviceId] 日志已保存: ${f.path}');
+        final bundle = _appendControllerDiagnostics(deviceId, text);
+        final f = await _writeLogToUserDownloads(safeName, bundle);
+        _pushLog('[$deviceId] 诊断日志包已保存: ${f.path}');
         c.complete(f);
       } catch (e) {
         _pushLog('[$deviceId] 日志写盘失败: $e');
@@ -598,6 +597,64 @@ class WallState extends ChangeNotifier {
       }
       notifyListeners();
     }();
+  }
+
+
+  String _appendControllerDiagnostics(String deviceId, String playerText) {
+    final b = StringBuffer(playerText);
+    b.writeln();
+    b.writeln();
+    b.writeln('===== controller_summary =====');
+    b.writeln('time_ms=${DateTime.now().millisecondsSinceEpoch}');
+    b.writeln('target_device_id=$deviceId');
+    b.writeln('topology=$_topology conn=$_conn p2p_peers=$_p2pPeers auth_mode=$_authMode key_mode=$_keyMode');
+    b.writeln('broker=${brokerSecure ? 'wss' : 'ws'}://$brokerHost:$brokerPort');
+    b.writeln('wall_devices=${wallDevices.length} groups=${groups.length}');
+    for (final d in wallDevices) {
+      b.writeln('device id=${d.deviceId} name=${d.deviceName} phase=${d.phase} online=${d.status?.online} ip=${d.ip} error=${d.error ?? ''} update=${_updateStatus[d.deviceId] ?? ''}:${_updateDetail[d.deviceId] ?? ''}');
+    }
+    b.writeln();
+    b.writeln('===== controller_log =====');
+    for (final line in _log.take(1000)) {
+      b.writeln(line);
+    }
+    return b.toString();
+  }
+
+  Future<File> _writeLogToUserDownloads(String safeName, String text) async {
+    final tried = <String>[];
+    for (final root in _downloadRoots()) {
+      final dir = Directory('$root/LANMediaWall/logs');
+      tried.add(dir.path);
+      try {
+        if (!await dir.exists()) await dir.create(recursive: true);
+        final f = File('${dir.path}/$safeName');
+        await f.writeAsString(text);
+        return f;
+      } catch (_) {
+        // Try the next platform-specific candidate.
+      }
+    }
+    final dir = Directory('${Directory.systemTemp.path}/lan_media_wall_logs');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    final f = File('${dir.path}/$safeName');
+    await f.writeAsString(text);
+    _pushLog('公共下载目录不可写，已回退到临时目录: ${f.path}; tried=${tried.join(', ')}');
+    return f;
+  }
+
+  List<String> _downloadRoots() {
+    if (Platform.isAndroid) {
+      return const [
+        '/storage/emulated/0/Download',
+        '/sdcard/Download',
+      ];
+    }
+    final home = Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'] ??
+        '';
+    if (home.isEmpty) return const [];
+    return ['$home/Downloads', '$home/下载'];
   }
 
   /// 供 UI 卡片读取某台设备最近一次升级状态/详情（无则返回 null）。

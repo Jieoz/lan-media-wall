@@ -3,11 +3,11 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.13.4+36`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.13.5+37`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **单台设备面板(v1.13)**:设备墙里单击一台盒子的详情弹窗,除改名/设组/音量/推送升级外,新增只针对**这一台 `deviceId`** 的:①**单台播放控制**——暂停/恢复/停止(`WallState.pause/resume/stop(deviceId:)`);②**单播推送内容**——上传+下发 playlist/prepare-play 只锁这一台;③**状态/版本一览**(`_DeviceStatusView`)——展示 `DeviceStatus` 的应用版本(`appVersion`)/在线相位/当前播放项/缓存态/组/音量;④**restart 按钮**(带二次确认)——下发 `restart` 命令**重启整台设备**,协议 `Commands.restart` + `WallState.restart(deviceId:)`,被控端 `PlayerService` 走命令白名单 `hRestart` 分支。
 >
-> **远程日志下载 + 调试快照(v1.13.4,端到端闭环).** 单台设备详情弹窗新增「下载日志」与「调试快照」:控制端分别下发 `download_logs` / `debug_snapshot`,并用 `deviceId` 归键的 pending completer 等待 `download_logs_result` / `diagnostic_status`。broker 模式下 broker 必须转发请求和回包;P2P 模式下 `P2pCoordinator` 必须把两类回包喂回 `WallState` 的相同回调。缺任何一跳都会表现为按钮超时,所以此功能必须控制端、被控端、broker、P2P 协调端同版本发布测试。
+> **远程诊断日志包 + 可复制调试快照(v1.13.5,端到端闭环).** 单台设备详情弹窗「下载日志」现在导出排障包而不是临时 player.log:播放端 `download_logs_result` 包含版本/网络/传输/播放态/cache/errors/helper/root/update 探针、helper uid/usage、player.log/rotated tail 与可读 logcat tail;控制端保存前再追加 controller_summary/controller_log,优先落到 Android `Download/LANMediaWall/logs` 或桌面 `~/Downloads/LANMediaWall/logs`。调试快照不再只 toast,改为可选择文本对话框并提供「复制全部」。broker 模式下 broker 必须转发请求和回包;P2P 模式下 `P2pCoordinator` 必须把两类回包喂回 `WallState` 的相同回调。缺任何一跳都会表现为按钮超时。
 >
 > **peer 身份归一 · 根治黑屏+双卡(v1.11.0,关键)**:扫码/手动添加的盒子无真实 `device_id`,`P2pCoordinator` 用拨号端点 `host:port` 当占位 key 建连;盒子 `welcome`/`status` 上报的**真实 device_id** 走另一命名空间 → `connectedIds` 与 `WallAggregator`/`GroupExpander` 对不上 → 组扇出恒空(只靠 v1.10.5 兜底硬发 prepare)、握手目标集是占位 key、播放端 `ready` 带真实 id 匹配失败 → **`play_at` 永不下发 → 黑屏**;设备墙还会出「占位卡+真实卡」两张。修复:连接拿到真实 device_id 后把 `_links`/`_subs`/`_peers` **从占位 key 重绑定到真实 id**(打印 `身份归一: host:port → <id>`),`setPeers` 改按端点对账避免误断重拨,`WallState` 把占位卡折叠进真实卡(**同一盒子只剩一张卡**)。归一后正常路径优先命中,v1.10.5 兜底保留但不再是唯一推图路径。回归见 `test/p2p_coordinator_test.dart`。
 >
