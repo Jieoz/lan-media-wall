@@ -8,7 +8,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.13.3 / versionCode 35`** — derived from
+> **Current build: `versionName 1.13.4 / versionCode 36`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -30,6 +30,12 @@ prefetch barrier §21, remote self-update §23).
 > 命令白名单含 `"restart"` → `hRestart` 分支**重启整台设备**。优先调用 provision
 > 过的 `lmw_root_helper reboot`,再回退 `su -c reboot`;若两者都失败,只上报错误,
 > 绝不杀掉播放端进程。
+>
+> **远程日志下载 + 调试快照(v1.13.4).** `PlayerService` 处理控制端发来的
+> `download_logs` / `debug_snapshot`:前者读取持久化 `player.log` 的滚动尾段并通过
+> `download_logs_result` 回传,后者把版本、播放态、缓存、最近错误、helper 探针等聚合为
+> `diagnostic_status`。这两个功能依赖全链路同版:控制端发请求、Android Player 处理请求、
+> broker/P2P 协调端转发请求和回包;只升级控制端配旧 Player 会超时。
 
 > **Release signing (v1.11.0, §根因B — 覆盖升级/远程 update_app 的前提).** The
 > `release` buildType signs with a **fixed production certificate** decoded by CI

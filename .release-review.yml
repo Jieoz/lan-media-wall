@@ -12,3 +12,7 @@ required_wired:
 dart_dirs: [remote_flutter]
 contract_keys:
   - {key: key_mode, files: ["broker/broker.py", "windows_player/main.py"]}
+  - {key: download_logs, files: ["protocol_spec.md", "broker/broker.py", "remote_flutter/lib/p2p/p2p_coordinator.dart", "remote_flutter/lib/state/wall_state.dart", "android_apps/player/app/src/main/kotlin/com/jieoz/lanmediawall/player/PlayerService.kt"]}
+  - {key: download_logs_result, files: ["protocol_spec.md", "broker/broker.py", "remote_flutter/lib/p2p/p2p_coordinator.dart", "remote_flutter/lib/state/wall_state.dart", "android_apps/player/app/src/main/kotlin/com/jieoz/lanmediawall/player/PlayerService.kt"]}
+  - {key: debug_snapshot, files: ["protocol_spec.md", "broker/broker.py", "remote_flutter/lib/p2p/p2p_coordinator.dart", "remote_flutter/lib/state/wall_state.dart", "android_apps/player/app/src/main/kotlin/com/jieoz/lanmediawall/player/PlayerService.kt"]}
+  - {key: diagnostic_status, files: ["protocol_spec.md", "broker/broker.py", "remote_flutter/lib/p2p/p2p_coordinator.dart", "remote_flutter/lib/state/wall_state.dart", "android_apps/player/app/src/main/kotlin/com/jieoz/lanmediawall/player/PlayerService.kt"]}

@@ -25,6 +25,21 @@ field names and semantics here follow it exactly.
 | `discovery.py` | UDP 8772 discover/announce, self-announce + discover replies (§7/§14.5) |
 | `pairing.py` | `lmw://pair?...` URI builder + terminal QR; derived per-endpoint codes (§15/§17.4) |
 
+## v1.13.4 — remote logs + debug snapshot forwarding
+
+The broker dispatch table explicitly routes the single-device diagnostics added
+in §24 of the protocol spec:
+
+- controller→player requests: `download_logs`, `debug_snapshot`, routed by the
+  normal `to`/`target` device selection and broadcast only to player clients.
+- player→controller replies: `download_logs_result`, `diagnostic_status`,
+  accepted only from `role == "player"` and broadcast to connected controllers.
+
+This is a required hop, not an optimization. If these four message types are
+missing from broker routing, the controller button will time out even though both
+endpoints compile. `broker/tests/test_debug_routing.py` guards the request and
+reply directions.
+
 ## Ports
 
 - `8770` WS (always on)
