@@ -107,7 +107,11 @@ class PlayerService : Service() {
         settings = Settings(applicationContext)
         clock = ClockSync()
         mediaStore = MediaStore(applicationContext)
-        downloader = Downloader(mediaStore.mediaCacheDir, onChange = { /* status loop reads */ })
+        downloader = Downloader(
+            mediaStore.mediaCacheDir,
+            onChange = { /* status loop reads */ },
+            logSink = { msg -> logEvent("dl $msg") },
+        )
         controllerPresent = settings.alwaysCollectThumbnails
         deviceIp = AndroidNet.detectLanIp()
         logEvent("service_create ip=$deviceIp group=${settings.groupId}")
@@ -1221,10 +1225,15 @@ class PlayerService : Service() {
             delay(5000)
             // re-assert kiosk immersive state on the activity (§11)
             MainActivity.instance?.reassertKiosk()
-            // recover from a player error: resume last task within ~5s (§11)
+            // recover from a player error: resume last task within ~5s (§11).
+            // Two triggers now: (a) playState=="error" — the B1 onPlayerError hook
+            // flipped it the instant ExoPlayer failed (fast path); (b) a snapshot
+            // error while we still think we're playing — the pre-B1 fallback for
+            // any error that slipped past the callback. Either one recovers.
             val err = controllerRef?.snapshot()?.error
-            if (err != null && playState == "playing") {
-                pushError("player:$err")
+            if (playState == "error" || (err != null && playState == "playing")) {
+                logEvent("watchdog_recover playState=$playState snapErr=${err ?: "none"}")
+                pushError("player:${err ?: "state-error"}")
                 resumeLast()
             }
         }
@@ -1334,7 +1343,33 @@ class PlayerService : Service() {
 
     /** Called by MainActivity after PlayerController + surfaces are ready. */
     fun onPlayerUiReady() {
+        wireController()
         scope.launch { resumeLast() }
+    }
+
+    /**
+     * B1 根因修复 + 诊断接线(幂等):把 PlayerController 的诊断事件接进导出的
+     * player.log,并**主动订阅** onPlayerError —— 过去从没订阅,ExoPlayer 报解码
+     * 错误(如 OMX_ErrorStreamCorrupt)时 playState 仍停在 "playing",控制端看到
+     * 的是「假成功」,黑屏无从感知。这里错误一发生就:①即时写 player.log(不再等
+     * watchdog 5s 后才记一条泛化 player:X);②推进 errors deque;③把 playState 翻成
+     * "error",让 §5 status 如实上报。watchdogLoop 的 5s 恢复逻辑保持不变作为兜底。
+     */
+    @Volatile private var wiredController: PlayerController? = null
+    private fun wireController() {
+        val ctl = controllerRef ?: return
+        // Track by instance identity: MainActivity builds a NEW PlayerController on
+        // every onCreate (activity recreation), so a plain boolean would leave the
+        // fresh controller un-wired. Re-wire whenever the instance changes.
+        if (wiredController === ctl) return
+        wiredController = ctl
+        ctl.logSink = { msg -> logEvent("exo $msg") }
+        ctl.onPlayerError = { code ->
+            logEvent("player_error code=$code prevState=$playState item=${currentItem()?.itemId ?: "none"}")
+            pushError("player:$code")
+            playState = "error"
+        }
+        logEvent("controller_wired")
     }
 
     companion object {

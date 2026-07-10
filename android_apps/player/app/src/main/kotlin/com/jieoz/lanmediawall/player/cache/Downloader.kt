@@ -87,9 +87,18 @@ class Downloader(
     private val onChange: (() -> Unit)? = null,
     private val chunkSize: Int = 256 * 1024,
     timeoutSeconds: Long = 30,
+    /**
+     * Diagnostic sink → PlayerService.logEvent so cache-path decisions land in
+     * the **exported** player.log, not logcat. The last black-screen regression
+     * was undiagnosable because download/verify/restore events only went to
+     * `Log.w/i` (logcat), which the 4.4 boxes truncate. Prefixed `dl ` service-side.
+     */
+    private val logSink: ((String) -> Unit)? = null,
 ) {
     private val entries = ConcurrentHashMap<String, CacheEntry>()
     private val inFlight = ConcurrentHashMap<String, Boolean>()
+
+    private fun log(msg: String) { logSink?.invoke(msg) }
 
     /** §6 cache quota. 0 = unlimited (never evict). Set by the service from
      *  Settings.cacheMaxBytes. The *effective* cap also factors free disk. */
@@ -153,7 +162,33 @@ class Downloader(
             // 完整文件必须存在、无对应 .part、且大小匹配(有 size 时)才算 ready。
             if (!target.exists() || part.exists()) continue
             val size = item.size
-            if (size != null && target.length() != size) continue
+            if (size != null && target.length() != size) {
+                log("restore skip=$itemId reason=size-mismatch disk=${target.length()} expect=$size")
+                continue
+            }
+            // B2 根因修复:重启恢复捷径过去只比 size 就标 ready,一个被截断/损坏但
+            // 长度恰好相符(或 item 未带 size)的文件会被当作可播 —— ExoPlayer 拿到坏
+            // 码流吐 OMX_ErrorStreamCorrupt → 黑屏。带 sha256 的 item 恢复前必须校验;
+            // 不符则删文件回退完整下载,绝不标 ready。size-only 的旧行为仅在 item 没有
+            // sha256(无法校验)时保留,并显式记 unverified 供诊断。
+            val expectedSha = item.sha256
+            if (!expectedSha.isNullOrEmpty()) {
+                val actual = try {
+                    sha256File(target)
+                } catch (e: Exception) {
+                    log("restore skip=$itemId reason=sha-read-fail:${e.javaClass.simpleName}")
+                    continue
+                }
+                if (!actual.equals(expectedSha, ignoreCase = true)) {
+                    log("restore reject=$itemId reason=sha256-mismatch " +
+                        "actual=${actual.take(12)} expect=${expectedSha.take(12)} → delete+refetch")
+                    target.delete() // corrupt on disk; force a clean re-download
+                    continue
+                }
+                log("restore ok=$itemId source=disk sha256=verified size=${target.length()}")
+            } else {
+                log("restore ok=$itemId source=disk sha256=UNVERIFIED(item has no sha) size=${target.length()}")
+            }
             entries[itemId] = CacheEntry(itemId).apply {
                 state = "ready"; progress = 100; path = target
             }
@@ -348,6 +383,25 @@ class Downloader(
             if (existing != null && existing.state in setOf("downloading", "verifying")) return
             if (inFlight[itemId] == true) return
             if (target.exists() && quickOk(target, item)) {
+                // B2 根因修复(第二处 size-only 捷径):prefetch 命中磁盘旧文件时,过去
+                // 仅 quickOk(比 size)就直接标 ready,和 restoreReadyFromDisk 同源。带
+                // sha256 的 item 必须校验通过才认 ready;不符删文件走完整下载。
+                val expectedSha = item.sha256
+                if (!expectedSha.isNullOrEmpty()) {
+                    val actual = try { sha256File(target) } catch (e: Exception) { null }
+                    if (actual == null || !actual.equals(expectedSha, ignoreCase = true)) {
+                        log("prefetch reject=$itemId reason=sha256-mismatch " +
+                            "actual=${actual?.take(12) ?: "read-fail"} expect=${expectedSha.take(12)} → delete+refetch")
+                        target.delete()
+                        entries[itemId] = CacheEntry(itemId)
+                        inFlight[itemId] = true
+                        pool.submit { worker(item) }
+                        return
+                    }
+                    log("prefetch ok=$itemId source=disk sha256=verified size=${target.length()}")
+                } else {
+                    log("prefetch ok=$itemId source=disk sha256=UNVERIFIED(item has no sha) size=${target.length()}")
+                }
                 val e = CacheEntry(itemId).apply {
                     state = "ready"; progress = 100; path = target
                 }
@@ -355,6 +409,7 @@ class Downloader(
                 notifyChange()
                 return
             }
+            log("prefetch start=$itemId source=network url=${item.url}")
             entries[itemId] = CacheEntry(itemId)
             inFlight[itemId] = true
         }
@@ -419,10 +474,15 @@ class Downloader(
             if (!expectedSha.isNullOrEmpty()) {
                 val actual = sha256File(part)
                 if (!actual.equals(expectedSha, ignoreCase = true)) {
+                    log("download reject=$itemId reason=sha256-mismatch " +
+                        "actual=${actual.take(12)} expect=${expectedSha.take(12)} bytes=${part.length()}")
                     part.delete() // corrupt; force clean retry
                     fail(itemId, "sha256-mismatch")
                     return
                 }
+                log("download verified=$itemId source=network sha256=ok bytes=${part.length()}")
+            } else {
+                log("download done=$itemId source=network sha256=UNVERIFIED(item has no sha) bytes=${part.length()}")
             }
             if (!part.renameTo(target)) {
                 // fallback: copy+delete if rename across boundary fails
@@ -431,6 +491,7 @@ class Downloader(
             }
             set(itemId, state = "ready", progress = 100, path = target)
         } catch (e: Exception) {
+            log("download fail=$itemId ex=${e.javaClass.simpleName}:${e.message}")
             fail(itemId, e.javaClass.simpleName) // keep .part for resume
         } finally {
             inFlight.remove(itemId)

@@ -11,6 +11,7 @@ import com.google.android.exoplayer2.MediaItem as ExoMediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.ExoPlayer
+import com.google.android.exoplayer2.video.VideoSize
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
@@ -44,6 +45,24 @@ class PlayerController(context: Context) {
      *  the service can auto-advance the playlist (§6.3 carousel). */
     @Volatile var onVideoEnded: (() -> Unit)? = null
 
+    /**
+     * Diagnostic sink → PlayerService.logEvent, so decode-path events land in the
+     * **exported** player.log rather than logcat (which is heavily truncated on
+     * the 4.4/HiSilicon boxes — the blind spot that made the last black-screen
+     * regression impossible to diagnose from the pulled log). Every message is
+     * prefixed `exo ` by the service side; keep payloads terse and machine-greppable.
+     */
+    @Volatile var logSink: ((String) -> Unit)? = null
+    private fun log(msg: String) { logSink?.invoke(msg) }
+
+    private fun stateName(state: Int): String = when (state) {
+        Player.STATE_IDLE -> "IDLE"
+        Player.STATE_BUFFERING -> "BUFFERING"
+        Player.STATE_READY -> "READY"
+        Player.STATE_ENDED -> "ENDED"
+        else -> "state$state"
+    }
+
     fun init() {
         runOnMain {
             if (player != null) return@runOnMain
@@ -53,17 +72,39 @@ class PlayerController(context: Context) {
             p.addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
                     lastError = error.errorCodeName
+                    // errorCodeName is the greppable enum; cause pins the decoder
+                    // failure (e.g. OMX_ErrorStreamCorrupt vs format-unsupported).
+                    val cause = error.cause?.let { "${it.javaClass.simpleName}:${it.message}" } ?: "none"
+                    log("error code=${error.errorCodeName} codeInt=${error.errorCode} cause=$cause")
                     onPlayerError?.invoke(error.errorCodeName)
                 }
 
                 override fun onPlaybackStateChanged(state: Int) {
+                    log("state ${stateName(state)}")
                     // §6.3: a finished non-looping video hands control back so the
                     // service advances. REPEAT_MODE_ONE loops never reach ENDED.
                     if (state == Player.STATE_ENDED) onVideoEnded?.invoke()
                 }
+
+                override fun onRenderedFirstFrame() {
+                    // The single most decisive signal: pixels actually reached the
+                    // surface. Its ABSENCE (state=READY but no first-frame) is the
+                    // fingerprint of a decoded-but-black stream.
+                    log("first_frame rendered")
+                }
+
+                override fun onVideoSizeChanged(videoSize: VideoSize) {
+                    log("video_size ${videoSize.width}x${videoSize.height} " +
+                        "par=${videoSize.pixelWidthHeightRatio}")
+                }
+
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    log("is_playing $isPlaying")
+                }
             })
             player = p
             textureView?.let { p.setVideoTextureView(it) }
+            log("init done")
         }
     }
 
@@ -91,7 +132,9 @@ class PlayerController(context: Context) {
     fun loadPaused(uri: String, seekMs: Long = 0, loop: Boolean = false) {
         runOnMain {
             val p = player ?: return@runOnMain
+            log("loadPaused uri=${describeUri(uri)} seekMs=$seekMs loop=$loop")
             hideImage()
+            lastError = null
             p.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             p.setMediaItem(ExoMediaItem.fromUri(uri))
             p.playWhenReady = false
@@ -104,12 +147,33 @@ class PlayerController(context: Context) {
     fun loadAndPlay(uri: String, seekMs: Long = 0, loop: Boolean = false) {
         runOnMain {
             val p = player ?: return@runOnMain
+            log("loadAndPlay uri=${describeUri(uri)} seekMs=$seekMs loop=$loop")
             hideImage()
+            lastError = null
             p.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
             p.setMediaItem(ExoMediaItem.fromUri(uri))
             p.prepare()
             if (seekMs > 0) p.seekTo(seekMs)
             p.playWhenReady = true
+        }
+    }
+
+    /**
+     * Terse, greppable description of the source being primed: whether it is a
+     * local cached file (and its on-disk size) or a remote URL. A remote URL
+     * here is itself a red flag — §11 black-screen root cause was falling back
+     * to a dead `item.url` when the cache path was wrongly discarded.
+     */
+    private fun describeUri(uri: String): String {
+        return try {
+            if (uri.startsWith("http://") || uri.startsWith("https://")) {
+                "REMOTE_URL($uri)"
+            } else {
+                val f = File(uri.removePrefix("file://"))
+                "local(${f.name},exists=${f.exists()},size=${if (f.exists()) f.length() else -1})"
+            }
+        } catch (e: Exception) {
+            "uri($uri)"
         }
     }
 

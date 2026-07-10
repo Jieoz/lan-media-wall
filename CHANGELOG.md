@@ -5,6 +5,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); main com
 
 ## [Unreleased]
 
+## [v1.13.11] — 2026-07-10
+
+### Fixed
+- **黑屏假成功不再被吞(B1 根因)**:`PlayerService` 过去从**未订阅** `PlayerController.onPlayerError`,ExoPlayer 报解码错误(如 `OMX_ErrorStreamCorrupt`)时 `playState` 仍无条件停在 `"playing"`,控制端看到的是「推送成功、播放正常」的假象,黑屏无从感知。现在 `onPlayerUiReady()` 幂等接线 controller,错误一发生即:①即时写导出的 `player.log`(不再等 watchdog 5s 后才记一条泛化 `player:X`);②推进 `errors` 队列;③把 `playState` 翻成 `"error"` 让 §5 status 如实上报。watchdog 恢复逻辑同步识别 `playState=="error"` 作为触发,5s 兜底恢复不受影响。
+- **重启/预取恢复跳过 SHA 校验(B2 根因)**:`Downloader.restoreReadyFromDisk`(重启恢复)与 `ensureEntryAndStart` 的 `quickOk` 捷径(预取命中旧文件)过去**只比 size** 就把文件标 `ready`,一个被截断/损坏但长度恰好相符的文件会被当可播,ExoPlayer 拿到坏码流吐 `OMX_ErrorStreamCorrupt` → 黑屏。两处同源路径现在:item 带 `sha256` 时恢复前必须校验通过才认 `ready`,不符则删文件回退完整下载;仅在 item 无 sha256(无法校验)时保留 size-only 旧行为并显式记 `UNVERIFIED`。
+
+### Diagnostics
+- **播放端诊断日志进导出包**:`PlayerController` 新增 `logSink`,用 ExoPlayer `Player.Listener` 记录状态转移(`BUFFERING/READY/ENDED`)、**首帧渲染**(`onRenderedFirstFrame` — 「解码成功但黑屏」的决定性信号)、分辨率(`onVideoSizeChanged`)、`onPlayerError` 的 `errorCodeName`+`cause`,以及每次 load 的**源描述**(本地缓存文件名/大小 vs 远端 URL)。`Downloader` 新增 `logSink` 记录 cache 命中来源(全新网络下载 vs 磁盘恢复 vs 预取命中)、SHA256 是否执行与结果。全部经 `PlayerService.logEvent` 落到**导出的 player.log**,不再只进被 4.4 盒截断的 logcat —— 这正是上次黑屏回归查不到根因的盲点。
+- **控制端出站日志**:P2P `_sendTo` 成功写入活连接时记 `msgId`+payload 摘要(playlist_id/item 数/start_index 等对账锚点),`send()` 记扇出 `delivered/targets`。过去只在失败分支记日志,推送成功但黑屏时控制端日志一片空白,无法比对「控制端以为发了什么」vs「播放端实际收到/播了什么」。日志汇入既有 `logLines`,可在设置页一键复制。
+
 ## [v1.13.10] — 2026-07-10
 
 ### CI

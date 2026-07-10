@@ -8,7 +8,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.13.4 / versionCode 36`** — derived from
+> **Current build: `versionName 1.13.11 / versionCode 43`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -40,6 +40,21 @@ prefetch barrier §21, remote self-update §23).
 > `download_logs_result` 回传,后者把版本、播放态、缓存、最近错误、helper 探针等聚合为
 > `diagnostic_status`。这两个功能依赖全链路同版:控制端发请求、Android Player 处理请求、
 > broker/P2P 协调端转发请求和回包;只升级控制端配旧 Player 会超时。
+
+> **黑屏根因修复 + 诊断可观测(v1.13.11).** 两个长期被吞掉的黑屏根因:
+> **B1** — `PlayerService` 过去**从未订阅** `PlayerController.onPlayerError`,ExoPlayer
+> 报解码错误(如 `OMX_ErrorStreamCorrupt`)时 `playState` 仍无条件停在 `"playing"`,
+> 控制端看到「推送成功、播放正常」的假象。现在 `onPlayerUiReady()` 幂等接线 controller,
+> 错误一发生即写 `player.log`、推进 `errors` 队列、翻 `playState="error"`,watchdog 恢复逻辑
+> 同步识别 `playState=="error"` 作触发(5s 兜底不变)。
+> **B2** — `Downloader.restoreReadyFromDisk`(重启恢复)与 `ensureEntryAndStart` 的
+> `quickOk` 捷径(预取命中旧文件)两处同源路径过去**只比 size** 就标 `ready`,截断/损坏但
+> 长度恰好相符的文件被当可播 → 坏码流黑屏。现在带 `sha256` 的 item 恢复前必须校验通过才认
+> `ready`,不符删文件回退完整下载;无 sha256 时保留 size-only 并记 `UNVERIFIED`。
+> **诊断** — `PlayerController`/`Downloader` 各接 `logSink`,把状态转移(`BUFFERING/READY/ENDED`)、
+> **首帧渲染**(`onRenderedFirstFrame`,「解码成功但黑屏」的决定信号)、分辨率、错误码+cause、
+> load 源描述(本地缓存文件名/大小 vs 远端 URL)、cache 命中来源、SHA 校验结果统一经
+> `logEvent` 落到**导出的 player.log**,不再只进被 4.4 盒截断的 logcat。
 
 > **Release signing (v1.11.0, §根因B — 覆盖升级/远程 update_app 的前提).** The
 > `release` buildType signs with a **fixed production certificate** decoded by CI

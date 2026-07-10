@@ -541,6 +541,10 @@ class P2pCoordinator {
     for (final id in targets) {
       if (_sendTo(id, type, to: 'player:$id', payload: payload)) delivered++;
     }
+    // 扇出结果汇总:delivered 是「写入活连接」的目标数,不是设备执行 ACK。若
+    // delivered<targets,说明部分目标连接已断 —— 和「推送成功但黑屏」是两回事,日志里区分开。
+    _log('send($type) 扇出 delivered=$delivered/${targets.length} '
+        '${_payloadDigest(type, payload)}');
     return delivered;
   }
 
@@ -592,8 +596,29 @@ class P2pCoordinator {
       return false;
     }
     final env = codec.build(type: type, to: to, payload: payload);
+    // 诊断:成功写入活连接时记一条,带 msgId + payload 摘要。过去只在「未连接/无目标」
+    // 失败分支记日志,推送成功但播放黑屏时控制端日志一片空白 —— 无法比对「控制端以为
+    // 发了什么」vs「播放端实际收到/播了什么」。这里把出站内容落到可复制的 logLines。
+    _log('sendTo($deviceId,$type) → msgId=${env.msgId} ${_payloadDigest(type, payload)}');
     link.sendText(env.toJson());
     return true;
+  }
+
+  /// 出站 payload 的紧凑摘要,只提取和「推了什么内容」相关的字段,避免整包刷屏。
+  /// playlist/play 类命令最关键:播放黑屏时要能一眼看出推的是哪个 playlist、几个 item、
+  /// 起播 index —— 这些正是和播放端 player.log 对账的锚点。
+  String _payloadDigest(String type, Map<String, dynamic> payload) {
+    if (payload.isEmpty) return '(no payload)';
+    final parts = <String>[];
+    for (final key in const [
+      'playlist_id', 'prepare_id', 'start_index', 'seek_ms', 'index', 'group_id'
+    ]) {
+      final v = payload[key];
+      if (v != null) parts.add('$key=$v');
+    }
+    final items = payload['items'];
+    if (items is List) parts.add('items=${items.length}');
+    return parts.isEmpty ? '(payload keys=${payload.keys.toList()})' : parts.join(' ');
   }
 
   /// 编排一次同步起播（§9，p2p 本地版）：
