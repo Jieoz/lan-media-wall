@@ -334,6 +334,7 @@ class WallState extends ChangeNotifier {
       ..onPeerState = _onPeerState
       ..onPeerIdentified = _onPeerIdentified
       ..onDiagnostic = _onDiagnostic
+      ..onUpdateStatus = _onUpdateStatus
       ..onLogDownload = _onLogDownload
       ..onLog = _pushLog;
 
@@ -514,6 +515,13 @@ class WallState extends ChangeNotifier {
   // ---- 入站回调 ----
   void _onWall(WallSnapshot snap) {
     _wall = snap;
+    for (final device in snap.devices) {
+      final state = device.updateState;
+      if (state != null && state.isNotEmpty) {
+        _updateStatus[device.deviceId] = state;
+        _updateDetail[device.deviceId] = device.updateDetail ?? '';
+      }
+    }
     notifyListeners();
   }
 
@@ -723,14 +731,18 @@ class WallState extends ChangeNotifier {
     return 'broker';
   }
 
-  void _send(String type, Map<String, dynamic> payload,
+  int _send(String type, Map<String, dynamic> payload,
       {String? groupId, String? deviceId}) {
     final to = _to(groupId: groupId, deviceId: deviceId);
     if (isP2p) {
-      _p2p.send(type, to: to, payload: payload);
-    } else {
-      _broker.send(type, to: to, payload: payload);
+      final delivered = _p2p.send(type, to: to, payload: payload);
+      if (delivered == 0) {
+        throw StateError('没有可投递的已连接设备（目标: $to）');
+      }
+      return delivered;
     }
+    _broker.send(type, to: to, payload: payload);
+    return 1;
   }
 
   // ---- 出站命令(供 UI 调用) ----

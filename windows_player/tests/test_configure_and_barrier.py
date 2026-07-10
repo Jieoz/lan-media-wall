@@ -171,3 +171,56 @@ def test_non_barrier_prepare_reports_not_ready_immediately(tmp_path):
     readies = [pl for (t, pl) in p.ws.sent if t == "ready"]
     assert len(readies) == 1
     assert readies[0]["ready"] is False  # legacy behavior preserved
+
+
+def test_prepare_ready_echoes_p2p_session_identity(tmp_path):
+    p = _player(tmp_path)
+    dl = _FakeDownloader()
+    p.downloader = dl  # type: ignore[assignment]
+    _seed_playlist(p)
+
+    _run(p._h_prepare({
+        "playlist_id": "pl1",
+        "prepare_id": "prep-42",
+        "group_id": "lobby",
+        "start_index": 0,
+    }, {}))
+
+    readies = [pl for (t, pl) in p.ws.sent if t == "ready"]
+    assert len(readies) == 1
+    assert readies[0]["prepare_id"] == "prep-42"
+    assert readies[0]["group_id"] == "lobby"
+
+
+def test_debug_snapshot_returns_diagnostic_status(tmp_path):
+    p = _player(tmp_path)
+
+    _run(p._on_message("debug_snapshot", {"device_id": p.device_id},
+                       {"msg_id": "debug-1"}))
+
+    kind, payload = p.ws.sent[0]
+    assert kind == "diagnostic_status"
+    assert payload["device_id"] == p.device_id
+    assert "play_state=" in payload["detail"]
+
+
+def test_download_logs_returns_bounded_diagnostic_bundle(tmp_path):
+    p = _player(tmp_path)
+
+    _run(p._on_message("download_logs", {"device_id": p.device_id},
+                       {"msg_id": "logs-1"}))
+
+    kind, payload = p.ws.sent[0]
+    assert kind == "download_logs_result"
+    assert payload["device_id"] == p.device_id
+    assert payload["file_name"].endswith(".log")
+    assert "device_id=" in payload["text"]
+
+
+def test_diagnostics_ignore_a_different_device_target(tmp_path):
+    p = _player(tmp_path)
+
+    _run(p._h_debug_snapshot({"device_id": "another-device"}, {}))
+    _run(p._h_download_logs({"device_id": "another-device"}, {}))
+
+    assert getattr(p.ws, "sent") == []

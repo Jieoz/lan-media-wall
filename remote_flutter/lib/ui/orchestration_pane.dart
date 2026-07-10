@@ -345,31 +345,48 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
   }
 
   void _doPrefetch(WallState state) {
-    final pid = _newPlaylistId();
-    state.sendPlaylist(
-      playlistId: pid,
-      groupId: _groupId!,
-      sync: _sync,
-      loop: _loop,
-      items: _items,
-    );
-    state.cachePrefetch(_items, groupId: _groupId);
-    _toast('已下发列表 + 预缓存 (${_items.length} 项)');
+    try {
+      final pid = _newPlaylistId();
+      state.sendPlaylist(
+        playlistId: pid,
+        groupId: _groupId!,
+        sync: _sync,
+        loop: _loop,
+        items: _items,
+      );
+      state.cachePrefetch(_items, groupId: _groupId);
+      _toast('已下发列表 + 预缓存 (${_items.length} 项)');
+    } catch (e) {
+      _toast('下发失败: $e');
+    }
   }
 
   void _doBarrierPlay(WallState state) {
-    final pid = _newPlaylistId();
-    state.sendPlaylist(
-      playlistId: pid,
-      groupId: _groupId!,
-      sync: _sync,
-      loop: _loop,
-      items: _items,
-    );
-    state.cachePrefetch(_items, groupId: _groupId);
-    // §21 栅栏:等全员 cache=ready 才统一起播。
-    state.prepareWithBarrier(playlistId: pid, groupId: _groupId!);
-    _toast(_sync ? '已发起同步起播(等全员就绪)' : '已发起播放');
+    try {
+      final pid = _newPlaylistId();
+      state.sendPlaylist(
+        playlistId: pid,
+        groupId: _groupId!,
+        sync: _sync,
+        loop: _loop,
+        items: _items,
+      );
+      state.cachePrefetch(_items, groupId: _groupId);
+      // §21 栅栏:等全员 cache=ready 才统一起播。
+      state.prepareWithBarrier(playlistId: pid, groupId: _groupId!);
+      _toast(_sync ? '已发起同步起播(等全员就绪)' : '已发起播放');
+    } catch (e) {
+      _toast('起播失败: $e');
+    }
+  }
+
+  void _runCommand(void Function() command, String success) {
+    try {
+      command();
+      _toast(success);
+    } catch (e) {
+      _toast('操作失败: $e');
+    }
   }
 
   // ---- 传输控制 ----
@@ -381,11 +398,46 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         spacing: 8,
         runSpacing: 8,
         children: [
-          _ctlBtn(Icons.pause, '暂停', g == null ? null : () => state.pause(groupId: g)),
-          _ctlBtn(Icons.play_arrow, '恢复', g == null ? null : () => state.resume(groupId: g)),
-          _ctlBtn(Icons.stop, '停止', g == null ? null : () => state.stop(groupId: g)),
-          _ctlBtn(Icons.skip_previous, '上一项', g == null ? null : () => state.prev(groupId: g)),
-          _ctlBtn(Icons.skip_next, '下一项', g == null ? null : () => state.next(groupId: g)),
+          _ctlBtn(
+            Icons.pause,
+            '暂停',
+            g == null
+                ? null
+                : () => _runCommand(
+                    () => state.pause(groupId: g), '已下发整组暂停'),
+          ),
+          _ctlBtn(
+            Icons.play_arrow,
+            '恢复',
+            g == null
+                ? null
+                : () => _runCommand(
+                    () => state.resume(groupId: g), '已下发整组恢复'),
+          ),
+          _ctlBtn(
+            Icons.stop,
+            '停止',
+            g == null
+                ? null
+                : () => _runCommand(
+                    () => state.stop(groupId: g), '已下发整组停止'),
+          ),
+          _ctlBtn(
+            Icons.skip_previous,
+            '上一项',
+            g == null
+                ? null
+                : () => _runCommand(
+                    () => state.prev(groupId: g), '已下发整组上一项'),
+          ),
+          _ctlBtn(
+            Icons.skip_next,
+            '下一项',
+            g == null
+                ? null
+                : () => _runCommand(
+                    () => state.next(groupId: g), '已下发整组下一项'),
+          ),
         ],
       ),
     );
@@ -399,13 +451,31 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _GroupVolumeSlider(
-            onChanged: g == null ? null : (v) => state.setVolume(v, groupId: g),
+            onChanged: g == null
+                ? null
+                : (v) => _runCommand(
+                    () => state.setVolume(v, groupId: g), '已下发整组音量'),
           ),
           Row(
             children: [
-              _ctlBtn(Icons.volume_off, '静音', g == null ? null : () => state.setMute(true, groupId: g)),
+              _ctlBtn(
+                Icons.volume_off,
+                '静音',
+                g == null
+                    ? null
+                    : () => _runCommand(
+                        () => state.setMute(true, groupId: g), '已下发整组静音'),
+              ),
               const SizedBox(width: 8),
-              _ctlBtn(Icons.volume_up, '取消静音', g == null ? null : () => state.setMute(false, groupId: g)),
+              _ctlBtn(
+                Icons.volume_up,
+                '取消静音',
+                g == null
+                    ? null
+                    : () => _runCommand(
+                        () => state.setMute(false, groupId: g),
+                        '已下发整组取消静音'),
+              ),
             ],
           ),
         ],
@@ -423,8 +493,11 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
           : _AudioMasterPicker(
               members: members,
               onApply: (ids) {
-                state.setAudioMaster(groupId: g!.groupId, deviceIds: ids);
-                _toast('已指定出声台 ${ids.length} 台');
+                _runCommand(
+                  () => state.setAudioMaster(
+                      groupId: g!.groupId, deviceIds: ids),
+                  '已指定出声台 ${ids.length} 台',
+                );
               },
             ),
     );

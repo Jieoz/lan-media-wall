@@ -100,6 +100,9 @@ class DeviceStatus {
   final int cpu;
   final List<String> errors;
   final int? lastSeen;
+  final String? updateState;
+  final String? updateDetail;
+  final int? updateVersionCode;
 
   /// 被控端上报的应用版本号（§4 hello / §5 status 的 `app_version`）。
   /// 单台状态弹窗展示用；缺失时为 null（老端/未上报，防御式处理）。
@@ -122,6 +125,9 @@ class DeviceStatus {
     this.errors = const [],
     this.lastSeen,
     this.appVersion,
+    this.updateState,
+    this.updateDetail,
+    this.updateVersionCode,
   });
 
   static DeviceStatus fromMap(Map<String, dynamic> m) {
@@ -148,6 +154,11 @@ class DeviceStatus {
           .toList(),
       lastSeen: m['last_seen'] == null ? null : _asInt(m['last_seen']),
       appVersion: m['app_version'] as String?,
+      updateState: m['update_state'] as String?,
+      updateDetail: m['update_detail'] as String?,
+      updateVersionCode: m['update_version_code'] == null
+          ? null
+          : _asInt(m['update_version_code']),
     );
   }
 
@@ -178,6 +189,9 @@ class DeviceStatus {
         errors: errors,
         lastSeen: lastSeen ?? this.lastSeen,
         appVersion: appVersion,
+        updateState: updateState,
+        updateDetail: updateDetail,
+        updateVersionCode: updateVersionCode,
       );
 }
 

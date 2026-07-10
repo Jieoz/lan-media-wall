@@ -107,6 +107,12 @@ jobs:
           EOF
           echo "::notice::Release keystore decoded — release APK will be signed with the fixed production certificate."
 
+      - name: Run Android JVM unit tests
+        if: steps.detect.outputs.present == 'true'
+        working-directory: android_apps/player
+        shell: bash
+        run: ./gradlew --no-daemon testDebugUnitTest
+
       - name: Build release APK
         if: steps.detect.outputs.present == 'true'
         working-directory: android_apps/player

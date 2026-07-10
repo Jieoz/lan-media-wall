@@ -252,10 +252,7 @@ void main() {
       expect(logs.any((line) => line.contains('回退到全部已连接')), isFalse);
     });
 
-    test('兜底保留:归一后 group 仍匹配为空(设备在别组)时回退全部已连接(目标为真实 id)', () async {
-      // v1.10.5 兜底保留验证:设备归一到真实 id 后,若命令发往一个该设备
-      // 并不属于的组(default vs lobby),GroupExpander 匹配为空,应回退到
-      // 全部已连接;且回退目标是归一后的真实 device_id。
+    test('group 匹配为空时拒绝投递,绝不扩大到全部已连接设备', () async {
       late FakeWsLink link;
       final logs = <String>[];
       final coord = P2pCoordinator(
@@ -277,13 +274,98 @@ void main() {
         }),
       );
 
-      // 发往设备并不属于的 lobby 组 → 正常匹配为空 → 触发兜底。
       coord.send('playlist', to: 'group:lobby', payload: {'playlist_id': 'pl-1'});
 
       final sentPlaylist = link.sent.where((s) => _parse(s).type == 'playlist');
-      expect(sentPlaylist.length, 1);
-      expect(_parse(sentPlaylist.single).to, 'player:and-88fe839f52');
-      expect(logs.any((line) => line.contains('回退到全部已连接 1 台')), isTrue);
+      expect(sentPlaylist, isEmpty);
+      expect(logs.any((line) => line.contains('无目标')), isTrue);
+      expect(logs.any((line) => line.contains('回退到全部已连接')), isFalse);
+    });
+
+    test('update_status 在 P2P 入站链路回传给上层', () async {
+      late FakeWsLink link;
+      String? receivedDeviceId;
+      String? receivedState;
+      String? receivedDetail;
+      int? receivedVersionCode;
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onUpdateStatus = (deviceId, state, detail, versionCode) {
+          receivedDeviceId = deviceId;
+          receivedState = state;
+          receivedDetail = detail;
+          receivedVersionCode = versionCode;
+        };
+      coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+
+      coord.handleFrame('a', frame(openCodec(), 'update_status', {
+        'device_id': 'a',
+        'state': 'installing',
+        'detail': 'verified',
+        'version_code': 40,
+      }));
+
+      expect(receivedDeviceId, 'a');
+      expect(receivedState, 'installing');
+      expect(receivedDetail, 'verified');
+      expect(receivedVersionCode, 40);
+    });
+
+    test('组命令只投递已匹配成员并返回成功写入数', () async {
+      final links = <String, FakeWsLink>{};
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) {
+          final link = FakeWsLink(uri);
+          links[uri.host] = link;
+          return link;
+        },
+      );
+      coord.setPeers([
+        const P2pPeer(deviceId: 'a', host: 'ha', port: 8770),
+        const P2pPeer(deviceId: 'b', host: 'hb', port: 8770),
+      ]);
+      for (final link in links.values) {
+        link.completeReady();
+      }
+      await Future<void>.delayed(Duration.zero);
+      coord.handleFrame('a', frame(openCodec(), 'status',
+          {'device_id': 'a', 'group_id': 'lobby'}));
+      coord.handleFrame('b', frame(openCodec(), 'status',
+          {'device_id': 'b', 'group_id': 'other'}));
+      for (final link in links.values) {
+        link.sent.clear();
+      }
+
+      final delivered = coord.send('pause', groupId: 'lobby');
+
+      expect(delivered, 1);
+      expect(
+          links['ha']!.sent.where((s) => _parse(s).type == 'pause'), hasLength(1));
+      expect(
+          links['hb']!.sent.where((s) => _parse(s).type == 'pause'), isEmpty);
+    });
+
+    test('startSync 零目标时直接失败且不创建空握手', () {
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 100000,
+        linkFactory: (uri) => FakeWsLink(uri),
+      );
+
+      expect(
+        () => coord.startSync(playlistId: 'pl-1', groupId: 'lobby'),
+        throwsA(isA<StateError>()),
+      );
+      expect(coord.handshake.pending, 0);
     });
 
     test('startSync fan prepare，收齐 ready → play_at 发各成员', () async {

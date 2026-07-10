@@ -3,7 +3,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.13.7+39`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.13.8+40`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+>
+> **v1.13.8 P2P 安全与可观测性修复**:组/设备目标匹配为空时不再回退广播全部直连设备,而是零投递并向 UI 显示失败;同步起播零目标直接终止。P2P 协调端新增 `update_status` 消费并接入 `WallState`;Broker wall 快照中的 `update_state/update_detail/update_version_code` 也由 `DeviceStatus` 解析并汇入同一 UI 状态缓存,两种拓扑的升级下载/安装结果都不再丢失。Windows `ready` 回显 `prepare_id/group_id`,使 P2P 三段握手能关联并下发 `play_at`。
 >
 > **v1.13.7**:播放端 HOME/桌面绑定根因修复——把 `category.HOME` 从 activity-alias 迁到真 Activity(`MainActivity`),遥控物理主页键在 QZX_C1/HiSTBAndroidV6(4.4)上真正回到媒体墙;删除设置页「设为桌面」开关。控制端本身无功能改动,版本随全端 pubspec 同步递增。
 >
@@ -11,9 +13,9 @@ LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播
 >
 > **远程诊断日志包 + 可复制调试快照(v1.13.5,端到端闭环).** 单台设备详情弹窗「下载日志」现在导出排障包而不是临时 player.log:播放端 `download_logs_result` 包含版本/网络/传输/播放态/cache/errors/helper/root/update 探针、helper uid/usage、player.log/rotated tail 与可读 logcat tail;控制端保存前再追加 controller_summary/controller_log,优先落到 Android `Download/LANMediaWall/logs` 或桌面 `~/Downloads/LANMediaWall/logs`。调试快照不再只 toast,改为可选择文本对话框并提供「复制全部」。broker 模式下 broker 必须转发请求和回包;P2P 模式下 `P2pCoordinator` 必须把两类回包喂回 `WallState` 的相同回调。缺任何一跳都会表现为按钮超时。
 >
-> **peer 身份归一 · 根治黑屏+双卡(v1.11.0,关键)**:扫码/手动添加的盒子无真实 `device_id`,`P2pCoordinator` 用拨号端点 `host:port` 当占位 key 建连;盒子 `welcome`/`status` 上报的**真实 device_id** 走另一命名空间 → `connectedIds` 与 `WallAggregator`/`GroupExpander` 对不上 → 组扇出恒空(只靠 v1.10.5 兜底硬发 prepare)、握手目标集是占位 key、播放端 `ready` 带真实 id 匹配失败 → **`play_at` 永不下发 → 黑屏**;设备墙还会出「占位卡+真实卡」两张。修复:连接拿到真实 device_id 后把 `_links`/`_subs`/`_peers` **从占位 key 重绑定到真实 id**(打印 `身份归一: host:port → <id>`),`setPeers` 改按端点对账避免误断重拨,`WallState` 把占位卡折叠进真实卡(**同一盒子只剩一张卡**)。归一后正常路径优先命中,v1.10.5 兜底保留但不再是唯一推图路径。回归见 `test/p2p_coordinator_test.dart`。
+> **peer 身份归一 · 根治黑屏+双卡(v1.11.0,关键)**:扫码/手动添加的盒子无真实 `device_id`,`P2pCoordinator` 用拨号端点 `host:port` 当占位 key 建连;盒子 `welcome`/`status` 上报的**真实 device_id** 走另一命名空间 → `connectedIds` 与 `WallAggregator`/`GroupExpander` 对不上 → 组扇出恒空、握手目标集是占位 key、播放端 `ready` 带真实 id 匹配失败 → **`play_at` 永不下发 → 黑屏**;设备墙还会出「占位卡+真实卡」两张。修复:连接拿到真实 device_id 后把 `_links`/`_subs`/`_peers` **从占位 key 重绑定到真实 id**(打印 `身份归一: host:port → <id>`),`setPeers` 改按端点对账避免误断重拨,`WallState` 把占位卡折叠进真实卡(**同一盒子只剩一张卡**)。归一后组目标应正常命中;若仍为空,v1.13.8 起明确失败而不广播。回归见 `test/p2p_coordinator_test.dart`。
 >
-> **推图目标匹配修复(v1.10.5+,关键)**:扫码直连一台盒子后点「②推送并播放」却毫无反应、盒子日志零 `RX prepare` 或只有 `RX prepare` 但没有实际下载/播放——根因是 P2P 侧按 group/设备 id 算出的目标集为空。修复:(1) `GroupExpander` 的 group 比较容忍前后空格+大小写,空 gid 视为通配;(2) `startSync` 与普通 `send(group:...)` 都在 group 匹配为空但确有已连接被控端时,直接把**全部已直连设备**作为推送目标,绝不静默 0 台;(3) 诊断日志打印 `connected / 各设备 group_id / targets` 决定性信息。诊断日志页支持「复制全部」+ 单行可选中复制。
+> **P2P 目标匹配合同(v1.13.8,关键)**:`GroupExpander` 仍容忍 group 前后空格和大小写,但无法匹配目标时必须返回零投递;`startSync` 与普通 `send(group:...)` 都禁止扩大到全部设备。控制层把零投递转为可见错误,诊断日志保留 `connected / 各设备 group_id / targets` 便于定位分组或身份漂移。
 >
 > **播放编排两个按钮(去歧义,v1.10.3)**:`①仅下发缓存 (不播)` = 只把媒体推到各盒子本地缓存、不播放;`②推送并播放` = 下发列表+预缓存+等全员就绪后统一起播(这就是"推送并播放")。「预缓存就绪 N/M」= M 台目标里有 N 台已把本次列表全部缓存校验完成;盒子未收到 prepare 时不会下载,故会一直停在 0/M。
 

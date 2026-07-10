@@ -757,7 +757,14 @@ class _DeviceTransportRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     void act(void Function() fn, String toast) {
-      fn();
+      try {
+        fn();
+      } catch (e) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text('操作失败: $e')));
+        return;
+      }
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(SnackBar(content: Text(toast)));
@@ -883,11 +890,19 @@ Future<void> _confirmRestartDevice(
     ),
   );
   if (ok != true) return;
-  state.restart(deviceId: device.deviceId);
-  if (context.mounted) {
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text('已下发设备重启指令给「$name」')));
+  try {
+    state.restart(deviceId: device.deviceId);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text('已下发设备重启指令给「$name」')));
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text('重启失败: $e')));
+    }
   }
 }
 
@@ -1132,28 +1147,35 @@ Future<void> _pushContentToDeviceDialog(
               onPressed: (uploading || items.isEmpty)
                   ? null
                   : () {
-                      final pid =
-                          'pl-${device.deviceId}-${uuid4().substring(0, 6)}';
-                      // 单播:playlist + cache_prefetch + 栅栏 prepare 全锁这一台。
-                      state.sendPlaylist(
-                        playlistId: pid,
-                        groupId: groupId,
-                        sync: false,
-                        loop: loop,
-                        items: items,
-                        deviceId: device.deviceId,
-                      );
-                      state.cachePrefetch(items, deviceId: device.deviceId);
-                      state.prepareWithBarrier(
-                        playlistId: pid,
-                        groupId: groupId,
-                        deviceId: device.deviceId,
-                      );
-                      Navigator.pop(ctx);
-                      ScaffoldMessenger.of(context)
-                        ..clearSnackBars()
-                        ..showSnackBar(SnackBar(
-                            content: Text('已向「$name」推送 ${items.length} 项(缓存就绪后播放)')));
+                      try {
+                        final pid =
+                            'pl-${device.deviceId}-${uuid4().substring(0, 6)}';
+                        // 单播:playlist + cache_prefetch + 栅栏 prepare 全锁这一台。
+                        state.sendPlaylist(
+                          playlistId: pid,
+                          groupId: groupId,
+                          sync: false,
+                          loop: loop,
+                          items: items,
+                          deviceId: device.deviceId,
+                        );
+                        state.cachePrefetch(items, deviceId: device.deviceId);
+                        state.prepareWithBarrier(
+                          playlistId: pid,
+                          groupId: groupId,
+                          deviceId: device.deviceId,
+                        );
+                        Navigator.pop(ctx);
+                        ScaffoldMessenger.of(context)
+                          ..clearSnackBars()
+                          ..showSnackBar(SnackBar(
+                              content: Text(
+                                  '已向「$name」推送 ${items.length} 项(缓存就绪后播放)')));
+                      } catch (e) {
+                        ScaffoldMessenger.of(context)
+                          ..clearSnackBars()
+                          ..showSnackBar(SnackBar(content: Text('推送失败: $e')));
+                      }
                     },
             ),
           ],

@@ -17,13 +17,19 @@ the player side of [`../protocol_spec.md`](../protocol_spec.md) v1.
 | §6.4 | ~5s frame screenshot → ≤320px JPEG → `thumb_meta` + binary frame | `thumbnailer.py` |
 | §7 | UDP 8772 discovery responder (`discover`→`announce`, signed) | `discovery.py` |
 | §8 | SNTP-style `time_sync` on connect + every 30s, min-rtt offset | `clock.py`, `websocket_client.py` |
-| §9.1–9.2 | three-way handshake: `prepare`→`ready`, `play_at` folded to local clock | `main.py` |
+| §9.1–9.2 | three-way handshake: `prepare`→`ready` echoing `prepare_id/group_id`, `play_at` folded to local clock | `main.py` |
 | §9.3 | pause/resume/stop/next/prev/set_volume/set_mute/set_audio_master/assign_group | `main.py`, `mpv_controller.py` |
 | §10 | `ack`, `resume_last` (local last-task persistence) | `main.py`, `config.py` |
 | §11 | mpv borderless-fullscreen-ontop, black/placeholder when idle, taskbar hidden | `mpv_controller.py`, `kiosk_win.py` |
 | §11 | watchdog: restart mpv within 5s on crash/hang + resume_last | `watchdog.py` |
 | §19 (v1.4) | `configure_device` → set display name / group / volume for this device, persisted | `main.py`, `config.py` |
 | §21 (v1.4) | prefetch-barrier `prepare(prefetch:true)`: don't answer `ready:false` when uncached — defer, await cache complete, then `ready:true` (120s timeout → `ready:false`) | `main.py` |
+| §24 (v1.13.8) | targeted `debug_snapshot` / `download_logs` with bounded `diagnostic_status` / `download_logs_result` replies | `main.py` |
+
+The Windows player reads its app version from the same
+`remote_flutter/pubspec.yaml` source as Android and Flutter. The Windows cloud
+bundle includes that file, so `hello` and diagnostic replies report the release
+version instead of a stale hard-coded value.
 
 ## Architecture
 

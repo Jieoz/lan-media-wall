@@ -108,6 +108,10 @@ class P2pCoordinator {
   /// 控制端的挂起 completer 必然 30s 超时（与 broker dispatch 漏表同因）。
   void Function(String deviceId, String text, String fileName)? onLogDownload;
 
+  /// 被控端回传的升级阶段（update_status）。
+  void Function(String deviceId, String state, String detail, int versionCode)?
+      onUpdateStatus;
+
   /// 诊断日志。
   void Function(String line)? onLog;
 
@@ -483,6 +487,14 @@ class P2pCoordinator {
           _asStr(env.payload['file_name'], 'player.log'),
         );
         break;
+      case 'update_status':
+        onUpdateStatus?.call(
+          _asStr(env.payload['device_id'], deviceId),
+          _asStr(env.payload['state']),
+          _asStr(env.payload['detail']),
+          (env.payload['version_code'] as num?)?.toInt() ?? 0,
+        );
+        break;
       default:
         _log('忽略入站类型($deviceId): ${env.type}');
     }
@@ -511,10 +523,11 @@ class P2pCoordinator {
 
   /// 把一条命令按 `to` 地址在客户端侧扇出（group→逐成员；player→单条；all→全体）。
   /// payload 由调用方按 §6/§9 构造（与 broker 模式同一套 [Commands]）。
-  void send(String type, {required String to, Map<String, dynamic> payload = const {}}) {
-    if (_handleLocalGroupCommand(type, payload)) return;
+  /// 返回成功写入活连接的目标数；本地组管理命令返回 1。该值不是设备执行 ACK。
+  int send(String type, {required String to, Map<String, dynamic> payload = const {}}) {
+    if (_handleLocalGroupCommand(type, payload)) return 1;
     final devices = aggregator.snapshot(serverTime: clock.serverTime()).devices;
-    var targets = GroupExpander.expand(
+    final targets = GroupExpander.expand(
       to,
       devices: devices,
       connected: connectedIds,
@@ -522,17 +535,13 @@ class P2pCoordinator {
     if (targets.isEmpty) {
       _log('send($type) 无目标（to=$to, connected=${connectedIds.toList()}, '
           'devices=${devices.map((d) => "${d.deviceId}@grp=\"${d.groupId}\"").toList()}）');
-      if (to.startsWith('group:') && connectedIds.isNotEmpty) {
-        targets = connectedIds.toSet();
-        _log('send($type) group 匹配为空 → 回退到全部已连接 ${targets.length} 台: ${targets.toList()}');
-      }
+      return 0;
     }
-    if (targets.isEmpty) {
-      return;
-    }
+    var delivered = 0;
     for (final id in targets) {
-      _sendTo(id, type, to: 'player:$id', payload: payload);
+      if (_sendTo(id, type, to: 'player:$id', payload: payload)) delivered++;
     }
+    return delivered;
   }
 
   bool _handleLocalGroupCommand(String type, Map<String, dynamic> payload) {
@@ -575,15 +584,16 @@ class P2pCoordinator {
   }
 
   /// 一台直连的定向发送（已连接才发）。
-  void _sendTo(String deviceId, String type,
+  bool _sendTo(String deviceId, String type,
       {required String to, Map<String, dynamic> payload = const {}}) {
     final link = _links[deviceId];
     if (link == null) {
       _log('sendTo($deviceId,$type) 丢弃：未连接');
-      return;
+      return false;
     }
     final env = codec.build(type: type, to: to, payload: payload);
     link.sendText(env.toJson());
+    return true;
   }
 
   /// 编排一次同步起播（§9，p2p 本地版）：
@@ -609,7 +619,7 @@ class P2pCoordinator {
     final devices =
         aggregator.snapshot(serverTime: clock.serverTime()).devices;
     // §9.4b 单台推送:targets 锁到这一台(仍要求它已直连),不走 group 展开,
-    // 也不触发下方"匹配为空回退到全部已连接"——单台就该只发这一台。
+    // 单设备目标只允许精确命中这一台，无法命中时返回零投递。
     var targets = (deviceId != null && deviceId.isNotEmpty)
         ? (connectedIds.contains(deviceId) ? {deviceId} : <String>{})
         : GroupExpander.expand(
@@ -623,15 +633,8 @@ class P2pCoordinator {
         'connected=${connectedIds.toList()} '
         'devices=${devices.map((d) => "${d.deviceId}@grp=\"${d.groupId}\"").toList()} '
         '→ targets=${targets.toList()}');
-    // §兜底(单遥控端直连场景):若按 group 匹配算不出目标,但确实有已连接的被控端,
-    // 就把"当前所有已直连的设备"作为目标——扫码直连一台盒子却因 group_id 漂移
-    // (空串/大小写/前后空格)被过滤,是绝不该让"推图完全没反应"的。宁可多发给已连的,
-    // 也不要静默 0 台。真机上"列表里有、连上了、却推不动"正是被这一层救回。
-    // §9.4b 单台推送不吃这层兜底:deviceId 明确锁定一台,回退到"全部已连接"会误伤别台。
-    final isUnicast = deviceId != null && deviceId.isNotEmpty;
-    if (!isUnicast && targets.isEmpty && connectedIds.isNotEmpty) {
-      targets = connectedIds.toSet();
-      _log('startSync group 匹配为空 → 回退到全部已连接 ${targets.length} 台: ${targets.toList()}');
+    if (targets.isEmpty) {
+      throw StateError('没有可同步起播的已连接设备（组: $groupId）');
     }
     handshake.begin(
       prepareId: prepareId,

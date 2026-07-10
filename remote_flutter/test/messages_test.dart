@@ -72,6 +72,9 @@ void main() {
         'cpu': 18,
         'errors': <String>[],
         'last_seen': 1750000000000,
+        'update_state': 'installing',
+        'update_detail': 'verified',
+        'update_version_code': 40,
       };
       final d = DeviceStatus.fromMap(m);
       expect(d.deviceId, 'win-01');
@@ -86,6 +89,9 @@ void main() {
       expect(d.cache['b2'], 'downloading:45%');
       expect(d.clockOffsetMs, -12);
       expect(d.lastSeen, 1750000000000);
+      expect(d.updateState, 'installing');
+      expect(d.updateDetail, 'verified');
+      expect(d.updateVersionCode, 40);
     });
 
     test('缺省/缺失字段走默认值', () {

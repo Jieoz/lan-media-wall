@@ -26,6 +26,7 @@ import topology as topology_mod
 import pairing as pairing_mod
 from clock import ClockSync, now_ms
 from downloader import Downloader
+from versioning import APP_VERSION
 from websocket_client import BrokerClient
 
 log = logging.getLogger("lmw.main")
@@ -324,7 +325,7 @@ class Player:
             "device_id": self.device_id,
             "device_name": self.device_name,
             "platform": "windows" if sys.platform == "win32" else "linux",
-            "app_version": "1.0.0",
+            "app_version": APP_VERSION,
             "ip": self.ip,
             "screen": self._screen(),
             "capabilities": ["video", "image", "audio", "thumbnail"],
@@ -419,6 +420,8 @@ class Player:
             "set_audio_master": self._h_set_audio_master,
             "assign_group": self._h_assign_group,
             "configure_device": self._h_configure_device,
+            "debug_snapshot": self._h_debug_snapshot,
+            "download_logs": self._h_download_logs,
             "resume_last": self._h_resume_last,
             "welcome": self._h_welcome,
         }.get(type_)
@@ -429,7 +432,7 @@ class Player:
         if type_ in ("prepare", "pause", "resume", "stop", "next", "prev",
                      "set_volume", "set_mute", "set_audio_master",
                      "assign_group", "configure_device", "cache_prefetch",
-                     "playlist"):
+                     "playlist", "debug_snapshot", "download_logs"):
             await self._ack(env, True)
 
     async def _ack(self, env: Dict[str, Any], ok: bool, err: str = "") -> None:
@@ -441,6 +444,43 @@ class Player:
         # explicitly present for this device.
         if payload.get("assigned") is False:
             self._errors.append("not-assigned")
+
+    async def _diagnostic_text(self) -> str:
+        snap = await self._mpv("snapshot") or {}
+        cache = self.downloader.cache_status()
+        playlist_id = self.playlist.get("playlist_id") if self.playlist else ""
+        return "\n".join((
+            f"device_id={self.device_id}",
+            f"device_name={self.device_name}",
+            f"group_id={self.group_id}",
+            f"play_state={self._effective_state(snap)}",
+            f"playlist_id={playlist_id}",
+            f"playlist_index={self.index}",
+            f"volume={self.volume}",
+            f"muted={self.muted}",
+            f"clock_offset_ms={self.clock.offset_ms}",
+            f"cache={cache}",
+            f"errors={self._errors[-20:]}",
+        ))
+
+    async def _h_debug_snapshot(self, payload, env) -> None:
+        if not self._targets_me(payload):
+            return
+        await self.ws.send("diagnostic_status", {
+            "device_id": self.device_id,
+            "detail": await self._diagnostic_text(),
+            "app_version": APP_VERSION,
+        })
+
+    async def _h_download_logs(self, payload, env) -> None:
+        if not self._targets_me(payload):
+            return
+        text = await self._diagnostic_text()
+        await self.ws.send("download_logs_result", {
+            "device_id": self.device_id,
+            "text": text[-65536:],
+            "file_name": f"lan-media-wall-player-{self.device_id}.log",
+        })
 
     # --- §6.2 cache_prefetch -----------------------------------------
     async def _h_cache_prefetch(self, payload, env) -> None:
@@ -463,6 +503,8 @@ class Player:
     # --- §9.1 prepare -------------------------------------------------
     async def _h_prepare(self, payload, env) -> None:
         pid = payload.get("playlist_id")
+        prepare_id = payload.get("prepare_id")
+        group_id = payload.get("group_id")
         start_index = int(payload.get("start_index", 0))
         seek_ms = int(payload.get("seek_ms", 0))
         # §21 预缓存栅栏:控制端置 prefetch:true 表示"缓存好再回 ready"。此时若尚未缓存,
@@ -493,7 +535,8 @@ class Player:
                     self.downloader.prefetch([item])
                     self._barrier_task = asyncio.ensure_future(
                         self._await_cache_then_ready(
-                            pid, item, seek_ms, barrier_timeout_ms))
+                            pid, prepare_id, group_id, item, seek_ms,
+                            barrier_timeout_ms))
                     return
                 else:
                     # 非栅栏路径:not cached yet — kick a fetch; report not-ready
@@ -501,11 +544,14 @@ class Player:
         await self.ws.send("ready", {
             "device_id": self.device_id,
             "playlist_id": pid,
+            "prepare_id": prepare_id,
+            "group_id": group_id,
             "ready": ready,
         })
 
     async def _await_cache_then_ready(
-            self, pid, item, seek_ms: int, timeout_ms: int) -> None:
+            self, pid, prepare_id, group_id, item, seek_ms: int,
+            timeout_ms: int) -> None:
         """§21 预缓存栅栏:轮询该 item 的缓存态,ready 后 prime 并回 ready:true;
         超时则回 ready:false,让控制端按"已就绪者"降级起播(不无限等)。"""
         deadline = self._loop_time() + timeout_ms / 1000.0
@@ -519,6 +565,8 @@ class Player:
                 await self.ws.send("ready", {
                     "device_id": self.device_id,
                     "playlist_id": pid,
+                    "prepare_id": prepare_id,
+                    "group_id": group_id,
                     "ready": True,
                 })
                 return
@@ -527,6 +575,8 @@ class Player:
         await self.ws.send("ready", {
             "device_id": self.device_id,
             "playlist_id": pid,
+            "prepare_id": prepare_id,
+            "group_id": group_id,
             "ready": False,
         })
 

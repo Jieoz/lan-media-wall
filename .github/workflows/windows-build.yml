@@ -176,6 +176,7 @@ jobs:
             --runtime-hook .github/pyinstaller/rthook_mpv.py `
             --add-binary "mpv_runtime/mpv.exe;." `
             --add-data "windows_player/config.example.yaml;." `
+            --add-data "remote_flutter/pubspec.yaml;." `
             --upx-dir "$upxDir" `
             --upx-exclude "mpv.exe" `
             --exclude-module tkinter `

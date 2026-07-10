@@ -5,6 +5,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ## [Unreleased]
 
+## [v1.13.8] — 2026-07-10
+
+### Fixed
+- **P2P 目标隔离**:组目标匹配为空时不再回退广播全部已连接设备;普通发送返回成功写入活连接的目标数(不是设备执行 ACK),同步起播零目标直接报错,控制端只在连接层投递成功后显示成功。此安全合同取代 v1.10.5 引入并在 v1.11.0 保留的“空目标广播全部直连设备”兜底。
+- **升级状态贯通**:P2P `update_status` 接入 `P2pCoordinator → WallState`;Broker wall 快照的 `update_state/update_detail/update_version_code` 由 `DeviceStatus` 解析后汇入同一状态缓存,两种拓扑的下载、校验、安装与失败阶段都不再丢失。
+- **Windows P2P 同步起播**:`ready` 的立即、缓存就绪和超时三条分支都回显 `prepare_id/group_id`,控制端可以匹配会话并下发 `play_at`。
+- **Windows 诊断合同**:实现定向 `debug_snapshot/download_logs` 处理和有界诊断回包,并把 Windows 纳入发布合同矩阵。
+- **Windows 版本上报**:移除 `hello` / 诊断中的硬编码 `1.0.0`,开发态和 PyInstaller 包都从版本单一真相源 `remote_flutter/pubspec.yaml` 读取。
+
+### CI
+- Android 云构建在 `assembleRelease` 前强制执行 `testDebugUnitTest`;单测失败不再产出发布 APK。
+
 ## [v1.13.7] — 2026-07-09
 
 ### Fixed
