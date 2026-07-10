@@ -5,6 +5,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions
 
 ## [Unreleased]
 
+## [v1.13.9] — 2026-07-10
+
+### Fixed
+- **P2P 被无效 Broker 配置锁死**:控制端把历史设置中的 `0.0.0.0` / `::` 当作远端 Broker 地址，导致 UDP 虽能发现设备，却持续拨号通配监听地址并永远不进入 P2P。现在加载和保存设置时自动清除此类非法远端地址，发现设备后正常切入 P2P；设置页也明确区分监听地址与可拨号地址。
+- **未投递命令不再假成功**:`BrokerClient.send` 返回真实连接层写入结果；Broker 未连接时 `WallState` 抛出可见错误，新建、编辑、删除分组和设备配置均向用户显示失败，不再静默丢弃。
+
 ## [v1.13.8] — 2026-07-10
 
 ### Fixed

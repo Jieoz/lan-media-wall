@@ -170,6 +170,18 @@ void main() {
           AnnounceInfo(deviceId: 'd', deviceName: 'n', ip: '1.2.3.4');
       expect(noHint.toMap().containsKey('broker_hint'), isFalse);
     });
+
+    test('真实故障样本：通配 broker_hint 不覆盖 P2P 直连', () {
+      const invalid = AnnounceInfo(
+        deviceId: 'and-be5e93c9f0',
+        deviceName: 'and-be5e93c9f0',
+        ip: '10.10.8.149',
+        brokerHint: '0.0.0.0:8770',
+        topology: 'p2p',
+      );
+
+      expect(invalid.brokerEndpoint, isNull);
+    });
   });
 
   group('Commands payload (§6/§9)', () {

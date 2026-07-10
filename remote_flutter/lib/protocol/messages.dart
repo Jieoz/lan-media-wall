@@ -4,6 +4,8 @@
 /// 入站数据（wall / status / thumb_meta）由对应 model 的 fromMap 解析。
 library;
 
+import 'remote_endpoint.dart';
+
 int _asInt(Object? v, [int def = 0]) =>
     v is num ? v.toInt() : (v is String ? int.tryParse(v) ?? def : def);
 
@@ -296,9 +298,13 @@ class AnnounceInfo {
   ({String host, int port})? get brokerEndpoint {
     final h = brokerHint;
     if (h == null || h.isEmpty) return null;
+    if (normalizeRemoteHost(h).isEmpty) return null;
     final idx = h.lastIndexOf(':');
-    if (idx <= 0) return (host: h, port: 8770);
+    if (idx <= 0) {
+      return (host: h, port: 8770);
+    }
     final host = h.substring(0, idx);
+    if (normalizeRemoteHost(host).isEmpty) return null;
     final port = int.tryParse(h.substring(idx + 1)) ?? 8770;
     return (host: host, port: port);
   }

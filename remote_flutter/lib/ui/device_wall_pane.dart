@@ -441,6 +441,13 @@ class _EmptyHint extends StatelessWidget {
 
 // ---- 对话框:新建组 / 改组 / 删组 / 配置盒子 ----
 
+void _showCommandFailure(BuildContext context, String action, Object error) {
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context)
+    ..clearSnackBars()
+    ..showSnackBar(SnackBar(content: Text('$action失败: $error')));
+}
+
 Future<void> _createGroupDialog(BuildContext context, WallState state) async {
   final idCtl = TextEditingController();
   final nameCtl = TextEditingController();
@@ -486,11 +493,15 @@ Future<void> _createGroupDialog(BuildContext context, WallState state) async {
   if (ok != true) return;
   final gid = idCtl.text.trim();
   if (gid.isEmpty) return;
-  state.createGroup(
-    groupId: gid,
-    name: nameCtl.text.trim().isEmpty ? null : nameCtl.text.trim(),
-    sync: sync,
-  );
+  try {
+    state.createGroup(
+      groupId: gid,
+      name: nameCtl.text.trim().isEmpty ? null : nameCtl.text.trim(),
+      sync: sync,
+    );
+  } catch (e) {
+    _showCommandFailure(context, '新建分组', e);
+  }
 }
 
 Future<void> _editGroupDialog(
@@ -529,11 +540,15 @@ Future<void> _editGroupDialog(
     ),
   );
   if (ok != true) return;
-  state.updateGroup(
-    groupId: g.groupId,
-    name: nameCtl.text.trim(),
-    sync: sync,
-  );
+  try {
+    state.updateGroup(
+      groupId: g.groupId,
+      name: nameCtl.text.trim(),
+      sync: sync,
+    );
+  } catch (e) {
+    _showCommandFailure(context, '保存分组', e);
+  }
 }
 
 Future<void> _confirmDeleteGroup(
@@ -554,7 +569,12 @@ Future<void> _confirmDeleteGroup(
       ],
     ),
   );
-  if (ok == true) state.deleteGroup(groupId: g.groupId);
+  if (ok != true) return;
+  try {
+    state.deleteGroup(groupId: g.groupId);
+  } catch (e) {
+    _showCommandFailure(context, '删除分组', e);
+  }
 }
 
 /// 单台面板(§v1.13):一处集中该 deviceId 的 状态/版本 展示、播放控制(暂停/恢复/
@@ -740,12 +760,20 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     ),
   );
   if (ok != true) return;
-  state.configureDevice(
-    deviceId: device.deviceId,
-    deviceName: nameCtl.text.trim().isEmpty ? null : nameCtl.text.trim(),
-    groupId: groupId.isEmpty ? null : groupId,
-    volume: volume.round(),
-  );
+  try {
+    state.configureDevice(
+      deviceId: device.deviceId,
+      deviceName: nameCtl.text.trim().isEmpty ? null : nameCtl.text.trim(),
+      groupId: groupId.isEmpty ? null : groupId,
+      volume: volume.round(),
+    );
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text('配置失败: $e')));
+    }
+  }
 }
 
 /// 单台播放控制行(§9/§v1.13):暂停/恢复/停止/上一项/下一项,全部锁定该 deviceId 单播。

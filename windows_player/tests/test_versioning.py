@@ -21,12 +21,12 @@ def test_read_release_version_rejects_missing_or_malformed(tmp_path: Path):
         versioning.read_release_version([malformed, tmp_path / "missing.yaml"])
 
 
-def test_candidate_pubspecs_include_pyinstaller_bundle(tmp_path: Path, monkeypatch):
+def test_candidate_pubspecs_prefer_pyinstaller_bundle(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     bundled = tmp_path / "pubspec.yaml"
     bundled.write_text("version: 1.13.8+40\n", encoding="utf-8")
 
     candidates = list(versioning._candidate_pubspecs())
 
-    assert candidates[-1] == bundled
+    assert candidates[0] == bundled
     assert versioning.read_release_version(candidates) == ("1.13.8", 40)

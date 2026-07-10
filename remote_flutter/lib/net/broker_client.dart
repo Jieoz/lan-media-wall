@@ -6,6 +6,7 @@ import 'package:web_socket_channel/io.dart';
 import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
+import '../protocol/remote_endpoint.dart';
 import '../protocol/thumb_pairing.dart';
 
 /// 连接态。
@@ -78,7 +79,7 @@ class BrokerClient {
 
   /// 开始连接(并允许之后自动重连)。
   void connect({required String host, required int port, bool secure = false}) {
-    _host = host;
+    _host = normalizeRemoteHost(host);
     _port = port;
     _secure = secure;
     _wantConnected = true;
@@ -169,7 +170,7 @@ class BrokerClient {
   }
 
   /// 构造、签名并发送一个出站信封。未连接时丢弃并记录。
-  void send(
+  bool send(
     String type, {
     required String to,
     Map<String, dynamic> payload = const {},
@@ -177,10 +178,11 @@ class BrokerClient {
     final ch = _channel;
     if (ch == null || _state != ConnState.connected) {
       _log('send($type) 丢弃：未连接');
-      return;
+      return false;
     }
     final env = codec.build(type: type, to: to, payload: payload);
     ch.sink.add(env.toJson());
+    return true;
   }
 
   void _onData(dynamic data) {

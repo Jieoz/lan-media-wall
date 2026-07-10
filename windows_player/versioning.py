@@ -10,12 +10,12 @@ _VERSION_RE = re.compile(r"^version:\s*([^+\s]+)\+(\d+)\s*$")
 
 
 def _candidate_pubspecs() -> Iterable[Path]:
-    module_dir = Path(__file__).resolve().parent
-    yield module_dir.parent / "remote_flutter" / "pubspec.yaml"
-    yield module_dir / "pubspec.yaml"
     bundle_dir = getattr(sys, "_MEIPASS", None)
     if bundle_dir:
         yield Path(bundle_dir) / "pubspec.yaml"
+    module_dir = Path(__file__).resolve().parent
+    yield module_dir.parent / "remote_flutter" / "pubspec.yaml"
+    yield module_dir / "pubspec.yaml"
 
 
 def read_release_version(paths: Iterable[Path] | None = None) -> tuple[str, int]:

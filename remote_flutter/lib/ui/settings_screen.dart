@@ -78,7 +78,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _host,
             decoration: const InputDecoration(
               labelText: 'broker 地址 (IP / 主机名)',
-              hintText: '192.168.1.10',
+              hintText: '留空使用 P2P；或填 192.168.1.10',
+              helperText: '0.0.0.0 / :: 是服务端监听地址，不能作为 broker 地址',
               prefixIcon: Icon(Icons.dns),
             ),
           ),

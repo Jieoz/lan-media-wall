@@ -346,7 +346,11 @@ class WallState extends ChangeNotifier {
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    brokerHost = prefs.getString(_Keys.broker) ?? '';
+    final savedBrokerHost = prefs.getString(_Keys.broker) ?? '';
+    brokerHost = normalizeRemoteHost(savedBrokerHost);
+    if (brokerHost != savedBrokerHost) {
+      await prefs.setString(_Keys.broker, brokerHost);
+    }
     brokerPort = prefs.getInt(_Keys.port) ?? 8770;
     brokerSecure = prefs.getBool(_Keys.secure) ?? false;
     psk = prefs.getString(_Keys.psk) ?? '';
@@ -369,7 +373,7 @@ class WallState extends ChangeNotifier {
   }) async {
     final prefs = await SharedPreferences.getInstance();
     if (host != null) {
-      brokerHost = host.trim();
+      brokerHost = normalizeRemoteHost(host);
       await prefs.setString(_Keys.broker, brokerHost);
     }
     if (port != null) {
@@ -741,7 +745,9 @@ class WallState extends ChangeNotifier {
       }
       return delivered;
     }
-    _broker.send(type, to: to, payload: payload);
+    if (!_broker.send(type, to: to, payload: payload)) {
+      throw StateError('broker 未连接，命令未投递（目标: $to）');
+    }
     return 1;
   }
 
