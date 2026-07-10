@@ -344,7 +344,7 @@ void main() {
         link.sent.clear();
       }
 
-      final delivered = coord.send('pause', groupId: 'lobby');
+      final delivered = coord.send('pause', to: 'group:lobby');
 
       expect(delivered, 1);
       expect(
