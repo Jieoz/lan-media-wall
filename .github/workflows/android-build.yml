@@ -17,14 +17,10 @@ name: android-build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
-    paths:
-      - "android_apps/**"
-      - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed for the tag -> Release upload step
+  contents: read
 
 jobs:
   build:
@@ -179,38 +175,3 @@ jobs:
           name: lan-media-wall-player-android-release
           path: android_apps/player/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-
-      # --- Attach release APK to a GitHub Release on tag pushes (v*) --------
-      # assembleRelease above is signed with the fixed production certificate
-      # when secrets are present (else debug-signed, still installable). The glob
-      # matches the single app-release.apk Gradle emits. fail_on_unmatched_files
-      # is true so a path regression fails the lane loudly instead of silently
-      # shipping a release with no player APK (the v1.0.0 miss).
-      # Rename to an intuitive, version-tagged asset name so the Release page
-      # clearly shows what each file is (Android 被控端 / player).
-      - name: Rename release assets
-        id: rename
-        if: steps.detect.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          SRC="$(ls android_apps/player/app/build/outputs/apk/release/*.apk | head -1)"
-          mkdir -p dist_release
-          APK_DST="dist_release/LANMediaWall-${TAG}-Player-Android.apk"
-          TOOLS_DST="dist_release/LANMediaWall-${TAG}-QZX-Update-Tools.zip"
-          cp "$SRC" "$APK_DST"
-          cp LANMediaWall-QZX-Update-Tools.zip "$TOOLS_DST"
-          {
-            echo "assets<<EOF"
-            echo "$APK_DST"
-            echo "$TOOLS_DST"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          ls -la "$APK_DST" "$TOOLS_DST"
-
-      - name: Attach release assets to Release (tags only)
-        if: steps.detect.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.rename.outputs.assets }}
-          fail_on_unmatched_files: true

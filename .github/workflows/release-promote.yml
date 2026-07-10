@@ -1,0 +1,134 @@
+name: release-promote
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Resolve tagged commit
+        id: target
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate tag target and locate verified main runs
+        id: runs
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        with:
+          script: |
+            const workflows = [
+              'ci.yml',
+              'flutter-build.yml',
+              'android-build.yml',
+              'windows-build.yml',
+              'broker-build.yml',
+            ];
+            const sha = process.env.TARGET_SHA;
+            const branch = context.payload.repository.default_branch;
+            const selected = {};
+
+            for (const workflow_id of workflows) {
+              const response = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id,
+                branch,
+                head_sha: sha,
+                event: 'push',
+                status: 'success',
+                per_page: 100,
+              });
+              const matches = response.data.workflow_runs
+                .filter(run => run.head_sha === sha && run.head_branch === branch)
+                .sort((a, b) => b.id - a.id);
+              if (matches.length === 0) {
+                core.setFailed(`${workflow_id}: no successful push run for ${branch}@${sha}`);
+                return;
+              }
+              selected[workflow_id] = matches[0].id;
+              core.info(`${workflow_id}: run ${matches[0].id} verified for ${sha}`);
+            }
+
+            core.setOutput('ci', selected['ci.yml']);
+            core.setOutput('flutter', selected['flutter-build.yml']);
+            core.setOutput('android', selected['android-build.yml']);
+            core.setOutput('windows', selected['windows-build.yml']);
+            core.setOutput('broker', selected['broker-build.yml']);
+
+      - name: Download Flutter artifacts from verified run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.runs.outputs.flutter }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
+
+      - name: Download Android artifacts from verified run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.runs.outputs.android }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
+
+      - name: Download Windows artifact from verified run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.runs.outputs.windows }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
+
+      - name: Download Broker artifacts from verified run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.runs.outputs.broker }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
+
+      - name: Validate and promote immutable artifacts
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          CI_RUN_ID: ${{ steps.runs.outputs.ci }}
+          FLUTTER_RUN_ID: ${{ steps.runs.outputs.flutter }}
+          ANDROID_RUN_ID: ${{ steps.runs.outputs.android }}
+          WINDOWS_RUN_ID: ${{ steps.runs.outputs.windows }}
+          BROKER_RUN_ID: ${{ steps.runs.outputs.broker }}
+        run: |
+          set -euo pipefail
+          python3 scripts/promote_release_artifacts.py \
+            --source artifacts \
+            --output release \
+            --tag "${GITHUB_REF_NAME}" \
+            --commit-sha "$TARGET_SHA" \
+            --run "ci.yml=$CI_RUN_ID" \
+            --run "flutter-build.yml=$FLUTTER_RUN_ID" \
+            --run "android-build.yml=$ANDROID_RUN_ID" \
+            --run "windows-build.yml=$WINDOWS_RUN_ID" \
+            --run "broker-build.yml=$BROKER_RUN_ID"
+          (cd release && sha256sum --check SHA256SUMS)
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 10
+          ls -la release
+
+      - name: Publish verified assets without rebuilding
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

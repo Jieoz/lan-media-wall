@@ -1,9 +1,16 @@
 # Changelog
 
 All notable changes to this project are documented here.
-Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions are git tags that trigger CI cloud-builds and Release artifact attachment.
+Format loosely follows [Keep a Changelog](https://keepachangelog.com/); main commits produce verified CI artifacts and version tags promote the matching commit's artifacts to a Release.
 
 ## [Unreleased]
+
+## [v1.13.10] — 2026-07-10
+
+### CI
+- **发布流程改为一次构建、tag 晋级**:`main` 的每个精确 SHA 固定运行 `ci`、Flutter、Android、Windows、Broker 五条门禁并产出 8 个候选制品；`v*` tag 只允许 `release-promote` 查找同 SHA、main push、成功状态的 run，下载并晋级候选制品，不再重跑 Flutter/Gradle/PyInstaller 构建。
+- **发布可追溯合同**:晋级器严格要求 8 类 artifact 每类恰好一个非空文件，验证 tag 与 `pubspec.yaml` 版本一致，按正式名称复制后生成并复验 `SHA256SUMS`；Release 附带 `RELEASE_PROVENANCE.json`，记录 tag、完整 commit SHA、版本/build 与五条 workflow run ID。缺失、重复、过期或 SHA/版本不匹配均中止发布。
+- **流程回归测试纳入云门禁**:`ci.yml` 新增 `release-contract` job，持续验证构建 workflow 不响应 tag、晋级 workflow 不包含编译命令，以及五条同 SHA 门禁和 checksum 合同不可被意外绕过。
 
 ## [v1.13.9] — 2026-07-10
 

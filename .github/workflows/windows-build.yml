@@ -20,15 +20,10 @@ name: windows-build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
-    paths:
-      - "windows_player/**"
-      - ".github/workflows/windows-build.yml"
-      - ".github/pyinstaller/**"
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed for the tag -> Release upload step
+  contents: read
 
 jobs:
   build:
@@ -247,23 +242,3 @@ jobs:
           name: lan-media-wall-player-windows-setup
           path: installer_out/lan-media-wall-player-setup.exe
           if-no-files-found: error
-
-      # --- Attach installer to a GitHub Release on tag pushes (v*) --------------
-      - name: Rename installer for Release
-        id: rename
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          mkdir -p dist_release
-          DST="dist_release/LANMediaWall-${TAG}-Player-Windows-Setup.exe"
-          cp installer_out/lan-media-wall-player-setup.exe "$DST"
-          echo "asset=$DST" >> "$GITHUB_OUTPUT"
-          ls -la "$DST"
-
-      - name: Attach installer to Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.rename.outputs.asset }}
-          fail_on_unmatched_files: true

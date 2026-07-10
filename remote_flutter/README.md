@@ -3,7 +3,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.13.9+41`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.13.10+42`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.13.9 P2P 拓扑根因修复**:历史设置若保存了服务端监听地址 `0.0.0.0` / `::`,控制端曾把它当作远端 Broker 并无限重连,即使 UDP 已发现盒子也不会进入 P2P。现在加载/保存时自动清除此类地址,发现后正常直连；Broker 未连接的命令返回失败,分组与设备配置操作显示明确错误而非静默丢弃。
 >

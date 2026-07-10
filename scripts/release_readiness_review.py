@@ -83,12 +83,21 @@ def gate_python(repo, cfg):
         if rc != 0: g.fail("py_compile: " + (err or out)[:400])
         else: g.note(f"py_compile OK ({len(pyfiles)} files)")
     pytest_cmd = [sys.executable, "-m", "pytest"]
-    if sh([sys.executable, "-c", "import pytest"], cwd=repo)[0] != 0:
+    test_imports = "import pytest, websockets, yaml, PIL, requests, psutil"
+    if sh([sys.executable, "-c", test_imports], cwd=repo)[0] != 0:
         if sh(["which", "uv"])[0] != 0:
-            g.fail("pytest is unavailable and uv is not installed")
+            g.fail("Python test dependencies are incomplete and uv is not installed")
             return g
-        pytest_cmd = ["uv", "run", "--with", "pytest", "--with", "websockets",
-                      "--with", "pyyaml", "--with", "pillow", "python", "-m", "pytest"]
+        pytest_cmd = [
+            "uv", "run",
+            "--with", "pytest",
+            "--with", "websockets>=12",
+            "--with", "pyyaml",
+            "--with", "pillow",
+            "--with", "requests",
+            "--with", "psutil",
+            "python", "-m", "pytest",
+        ]
     for suite in cfg.get("pytest_suites") or []:
         rc, out, err = sh([*pytest_cmd, *suite, "-q"], cwd=repo)
         tail = (out + err).strip().splitlines()[-1:] or [""]
