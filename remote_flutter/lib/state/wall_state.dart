@@ -13,6 +13,7 @@ import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../protocol/pair_uri.dart';
+import '../protocol/remote_endpoint.dart';
 
 /// 持久化键。
 class _Keys {
