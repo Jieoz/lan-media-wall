@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [v1.13.12] — 2026-07-11
 
 - Android thumbnails capture directly at a maximum width of 320 pixels, avoiding recurring 1920x1080 Java bitmap allocations and GC pauses during playback.
 - Status reports the structured active playlist separately from cache inventory. Orchestration can load a connected device's playlist, reorder/delete entries, and apply it back without claiming cache-file deletion.
