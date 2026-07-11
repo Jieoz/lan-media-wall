@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.TextureView
 import android.widget.ImageView
 import com.google.android.exoplayer2.MediaItem as ExoMediaItem
@@ -37,6 +38,9 @@ class PlayerController(context: Context) {
     @Volatile private var imageView: ImageView? = null
     @Volatile private var lastError: String? = null
     private val thumbSeq = AtomicInteger(0)
+    private val thumbnailFlight = ThumbnailSingleFlight()
+    @Volatile private var thumbnailBitmap: Bitmap? = null
+    @Volatile private var lastFirstFrameAtMs = 0L
 
     /** Called when ExoPlayer reports an unrecoverable error (watchdog hook). */
     @Volatile var onPlayerError: ((String) -> Unit)? = null
@@ -90,7 +94,24 @@ class PlayerController(context: Context) {
                     // The single most decisive signal: pixels actually reached the
                     // surface. Its ABSENCE (state=READY but no first-frame) is the
                     // fingerprint of a decoded-but-black stream.
-                    log("first_frame rendered")
+                    val now = SystemClock.elapsedRealtime()
+                    val previous = lastFirstFrameAtMs
+                    lastFirstFrameAtMs = now
+                    log("first_frame rendered position_ms=${p.currentPosition} " +
+                        "delta_ms=${if (previous == 0L) -1 else now - previous}")
+                }
+
+                override fun onMediaItemTransition(mediaItem: ExoMediaItem?, reason: Int) {
+                    log("media_transition reason=$reason position_ms=${p.currentPosition}")
+                }
+
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    log("position_discontinuity reason=$reason old_ms=${oldPosition.positionMs} " +
+                        "new_ms=${newPosition.positionMs}")
                 }
 
                 override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -265,34 +286,62 @@ class PlayerController(context: Context) {
      * Returns (seq, jpegBytes) or null if no frame is available.
      */
     fun captureThumbnail(maxWidth: Int = 320, quality: Int = 70): Pair<Int, ByteArray>? {
-        val view = textureView ?: return null
-        val bmp = blockingOnMain {
-            if (view.width <= 0 || view.height <= 0 || !view.isAvailable) {
-                null
-            } else {
-                try {
-                    val target = ThumbnailPolicy.captureSize(view.width, view.height, maxWidth)
-                        ?: return@blockingOnMain null
-                    // TextureView has a sized getBitmap overload on API 14+. Capture
-                    // directly into the thumbnail-sized allocation: never allocate a
-                    // 1920x1080 Java Bitmap merely to scale it down afterwards.
-                    view.getBitmap(target.width, target.height)
-                } catch (e: Exception) {
+        val lease = thumbnailFlight.tryAcquire() ?: run {
+            log("thumb_skip reason=busy")
+            return null
+        }
+        try {
+            val view = textureView ?: return null
+            var readbackMs = 0L
+            val bmp = blockingOnMain {
+                if (view.width <= 0 || view.height <= 0 || !view.isAvailable) {
                     null
+                } else {
+                    try {
+                        val target = ThumbnailPolicy.captureSize(view.width, view.height, maxWidth)
+                            ?: return@blockingOnMain null
+                        var reusable = thumbnailBitmap
+                        if (reusable == null || reusable.isRecycled ||
+                            reusable.width != target.width || reusable.height != target.height) {
+                            reusable?.recycle()
+                            reusable = Bitmap.createBitmap(
+                                target.width, target.height, Bitmap.Config.ARGB_8888)
+                            thumbnailBitmap = reusable
+                        }
+                        val started = SystemClock.elapsedRealtime()
+                        view.getBitmap(reusable)
+                        readbackMs = SystemClock.elapsedRealtime() - started
+                        reusable
+                    } catch (e: Exception) {
+                        log("thumb_error stage=readback type=${e.javaClass.simpleName}")
+                        null
+                    }
                 }
-            }
-        } ?: return null
+            } ?: return null
 
-        val out = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)
-        bmp.recycle()
-        return thumbSeq.incrementAndGet() to out.toByteArray()
+            val encodeStarted = SystemClock.elapsedRealtime()
+            val out = ByteArrayOutputStream(32 * 1024)
+            if (!bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)) return null
+            val jpeg = out.toByteArray()
+            val encodeMs = SystemClock.elapsedRealtime() - encodeStarted
+            val runtime = Runtime.getRuntime()
+            log("thumb_capture readback_ms=$readbackMs encode_ms=$encodeMs " +
+                "bitmap=${bmp.width}x${bmp.height} jpeg_bytes=${jpeg.size} " +
+                "heap_used=${runtime.totalMemory() - runtime.freeMemory()} heap_max=${runtime.maxMemory()}")
+            return thumbSeq.incrementAndGet() to jpeg
+        } finally {
+            lease.close()
+        }
     }
 
 
     fun release() = runOnMain {
         player?.release()
         player = null
+        thumbnailBitmap?.recycle()
+        thumbnailBitmap = null
+        textureView = null
+        imageView = null
     }
 
     // --- threading helpers -------------------------------------------

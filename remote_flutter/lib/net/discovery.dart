@@ -159,7 +159,20 @@ class Discovery {
       _log('announce 验签失败，丢弃');
       return;
     }
-    final info = AnnounceInfo.fromMap(env.payload);
+    final parsed = AnnounceInfo.fromMap(env.payload);
+    // Early-boot players may announce an empty/0.0.0.0 address. The UDP
+    // datagram source is authoritative and already proved reachable.
+    final sourceIp = dg.address.address;
+    final info = (parsed.ip.isEmpty || parsed.ip == '0.0.0.0')
+        ? AnnounceInfo(
+            deviceId: parsed.deviceId,
+            deviceName: parsed.deviceName,
+            ip: sourceIp,
+            brokerHint: parsed.brokerHint,
+            authMode: parsed.authMode,
+            topology: parsed.topology,
+          )
+        : parsed;
     if (info.deviceId.isEmpty) return;
     _devices[info.deviceId] = info;
     _log('发现设备 ${info.deviceName}(${info.ip})');

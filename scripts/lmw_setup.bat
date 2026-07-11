@@ -62,7 +62,7 @@ adb push "%APK%"                 /data/local/tmp/lmw_player.apk      || ( echo E
 adb shell chmod 755 /data/local/tmp/lmw_setup.sh
 
 echo [3/5] phase 1: install/upgrade player (box will reboot once)...
-adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!"
+adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!" || ( echo ERROR: setup phase 1 failed & exit /b 1 )
 
 echo     waiting for the box to reboot and come back...
 REM give it a moment to actually start rebooting before we wait
@@ -74,11 +74,11 @@ REM let the package scanner + boot settle
 ping -n 16 127.0.0.1 >nul
 
 echo [4/5] phase 2: arm helper + disable everything + bind HOME...
-adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!"
+adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!" || ( echo ERROR: setup phase 2 failed & exit /b 1 )
 
 echo [5/5] verifying player is installed and enabled...
-adb shell "pm list packages | grep -i lanmediawall.player"
-adb shell "ls -l /data/local/tmp/lmw_root_helper | grep \"^-rwsr-s---\"" || ( echo ERROR: helper is not setuid root; restart/update will not work & exit /b 1 )
+adb shell "pm list packages | grep -i lanmediawall.player" || ( echo ERROR: player package missing & exit /b 1 )
+adb shell "uid=$(cat /data/local/tmp/lmw_root_helper.uid) && test -n \"$uid\" && test \"$(stat -c %%u /data/local/tmp/lmw_root_helper)\" = 0 && test \"$(stat -c %%g /data/local/tmp/lmw_root_helper)\" = \"$uid\" && ls -l /data/local/tmp/lmw_root_helper | grep \"^-rwsr-s---\"" || ( echo ERROR: helper owner/group/mode invalid; restart/update will not work & exit /b 1 )
 echo.
 echo === DONE. If you saw 'SETUP COMPLETE' above, the box is now a media-wall-only kiosk. ===
 echo     To undo the app-disabling later:  push+run lmw_restore.sh, or reflash.

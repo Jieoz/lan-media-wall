@@ -120,23 +120,38 @@ pkg_uid() {
 install_helper() {
   uid="$(pkg_uid "$PKG")"
   if [ -z "$uid" ]; then
-    echo "  NOTE: package uid not found; cannot arm in-app push-update helper yet." >&2
-    return 0
+    echo "  ERROR: package uid not found; cannot arm root helper." >&2
+    return 1
   fi
   if [ ! -f "$HELPER_SRC" ]; then
-    echo "  NOTE: $HELPER_SRC missing; push-update helper not armed." >&2
-    return 0
+    echo "  ERROR: $HELPER_SRC missing; root helper not armed." >&2
+    return 1
   fi
-  cp "$HELPER_SRC" "$HELPER_DST" || { echo "  WARN: helper copy failed" >&2; return 0; }
+  rm -f "$HELPER_DST.new"
+  cp "$HELPER_SRC" "$HELPER_DST.new" || { echo "  ERROR: helper copy failed" >&2; return 1; }
+  mv "$HELPER_DST.new" "$HELPER_DST" || { echo "  ERROR: helper install failed" >&2; return 1; }
   chown 0:$uid "$HELPER_DST" 2>/dev/null || chown root:$uid "$HELPER_DST" 2>/dev/null || {
-    echo "  WARN: helper chown root:$uid failed" >&2; return 0; }
-  chmod 6750 "$HELPER_DST" || { echo "  WARN: helper chmod 6750 failed" >&2; return 0; }
-  echo "$uid" > "$HELPER_UID"
-  chown 0:0 "$HELPER_UID" 2>/dev/null || chown root:root "$HELPER_UID" 2>/dev/null
-  chmod 644 "$HELPER_UID"
+    echo "  ERROR: helper chown root:$uid failed" >&2; return 1; }
+  chmod 6750 "$HELPER_DST" || { echo "  ERROR: helper chmod 6750 failed" >&2; return 1; }
+  echo "$uid" > "$HELPER_UID" || { echo "  ERROR: helper uid file write failed" >&2; return 1; }
+  chown 0:0 "$HELPER_UID" 2>/dev/null || chown root:root "$HELPER_UID" 2>/dev/null || {
+    echo "  ERROR: helper uid file chown failed" >&2; return 1; }
+  chmod 644 "$HELPER_UID" || { echo "  ERROR: helper uid file chmod failed" >&2; return 1; }
   helper_mode="$(ls -l "$HELPER_DST" 2>/dev/null)"
   echo "$helper_mode" | grep -q '^-rwsr-s---' || {
     echo "  ERROR: filesystem stripped helper setuid/setgid bits: $helper_mode" >&2
+    rm -f "$HELPER_DST" "$HELPER_UID"
+    return 1
+  }
+  helper_owner="$(ls -ln "$HELPER_DST" 2>/dev/null | awk '{print $3 ":" $4}')"
+  [ "$helper_owner" = "0:$uid" ] || {
+    echo "  ERROR: helper owner must be 0:$uid, got ${helper_owner:-unknown}" >&2
+    rm -f "$HELPER_DST" "$HELPER_UID"
+    return 1
+  }
+  uid_owner="$(ls -ln "$HELPER_UID" 2>/dev/null | awk '{print $3 ":" $4}')"
+  [ "$uid_owner" = "0:0" ] && [ "$(cat "$HELPER_UID" 2>/dev/null)" = "$uid" ] || {
+    echo "  ERROR: helper uid file validation failed" >&2
     rm -f "$HELPER_DST" "$HELPER_UID"
     return 1
   }

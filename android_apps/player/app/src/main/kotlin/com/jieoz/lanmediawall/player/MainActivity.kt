@@ -301,10 +301,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         if (instance === this) instance = null
-        // The service keeps driving playback; release the surface link only.
-        playerController?.detachSurface()
+        playerController?.release()
+        playerController = null
+        super.onDestroy()
     }
 
     companion object {

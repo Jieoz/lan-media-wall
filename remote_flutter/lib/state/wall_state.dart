@@ -170,11 +170,19 @@ class WallState extends ChangeNotifier {
       // broker 模式无逐台直连回调：online 即视为已连接，否则回落到记录的相位。
       final phase = _linkPhase[d.deviceId] ??
           (d.online ? LinkPhase.connected : LinkPhase.discovered);
+      AnnounceInfo? discovered;
+      for (final a in _discovered) {
+        if (_resolveId(a.deviceId) == d.deviceId) {
+          discovered = a;
+          break;
+        }
+      }
       out.add(WallDevice(
         deviceId: d.deviceId,
         deviceName: d.deviceName ?? d.deviceId,
         phase: d.online ? LinkPhase.connected : phase,
         status: d,
+        ip: discovered?.ip ?? '',
         error: _linkError[d.deviceId],
       ));
     }

@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.13.13] — 2026-07-11
+
+- Android 4.4 video thumbnails keep using direct 320px `TextureView` readback, now reuse one small bitmap, run single-flight, and capture every 15 seconds during legacy video playback to reduce GPU synchronization and Dalvik allocation pressure.
+- Exported `player.log` records thumbnail readback/JPEG timing, heap use, media transitions, position discontinuities, and first-frame intervals so loop-boundary stalls can be separated from decoder failures.
+- Activity teardown releases the old ExoPlayer, codec, surface, and thumbnail allocation instead of leaking them across recreation.
+- Controller discovery fills missing announce IPs from the UDP datagram source, merges IPs into connected wall devices, and always displays them on device cards.
+- The landscape device-pane action bar uses labelled stacked controls instead of squeezing three buttons into circular-looking icons.
+- QZX setup now fails on every helper provisioning error and verifies numeric `root:<app gid>` ownership, setuid/setgid mode, and the root-owned UID file. The Windows wrapper propagates both setup phase failures.
+
 ## [v1.13.12] — 2026-07-11
 
 - Android thumbnails capture directly at a maximum width of 320 pixels, avoiding recurring 1920x1080 Java bitmap allocations and GC pauses during playback.

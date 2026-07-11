@@ -23,4 +23,19 @@ class ThumbnailPolicyTest {
         assertEquals(null, ThumbnailPolicy.captureSize(0, 1080, 320))
         assertEquals(null, ThumbnailPolicy.captureSize(1920, 1080, 0))
     }
+
+    @Test fun `legacy video keeps thumbnails but captures at a conservative cadence`() {
+        assertEquals(15_000L, ThumbnailPolicy.intervalMs(androidSdk = 19, playingVideo = true))
+    }
+
+    @Test fun `modern or non-video playback keeps the normal thumbnail cadence`() {
+        assertEquals(5_000L, ThumbnailPolicy.intervalMs(androidSdk = 21, playingVideo = true))
+        assertEquals(5_000L, ThumbnailPolicy.intervalMs(androidSdk = 19, playingVideo = false))
+    }
+
+    @Test fun `capture is skipped when playback crosses an item boundary`() {
+        assertTrue(ThumbnailPolicy.canCapture("item-a", "item-a"))
+        assertEquals(false, ThumbnailPolicy.canCapture("item-a", "item-b"))
+        assertEquals(false, ThumbnailPolicy.canCapture(null, null))
+    }
 }

@@ -19,6 +19,7 @@ import com.jieoz.lanmediawall.player.cache.MediaItem
 import com.jieoz.lanmediawall.player.cache.MediaStore
 import com.jieoz.lanmediawall.player.cache.Playlist
 import com.jieoz.lanmediawall.player.media.PlayerController
+import com.jieoz.lanmediawall.player.media.ThumbnailPolicy
 import com.jieoz.lanmediawall.player.net.BrokerClient
 import com.jieoz.lanmediawall.player.net.AuthMode
 import com.jieoz.lanmediawall.player.net.CoordinatorLink
@@ -1208,10 +1209,19 @@ class PlayerService : Service() {
     // --- §6.4 thumbnail loop -----------------------------------------
     private suspend fun thumbnailLoop() {
         while (scope.isActive) {
-            delay(5000) // §6.4 ~5s
+            val item = currentItem()
+            val expectedItemId = item?.itemId
+            delay(ThumbnailPolicy.intervalMs(
+                androidSdk = Build.VERSION.SDK_INT,
+                playingVideo = playState == "playing" && item?.type == "video",
+            ))
             val coordinator = link ?: continue
             if (!coordinator.isConnected) continue
             if (!(settings.alwaysCollectThumbnails || controllerPresent)) continue
+            if (!ThumbnailPolicy.canCapture(
+                    expectedItemId,
+                    currentItem()?.itemId,
+                )) continue
             val ctl = controllerRef ?: continue
             val res = ctl.captureThumbnail(maxWidth = 320, quality = 70) ?: continue
             val (seq, jpeg) = res

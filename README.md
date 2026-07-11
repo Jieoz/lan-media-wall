@@ -42,7 +42,7 @@ The controller orchestration pane can load and edit the active playlist reported
 | 派生密钥(v1.3) | `required`/`optional` 下各端不再共享 PSK:broker 持唯一 PSK,各端经配对二维码只拿到自己那把 `device_key = HMAC(PSK, 设备身份)`。攻破一台只暴露该台,伪造不了 broker 或别台。`key_mode` 协商 `derived`(默认)/`global`(兼容老端),部署体验与单 PSK 完全一致,零额外配置 |
 | 设备发现 | UDP 广播自动发现 + 手动 IP 直绑 + 上次清单持久化兜底;找不到 broker 自动退化 p2p |
 | 音频 | 组内可指定一台/多台出声，其余静音(默认全部出声) |
-| 设备墙预览 | 被控端周期回传当前帧缩略图，遥控端缩略图墙 |
+| 设备墙预览 | 被控端周期回传当前帧缩略图，遥控端缩略图墙；Android 4.4 播放视频时直接复用 320px 小 Bitmap 并限频，避免 1080p Java Bitmap 与高频 GPU 读回 |
 | 数字标牌 kiosk(v1.4) | Android Device Owner / Lock Task 真锁定 + 开机自启;隐藏退出手势(左上 7 连击或遥控 ↑↑↓↓)**暗键即退、无需 PIN**,供实机调试,与正式 kiosk 隔离 |
 | 播放硬解(v1.4) | Windows mpv `--hwdec=auto-safe` 默认硬解(可关/指定);Android ExoPlayer/MediaCodec。缓存 LRU 配额防爆盘 |
 | 零配置直连(v1.8) | 被控端 broker 地址**留空即默认**:先自动发现 broker,找不到就进 P2P 服务端模式等遥控端扫码直连。不再硬编码示例 IP 逼未配置设备死连(`192.168.1.10` 只作输入框占位提示) |
@@ -57,7 +57,7 @@ The controller orchestration pane can load and edit the active playlist reported
 | P2P 栅栏修复(v1.11.1) | 无 broker/P2P 下「②推送并播放」现在也会把 `prefetch:true` / `barrier_timeout_ms` 透传到被控端；控制端诊断日志会显示 `ready:false`、ready 命中数量与 `play_at` 下发结果，避免看起来 ACK 正常但一直不起播 |
 | 盒子远程配置(v1.9) | `configure_device` 一条命令改被控端**显示名 / 分组 / 音量**,仅对目标 device_id 生效、缺省字段不动、改动持久化重启保留。Windows + Android 两端一致 |
 | 远程自更新(v1.10) | `update_app`(§23):遥控端选 APK → broker 模式上传媒体库 / P2P 模式启动控制端临时 HTTP 服务(得 url+sha256)→ 下发给某台/某组/全部;被控端自己拉取并 root 安装(`su` 复制进 `/data/app` + reboot,4.4 外贸盒唯一可靠路径),**免逐台 adb 刷机**。护栏:broker 帧需鉴权,P2P 直连控制链路可授权本地更新;`version_code` 必须严格更新,`sha256` 下载后重算比对,同签名由 Android 平台强制。仅内网使用 |
-| 运维(Phase 2) | 远程重启 / 断电恢复上次任务 / 定时编排(OTA 远程更新已在 v1.10 落地,见上) |
+| 运维(Phase 2) | 远程重启 / 断电恢复上次任务 / 定时编排；QZX setup 严格验证 root helper 的 `root:<app gid>` 与 `6750`，失败即终止，避免重启/升级假可用 |
 | 遥控键位与设置入口(v1.10.3) | 被控端 **上上下下(或左上角连点7下)= 打开设置页**(不再 `finish()` 杀进程,YunOS 盒不再"看着像退出软件");**遥控主页键 = 回到播放墙**(v1.13.7 起 `MainActivity` 直接声明 `category.HOME` 为 HOME 候选,配合禁用 OEM 桌面即直达;旧 `HomeAlias` 别名已废弃)。控制端播放编排按钮去歧义:`①仅下发缓存 (不播)` / `②推送并播放` |
 | P2P 目标隔离与连接层投递结果(v1.13.8) | 组或单机目标匹配为空时**拒绝投递并向 UI 报错**,绝不扩大成全部已连接设备;普通命令返回成功写入活连接的目标数(不冒充设备执行 ACK),同步起播在零目标时不创建空握手。P2P `update_status` 与 Broker wall 的 `update_state/update_detail/update_version_code` 汇入同一升级状态缓存;Windows `ready` 回显 `prepare_id/group_id`,日志与调试快照也有确定回包 |
 | P2P 拓扑迁移与无效 Broker 地址(v1.13.9) | `0.0.0.0` / `::` 仅可用于服务端监听,不能作为控制端远端地址。控制端会自动清理历史通配地址设置并在发现设备后进入 P2P;Broker 未连接时命令明确失败,分组和设备配置不再静默丢弃 |

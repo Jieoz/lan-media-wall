@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
+import 'device_wall_layout.dart';
 import 'invite_screen.dart';
 
 /// 设备墙栏(设计合同 §4.1 左栏) —— 控制端常驻主视图。
@@ -52,14 +53,16 @@ class _ActionsBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(8),
-      child: Row(
+    return LayoutBuilder(builder: (context, constraints) {
+      final compact = DeviceWallLayout.compactActions(constraints.maxWidth);
+      return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(
-            child: FilledButton.icon(
+          FilledButton.icon(
               icon: const Icon(Icons.add_link),
-              label: const Text('添加设备'),
+              label: Text(compact ? '添加' : '添加设备'),
               onPressed: () => showDialog<void>(
                 context: context,
                 builder: (_) => Dialog(
@@ -70,25 +73,25 @@ class _ActionsBar extends StatelessWidget {
                   ),
                 ),
               ),
-            ),
           ),
-          const SizedBox(width: 8),
-          OutlinedButton.icon(
-            icon: const Icon(Icons.create_new_folder_outlined),
-            label: const Text('新建组'),
-            onPressed: () => _createGroupDialog(context, state),
-          ),
-          const SizedBox(width: 8),
-          // §23 远程更新:整墙/整组免逐台 adb 刷机。broker/P2P 均可用。
-          // 从纯图标改为带可见文字的按钮(与「新建组」风格一致),提升可发现性。
-          OutlinedButton.icon(
-            icon: const Icon(Icons.system_update_alt),
-            label: const Text('更新固件'),
-            onPressed: () => _remoteUpdateDialog(context, state),
-          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: OutlinedButton.icon(
+              icon: const Icon(Icons.create_new_folder_outlined),
+              label: Text(compact ? '分组' : '新建组'),
+              onPressed: () => _createGroupDialog(context, state),
+            )),
+            const SizedBox(width: 8),
+            Expanded(child: OutlinedButton.icon(
+              icon: const Icon(Icons.system_update_alt),
+              label: Text(compact ? '更新' : '更新固件'),
+              onPressed: () => _remoteUpdateDialog(context, state),
+            )),
+          ]),
         ],
       ),
     );
+    });
   }
 }
 
@@ -371,9 +374,11 @@ class _DeviceCard extends StatelessWidget {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: Theme.of(context).textTheme.bodySmall),
-                          )
-                        else if (device.ip.isNotEmpty)
-                          Text(device.ip,
+                          ),
+                        if (device.ip.isNotEmpty)
+                          Text('IP ${device.ip}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.bodySmall),
                       ],
                     ),
