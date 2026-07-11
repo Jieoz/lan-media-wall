@@ -271,27 +271,24 @@ class PlayerController(context: Context) {
                 null
             } else {
                 try {
-                    view.getBitmap(view.width, view.height)
+                    val target = ThumbnailPolicy.captureSize(view.width, view.height, maxWidth)
+                        ?: return@blockingOnMain null
+                    // TextureView has a sized getBitmap overload on API 14+. Capture
+                    // directly into the thumbnail-sized allocation: never allocate a
+                    // 1920x1080 Java Bitmap merely to scale it down afterwards.
+                    view.getBitmap(target.width, target.height)
                 } catch (e: Exception) {
                     null
                 }
             }
         } ?: return null
 
-        val scaled = scaleToWidth(bmp, maxWidth)
         val out = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)
-        if (scaled !== bmp) scaled.recycle()
+        bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)
         bmp.recycle()
         return thumbSeq.incrementAndGet() to out.toByteArray()
     }
 
-    private fun scaleToWidth(src: Bitmap, maxWidth: Int): Bitmap {
-        if (src.width <= maxWidth) return src
-        val ratio = maxWidth.toFloat() / src.width
-        val h = (src.height * ratio).toInt().coerceAtLeast(1)
-        return Bitmap.createScaledBitmap(src, maxWidth, h, true)
-    }
 
     fun release() = runOnMain {
         player?.release()

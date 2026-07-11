@@ -177,6 +177,11 @@ player 据此精确门控缩略图采集(§6.4)，无需轮询。`thumbnail.alwa
 被控端后台**断点续传**下载到本地缓存目录，下载完按 `sha256` 校验，结果反映在 `status.cache`。
 
 ### 6.3 `playlist` (controller→broker→group)
+
+Player `status` includes `active_playlist` using this same structured playlist
+shape. It is the device's current ordered list and is distinct from the `cache`
+inventory map. Controllers may edit and unicast the revised playlist back to a
+device; removing a playlist item does not delete its cached media file.
 ```json
 {"type":"playlist","payload":{
   "playlist_id":"pl-lobby-1",

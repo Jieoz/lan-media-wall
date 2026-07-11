@@ -478,6 +478,7 @@ class PlayerService : Service() {
             put("state", effectiveState())
             put("current", currentJson)
             put("playlist_id", playlist?.playlistId)
+            put("active_playlist", playlist?.raw ?: Json.Null)
             put("volume", settings.volume)
             put("muted", settings.muted)
             put("audio_master", audioMaster)
@@ -565,7 +566,7 @@ class PlayerService : Service() {
             "prev" -> hAdvance(payload, -1)
             "debug_snapshot" -> hDebugSnapshot(payload)
             "download_logs" -> hDownloadLogs(payload)
-            "restart" -> hRestart(payload)
+            "restart" -> { hRestart(payload, env); return }
             "set_volume" -> hSetVolume(payload)
             "set_mute" -> hSetMute(payload)
             "set_audio_master" -> hSetAudioMaster(payload)
@@ -868,13 +869,18 @@ class PlayerService : Service() {
      * BootReceiver + HOME/kiosk provision 链路。若 helper/su 都失败，只记录错误，绝不
      * 杀掉当前播放端进程。
      */
-    private fun hRestart(payload: Json.Obj) {
+    private fun hRestart(payload: Json.Obj, env: Envelope.Parsed) {
         if (!targetsMe(payload)) return
         scope.launch {
             val ok = RootInstaller.rebootDevice()
             if (!ok) {
                 errors.add("restart:reboot-failed")
             }
+            link?.send("ack", jsonObj {
+                put("ack_of", env.msgId)
+                put("ok", ok)
+                put("err", if (ok) "" else "reboot failed: helper and su unavailable")
+            })
         }
     }
 

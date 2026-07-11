@@ -134,6 +134,12 @@ install_helper() {
   echo "$uid" > "$HELPER_UID"
   chown 0:0 "$HELPER_UID" 2>/dev/null || chown root:root "$HELPER_UID" 2>/dev/null
   chmod 644 "$HELPER_UID"
+  helper_mode="$(ls -l "$HELPER_DST" 2>/dev/null)"
+  echo "$helper_mode" | grep -q '^-rwsr-s---' || {
+    echo "  ERROR: filesystem stripped helper setuid/setgid bits: $helper_mode" >&2
+    rm -f "$HELPER_DST" "$HELPER_UID"
+    return 1
+  }
   echo "  in-app push-update helper armed for uid=$uid."
 }
 
@@ -254,7 +260,7 @@ installed)
   fi
 
   # Arm push-update helper.
-  install_helper
+  install_helper || { echo "ERROR: root helper provisioning failed; remote restart/update unavailable." >&2; exit 1; }
 
   # Prime autostart (stopped-state lift) so BOOT_COMPLETED fires on future boots.
   am start -n "$MAIN" >/dev/null 2>&1 && echo "  autostart primed (am start)."

@@ -78,6 +78,7 @@ adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!"
 
 echo [5/5] verifying player is installed and enabled...
 adb shell "pm list packages | grep -i lanmediawall.player"
+adb shell "ls -l /data/local/tmp/lmw_root_helper | grep \"^-rwsr-s---\"" || ( echo ERROR: helper is not setuid root; restart/update will not work & exit /b 1 )
 echo.
 echo === DONE. If you saw 'SETUP COMPLETE' above, the box is now a media-wall-only kiosk. ===
 echo     To undo the app-disabling later:  push+run lmw_restore.sh, or reflash.

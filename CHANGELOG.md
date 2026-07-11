@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Android thumbnails capture directly at a maximum width of 320 pixels, avoiding recurring 1920x1080 Java bitmap allocations and GC pauses during playback.
+- Status reports the structured active playlist separately from cache inventory. Orchestration can load a connected device's playlist, reorder/delete entries, and apply it back without claiming cache-file deletion.
+- Restart ACKs now wait for helper-first / `su` fallback execution and report failure truthfully.
+- Kiosk setup fails if the filesystem strips the root helper's setuid/setgid mode, and PC setup verifies the installed mode.
+
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); main commits produce verified CI artifacts and version tags promote the matching commit's artifacts to a Release.
 

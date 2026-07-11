@@ -21,6 +21,8 @@ class OrchestrationPane extends StatefulWidget {
 
 class _OrchestrationPaneState extends State<OrchestrationPane> {
   String? _groupId;
+  String? _deviceId;
+  String? _loadedPlaylistId;
   bool _sync = true;
   bool _loop = true;
   final List<MediaItem> _items = [];
@@ -38,6 +40,8 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
       padding: const EdgeInsets.all(16),
       children: [
         _groupSelector(state, groups),
+        const SizedBox(height: 12),
+        _devicePlaylistSelector(state),
         const SizedBox(height: 12),
         _barrierProgress(state),
         const SizedBox(height: 12),
@@ -78,6 +82,59 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
               ],
               onChanged: (v) => setState(() => _groupId = v),
             ),
+    );
+  }
+
+  // ---- §21 预缓存栅栏进度 ----
+  Widget _devicePlaylistSelector(WallState state) {
+    final devices = state.wallDevices
+        .where((d) => d.status?.online == true)
+        .toList();
+    if (_deviceId != null && !devices.any((d) => d.deviceId == _deviceId)) {
+      _deviceId = null;
+    }
+    return _Section(
+      title: '单台当前播放列表',
+      child: Row(children: [
+        Expanded(child: DropdownButton<String>(
+          isExpanded: true,
+          value: _deviceId,
+          hint: const Text('选择已连接设备'),
+          items: [for (final d in devices) DropdownMenuItem(
+            value: d.deviceId, child: Text(d.deviceName.isEmpty ? d.deviceId : d.deviceName))],
+          onChanged: (id) => setState(() {
+            _deviceId = id;
+            final pl = id == null
+                ? null
+                : state.wallDevices
+                    .where((d) => d.deviceId == id)
+                    .firstOrNull
+                    ?.status
+                    ?.activePlaylist;
+            if (pl != null) {
+              _items..clear()..addAll(pl.items);
+              _loadedPlaylistId = pl.playlistId;
+              _groupId = pl.groupId.isEmpty ? _groupId : pl.groupId;
+              _sync = pl.sync;
+              _loop = pl.loop;
+            }
+          }),
+        )),
+        const SizedBox(width: 8),
+        FilledButton.icon(
+          icon: const Icon(Icons.save), label: const Text('应用到此设备'),
+          onPressed: _deviceId == null ? null : () {
+            final d = state.wallDevices
+                .where((item) => item.deviceId == _deviceId)
+                .firstOrNull;
+            final group = d?.status?.groupId ?? _groupId ?? '';
+            state.sendPlaylist(playlistId: _loadedPlaylistId ?? _newPlaylistId(),
+              groupId: group, sync: _sync, loop: _loop,
+              items: _items, deviceId: _deviceId);
+            _toast('已更新 ${d?.deviceName ?? _deviceId} 的播放列表；未删除缓存文件');
+          },
+        ),
+      ]),
     );
   }
 
@@ -173,9 +230,23 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 subtitle: Text(it.isImage
                     ? '图片 · ${it.durationMs ?? 0}ms · ${_sizeStr(it.size)}'
                     : '视频${it.durationMs != null ? " · ${it.durationMs}ms" : ""} · ${_sizeStr(it.size)}'),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () => setState(() => _items.removeAt(i)),
+                trailing: Wrap(children: [
+                  IconButton(tooltip: '上移', icon: const Icon(Icons.arrow_upward),
+                    onPressed: i == 0 ? null : () => setState(() {
+                      final next = PlaylistEditing.move(_items, i, i - 1);
+                      _items..clear()..addAll(next);
+                    })),
+                  IconButton(tooltip: '下移', icon: const Icon(Icons.arrow_downward),
+                    onPressed: i == _items.length - 1 ? null : () => setState(() {
+                      final next = PlaylistEditing.move(_items, i, i + 1);
+                      _items..clear()..addAll(next);
+                    })),
+                  IconButton(tooltip: '从播放列表删除', icon: const Icon(Icons.delete_outline),
+                    onPressed: () => setState(() {
+                      final next = PlaylistEditing.removeAt(_items, i);
+                      _items..clear()..addAll(next);
+                    })),
+                ],
                 ),
               );
             }),

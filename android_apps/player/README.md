@@ -1,5 +1,7 @@
 # LAN Media Wall — Android Player (被控端)
 
+**播放稳定性**：API 19 播放期间缩略图直接按最大 320px 宽度抓取，不再先分配整张 1920x1080 Java 位图，降低周期性 GC 对硬解渲染的干扰。
+
 Native Android (Kotlin + Media3/ExoPlayer) player for the LAN Media Wall. It is
 behaviorally **on par with the Windows player** (`../../windows_player/`) — same
 protocol, same roles, different playback kernel (Media3 instead of mpv).

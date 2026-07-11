@@ -60,6 +60,40 @@ class MediaItem {
       );
 }
 
+class ActivePlaylist {
+  final String playlistId;
+  final String groupId;
+  final bool sync;
+  final bool loop;
+  final List<MediaItem> items;
+  const ActivePlaylist({required this.playlistId, required this.groupId,
+    required this.sync, required this.loop, required this.items});
+  static ActivePlaylist? fromMap(Map<String, dynamic>? m) {
+    if (m == null) return null;
+    return ActivePlaylist(
+      playlistId: _asStr(m['playlist_id']), groupId: _asStr(m['group_id']),
+      sync: _asBool(m['sync'], true), loop: _asBool(m['loop']),
+      items: ((m['items'] as List?) ?? const []).whereType<Map>()
+          .map((e) => MediaItem.fromMap(e.cast<String, dynamic>())).toList(),
+    );
+  }
+}
+
+class PlaylistEditing {
+  static List<MediaItem> move(List<MediaItem> source, int from, int to) {
+    final out = List<MediaItem>.of(source);
+    if (from < 0 || from >= out.length || to < 0 || to >= out.length) return out;
+    final item = out.removeAt(from);
+    out.insert(to, item);
+    return out;
+  }
+  static List<MediaItem> removeAt(List<MediaItem> source, int index) {
+    final out = List<MediaItem>.of(source);
+    if (index >= 0 && index < out.length) out.removeAt(index);
+    return out;
+  }
+}
+
 /// 设备当前播放项（§5.1 current）。
 class CurrentItem {
   final String itemId;
@@ -94,6 +128,7 @@ class DeviceStatus {
   final String state; // playing|paused|idle|buffering|downloading
   final CurrentItem? current;
   final String? playlistId;
+  final ActivePlaylist? activePlaylist;
   final int volume;
   final bool muted;
   final bool audioMaster;
@@ -118,6 +153,7 @@ class DeviceStatus {
     this.state = 'idle',
     this.current,
     this.playlistId,
+    this.activePlaylist,
     this.volume = 0,
     this.muted = false,
     this.audioMaster = false,
@@ -143,6 +179,8 @@ class DeviceStatus {
       current:
           CurrentItem.fromMap((m['current'] as Map?)?.cast<String, dynamic>()),
       playlistId: m['playlist_id'] as String?,
+      activePlaylist: ActivePlaylist.fromMap(
+          (m['active_playlist'] as Map?)?.cast<String, dynamic>()),
       volume: _asInt(m['volume']),
       muted: _asBool(m['muted']),
       audioMaster: _asBool(m['audio_master']),
@@ -182,6 +220,7 @@ class DeviceStatus {
         state: state ?? this.state,
         current: current,
         playlistId: playlistId,
+        activePlaylist: activePlaylist,
         volume: volume ?? this.volume,
         muted: muted ?? this.muted,
         audioMaster: audioMaster ?? this.audioMaster,

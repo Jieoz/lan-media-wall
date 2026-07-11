@@ -1,5 +1,7 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+The controller orchestration pane can load and edit the active playlist reported by an online device. Applying edits replaces that device's active playlist only; cache inventory and cache files remain separate.
+
 [![ci](https://github.com/Jieoz/lan-media-wall/actions/workflows/ci.yml/badge.svg)](https://github.com/Jieoz/lan-media-wall/actions/workflows/ci.yml)
 [![windows-build](https://github.com/Jieoz/lan-media-wall/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Jieoz/lan-media-wall/actions/workflows/windows-build.yml)
 [![android-build](https://github.com/Jieoz/lan-media-wall/actions/workflows/android-build.yml/badge.svg)](https://github.com/Jieoz/lan-media-wall/actions/workflows/android-build.yml)

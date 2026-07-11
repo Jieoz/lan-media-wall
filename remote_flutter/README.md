@@ -1,5 +1,7 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+**播放列表编排**：在线设备状态中的 `active_playlist` 是独立于 `cache` 的有序节目单。编排栏可载入单台设备的节目单、上移/下移或删除项目，再单播应用回该设备；删除节目单项目不会删除盒子上的缓存文件。
+
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 

@@ -64,6 +64,15 @@ void main() {
           'duration_ms': 60000,
         },
         'playlist_id': 'pl-1',
+        'active_playlist': {
+          'playlist_id': 'pl-1',
+          'group_id': 'lobby',
+          'sync': true,
+          'loop': false,
+          'items': [
+            {'item_id': 'a1', 'type': 'video', 'name': 'promo.mp4', 'url': 'u'}
+          ],
+        },
         'volume': 80,
         'muted': false,
         'audio_master': true,
@@ -92,6 +101,9 @@ void main() {
       expect(d.updateState, 'installing');
       expect(d.updateDetail, 'verified');
       expect(d.updateVersionCode, 40);
+      expect(d.activePlaylist?.playlistId, 'pl-1');
+      expect(d.activePlaylist?.items.single.itemId, 'a1');
+      expect(d.activePlaylist?.loop, isFalse);
     });
 
     test('缺省/缺失字段走默认值', () {
@@ -255,6 +267,25 @@ void main() {
       final ag = Commands.assignGroup(deviceId: 'win-01', groupId: 'hall');
       expect(ag['device_id'], 'win-01');
       expect(ag['group_id'], 'hall');
+    });
+  });
+
+  group('Playlist editing pure logic', () {
+    const a = MediaItem(itemId: 'a', type: 'video', name: 'A', url: 'a');
+    const b = MediaItem(itemId: 'b', type: 'video', name: 'B', url: 'b');
+    const c = MediaItem(itemId: 'c', type: 'video', name: 'C', url: 'c');
+
+    test('move preserves all items and order', () {
+      expect(PlaylistEditing.move(const [a, b, c], 2, 0).map((e) => e.itemId),
+          ['c', 'a', 'b']);
+    });
+    test('delete removes only selected item', () {
+      expect(PlaylistEditing.removeAt(const [a, b, c], 1).map((e) => e.itemId),
+          ['a', 'c']);
+    });
+    test('invalid edits leave list unchanged', () {
+      expect(PlaylistEditing.move(const [a, b], -1, 0), [a, b]);
+      expect(PlaylistEditing.removeAt(const [a, b], 4), [a, b]);
     });
   });
 
