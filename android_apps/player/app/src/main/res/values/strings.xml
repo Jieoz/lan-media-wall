@@ -62,10 +62,10 @@
     <string name="action_reset_conn">Reset connection config</string>
     <string name="action_refresh_diag">Refresh diagnostics</string>
     <string name="label_diag_status">Local diagnostics</string>
-    <string name="diag_hint">Shows the currently readable helper / restart / update / playback state on this device. No export required.</string>
+    <string name="diag_hint">Shows the currently readable root-daemon / restart / update / playback state on this device. No export required.</string>
     <string name="diag_unavailable">Unavailable</string>
     <string name="diag_refreshing">Refreshing diagnostics…</string>
-    <string name="diag_helper_fmt">Helper: %1$s</string>
+    <string name="diag_helper_fmt">Root daemon: %1$s</string>
     <string name="diag_restart_fmt">Restart: %1$s</string>
     <string name="diag_update_fmt">Update: %1$s</string>
     <string name="diag_playback_fmt">Playback: %1$s</string>

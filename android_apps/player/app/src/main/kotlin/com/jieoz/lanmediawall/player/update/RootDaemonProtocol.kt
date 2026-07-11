@@ -1,0 +1,42 @@
+package com.jieoz.lanmediawall.player.update
+
+/**
+ * Pure (device-free, unit-testable) definition of the line protocol the
+ * [RootInstaller] client speaks to the root daemon (`scripts/lmw_root_daemon.c`)
+ * over an abstract AF_UNIX socket. Keeping every string + parse rule here means
+ * the wire contract is locked by [RootDaemonProtocolTest] with no socket needed;
+ * [RootInstaller] is then a thin side-effecting LocalSocket wrapper.
+ *
+ * Contract (must stay in lockstep with lmw_root_daemon.c):
+ *   socket : abstract namespace, name [SOCKET_NAME]
+ *   request: one line — "PROBE" | "REBOOT" | "INSTALL <abs-path>"
+ *   probe  : ready iff response begins "ready " AND contains "daemon_euid=0"
+ *            (proves the peer we reached is genuinely root, not a spoof)
+ */
+object RootDaemonProtocol {
+    /** Abstract socket name; matches LMW_SOCKET_NAME in the daemon. */
+    const val SOCKET_NAME = "lmw_root_daemon"
+
+    /** The ONE canonical update APK the daemon will INSTALL; matches
+     *  LMW_CANONICAL_APK in the daemon and [AppUpdater]'s download target. */
+    const val CANONICAL_APK_PATH =
+        "/data/data/com.jieoz.lanmediawall.player/cache/update/" +
+            "com.jieoz.lanmediawall.player-update.apk"
+
+    fun probeRequest(): String = "PROBE"
+    fun rebootRequest(): String = "REBOOT"
+    fun installRequest(absPath: String): String = "INSTALL $absPath"
+
+    data class Probe(val ready: Boolean, val detail: String)
+
+    /** Parse the daemon's PROBE reply. Ready requires an explicit root euid so a
+     *  non-root impostor bound to the same abstract name can never look ready. */
+    fun parseProbe(response: String): Probe {
+        val line = response.trim()
+        val ready = line.startsWith("ready ") && line.contains("daemon_euid=0")
+        return Probe(ready = ready, detail = line.ifBlank { "empty" })
+    }
+
+    /** True if a REBOOT/INSTALL reply reports success. */
+    fun isOk(response: String): Boolean = response.trim().startsWith("ok ")
+}

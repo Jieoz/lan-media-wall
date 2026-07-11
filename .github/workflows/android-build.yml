@@ -129,20 +129,28 @@ jobs:
             echo "::notice::apksigner not found; skipping fingerprint echo."
           fi
 
-      - name: Build QZX root update helper
+      - name: Test + build QZX root daemon (armv7)
         if: steps.detect.outputs.present == 'true'
         shell: bash
         run: |
+          # 1) Host unit tests for the daemon parser + security policy (gcc, x86_64).
+          #    These lock the root-socket guardrails; a regression fails the build.
+          gcc -DLMW_DAEMON_TEST -Wall -Wextra -Werror \
+            -o /tmp/tdaemon scripts/tests/test_lmw_root_daemon.c
+          /tmp/tdaemon
+          # 2) Cross-compile the daemon for the box (armv7). It is started AS root
+          #    by lmw_setup and stays root — NO setuid bit (ignored under zygote
+          #    no_new_privs on these boxes); authorization is SO_PEERCRED only.
           NDK_BIN="$(find "$ANDROID_HOME/ndk" -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin' -type d | sort | tail -1)"
           if [ -z "$NDK_BIN" ]; then
             echo "Android NDK linux-x86_64 toolchain not found" >&2
             exit 1
           fi
           CC="$NDK_BIN/armv7a-linux-androideabi21-clang"
-          "$CC" -Os -fPIE -Wall -Wextra -Werror \
-            -o scripts/lmw_root_helper scripts/lmw_root_helper.c
-          file scripts/lmw_root_helper
-          chmod 755 scripts/lmw_root_helper
+          "$CC" -Os -fPIE -pie -Wall -Wextra -Werror \
+            -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
+          file scripts/lmw_root_daemon
+          chmod 755 scripts/lmw_root_daemon
 
       - name: Package QZX updater tools
         if: steps.detect.outputs.present == 'true'
@@ -152,12 +160,12 @@ jobs:
           cp scripts/lmw_setup.bat scripts/lmw_setup.sh \
              scripts/lmw_restore.bat scripts/lmw_restore.sh \
              scripts/lmw_audit.bat scripts/lmw_audit.sh \
-             scripts/QZX-KIOSK-TOOLS.md scripts/lmw_root_helper dist_tools/
+             scripts/QZX-KIOSK-TOOLS.md scripts/lmw_root_daemon dist_tools/
           (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
             lmw_setup.bat lmw_setup.sh \
             lmw_restore.bat lmw_restore.sh \
             lmw_audit.bat lmw_audit.sh \
-            QZX-KIOSK-TOOLS.md lmw_root_helper)
+            QZX-KIOSK-TOOLS.md lmw_root_daemon)
           ls -la LANMediaWall-QZX-Update-Tools.zip
 
       - name: Upload QZX updater tools

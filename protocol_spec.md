@@ -276,7 +276,7 @@ device; removing a playlist item does not delete its cached media file.
 | `set_mute` | `muted`,`device_id?` | 静音开关 |
 | `set_audio_master` | `device_ids:[…]` | 指定本组哪几台出声(其余静音)。**默认组内全部出声**;此命令用于按需指定子集 |
 | `assign_group` | `device_id`,`group_id` | 改设备分组 |
-| `restart` | `device_id?`,`group_id?` | 重启目标被控端/整机;Android v1.13.3 起优先 `lmw_root_helper reboot`,再回退 `su -c reboot` |
+| `restart` | `device_id?`,`group_id?` | 重启目标被控端/整机;Android v1.14.0 起经 root 守护进程 `lmw_root_daemon`(抽象套接字 `@lmw_root_daemon` 上发 `REBOOT`);无 `su`/setuid 回退(目标机 `no_new_privs` 下均无效),守护进程不可达时只上报错误 |
 | `set_schedule` | `schedule:[{cron,playlist_id}]` | 定时编排(几点切哪个 playlist) |
 
 > **同步 vs 各播各的**：`playlist.sync=true` → 走 §9.1–9.2 三段握手同步起播;`sync=false`(典型场景:每台设备自成一组) → broker 直接对单机下 `play_at=now`，各放各的。**同一套消息，sync 标志切换两种模式。**

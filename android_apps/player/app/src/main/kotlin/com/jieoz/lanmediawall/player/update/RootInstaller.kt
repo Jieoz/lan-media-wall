@@ -1,49 +1,38 @@
 package com.jieoz.lanmediawall.player.update
 
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.util.Log
 import java.io.File
 
 /**
- * §22 self-update: install a downloaded+verified APK on a rooted 4.4 外贸盒 by
- * mirroring the proven `scripts/deploy_player.sh` path — the ONLY path that
- * actually installs on these boxes.
+ * §22 self-update / §9.4 remote restart bridge — a **local-socket client** to the
+ * root daemon (`scripts/lmw_root_daemon.c`), which is started as root by
+ * provisioning and stays root.
  *
- * WHY NOT `pm install` / PackageInstaller:
- *   These YunOS/AliOS boxes report a bogus recommendAppInstallLocation to a
- *   forked PackageManagerService, so `pm install` (and PackageInstaller) fail
- *   with INSTALL_FAILED_INVALID_INSTALL_LOCATION *before* our internalOnly flag
- *   applies (see AndroidManifest §6.3 + deploy_player.sh header). The reliable
- *   path — which these boxes allow because they default to `adb root`/`su` — is
- *   to drop the APK straight into /data/app and let the next boot's package
- *   scanner adopt it, skipping the location recommender entirely.
+ * WHY A DAEMON, NOT su / setuid:
+ *   On QZX_C1 / YunOS 4.4.2 the app UID is denied by stock `su`, and zygote's
+ *   no_new_privs makes a setuid-root helper's elevation a no-op — the app keeps
+ *   euid=10020 no matter the file bits. The only design that works is a process
+ *   that is ALREADY root and exposes a restricted socket. There is deliberately
+ *   NO su / setuid fallback here: those paths never worked on the target and only
+ *   added misleading "maybe it'll install" complexity. If the daemon is not
+ *   reachable + root, install/reboot fail explicitly and loudly.
  *
- * SECURITY: this class only EXECUTES an install once every §22 guardrail in
- * [com.jieoz.lanmediawall.player.PlayerService] has passed (authenticated frame,
- * monotonic versionCode, sha256-verified file). The platform additionally
- * enforces same-signer on the upgrade scan, so a differently-signed APK dropped
- * here is rejected by PackageManager at boot — we get that for free.
- *
- * The command STRING is built by the pure, unit-testable [installScript]; the
- * side-effecting [install] just pipes it to `su`.
+ * SECURITY: the daemon authenticates us by kernel peer credentials (SO_PEERCRED)
+ * against a root-owned uid file, and only accepts the single canonical update
+ * path. The app-side §23 guardrails ([UpdateGuard]) still gate every call. The
+ * wire protocol lives in the pure, unit-tested [RootDaemonProtocol].
  */
 object RootInstaller {
     private const val TAG = "lmw.RootInstaller"
-    private const val HELPER = "/system/xbin/lmw_root_helper"
     private const val PROBE_CACHE_MS = 30_000L
+    private const val CONNECT_TIMEOUT_MS = 4_000
     @Volatile private var cachedProbe: Probe? = null
     @Volatile private var cachedProbeAtMs = 0L
 
-    /**
-     * The helper argv used by the preferred install path. lmw_update.bat arms
-     * this helper once using adb/root: owner root, group = Player app uid,
-     * mode 6750. That is the durable fix for QZX_C1 stock su, which rejects
-     * normal app UIDs (`su: uid N not allowed to su`).
-     */
-    fun helperCommand(pkg: String, srcApk: String): List<String> = listOf(HELPER, pkg, srcApk)
-
-    fun rebootCommand(): List<String> = listOf(HELPER, "reboot")
-
-    fun probeCommand(): List<String> = listOf(HELPER, "probe")
+    /** The single canonical APK path the daemon will install (see AppUpdater). */
+    val canonicalApkPath: String get() = RootDaemonProtocol.CANONICAL_APK_PATH
 
     data class Probe(val ready: Boolean, val detail: String)
 
@@ -59,146 +48,81 @@ object RootInstaller {
         return result
     }
 
-    private fun probeNow(): Probe = try {
-        val p = ProcessBuilder(probeCommand()).redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText().trim()
-        val code = p.waitFor()
-        Probe(
-            ready = code == 0 && out.startsWith("ready ") && out.contains("euid=0"),
-            detail = out.ifBlank { "exit=$code" },
-        )
-    } catch (e: Exception) {
-        Probe(false, e.javaClass.simpleName)
+    private fun probeNow(): Probe {
+        val resp = request(RootDaemonProtocol.probeRequest())
+            ?: return Probe(false, "daemon-unreachable")
+        val p = RootDaemonProtocol.parseProbe(resp)
+        return Probe(p.ready, p.detail)
     }
 
     /**
-     * The fallback shell script piped to `su`. Pure string builder so it's unit-testable
-     * with no device. Mirrors deploy_player.sh: copy into /data/app under the
-     * package-scanner-adopted name, world-read so the scanner can read it at
-     * boot, then reboot to trigger adoption.
-     *
-     * [pkg] is quoted-safe by construction (it's our own applicationId, ASCII).
-     * [srcApk] is our own cache path (also ASCII, no spaces) — but we still
-     * single-quote both so a future non-ASCII cache dir can't break the script.
+     * Open the abstract socket, send one request line, read the single response
+     * line. Returns null if the daemon isn't reachable (not provisioned / not
+     * running). Best-effort with a bounded connect timeout so a dead daemon never
+     * hangs the caller.
      */
-    fun installScript(pkg: String, srcApk: String): String {
-        val dst = "/data/app/$pkg-1.apk"
-        val q = { s: String -> "'" + s.replace("'", "'\\''") + "'" }
-        return buildString {
-            append("set -e; ")
-            append("cp ").append(q(srcApk)).append(' ').append(q(dst)).append("; ")
-            append("chmod 644 ").append(q(dst)).append("; ")
-            append("sync; ")
-            append("reboot")
+    private fun request(line: String): String? {
+        val socket = LocalSocket()
+        return try {
+            socket.connect(
+                LocalSocketAddress(RootDaemonProtocol.SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT),
+            )
+            socket.soTimeout = CONNECT_TIMEOUT_MS
+            socket.outputStream.write((line + "\n").toByteArray())
+            socket.outputStream.flush()
+            socket.shutdownOutput()
+            socket.inputStream.bufferedReader().readText().trim()
+        } catch (e: Exception) {
+            Log.w(TAG, "daemon request failed: ${e.javaClass.simpleName}")
+            null
+        } finally {
+            try { socket.close() } catch (_: Exception) {}
         }
     }
 
-    /** True if `su` is present + grants root (uid 0). Cheap probe, no install. */
-    fun hasRoot(): Boolean = try {
-        val p = ProcessBuilder("su", "-c", "id -u")
-            .redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText().trim()
-        p.waitFor()
-        out.contains("0")
-    } catch (e: Exception) {
-        Log.w(TAG, "root probe failed: ${e.javaClass.simpleName}")
-        false
-    }
-
     /**
-     * Install [apk] for package [pkg], then reboot. Preferred path is the
-     * provisioned setuid helper because QZX_C1 stock `su` grants root to adb/shell
-     * but rejects normal app UIDs. If an older box has real app-visible su, keep
-     * the old path as a fallback.
+     * Install [apk] for package [pkg], then reboot (the daemon does both). The
+     * APK MUST already be at the canonical path — [AppUpdater] downloads it there.
+     * Returns false (no partial state) if the daemon is unreachable/not-root or
+     * rejects the request.
      */
     fun install(pkg: String, apk: File): Boolean {
+        if (pkg != "com.jieoz.lanmediawall.player") {
+            Log.e(TAG, "refusing unknown package: $pkg")
+            return false
+        }
         if (!apk.exists() || apk.length() <= 0) {
             Log.e(TAG, "apk missing/empty: ${apk.absolutePath}")
             return false
         }
-        val probe = probe(force = true)
-        if (!probe.ready) {
-            Log.e(TAG, "root bridge unavailable: ${probe.detail}")
+        if (apk.absolutePath != canonicalApkPath) {
+            Log.e(TAG, "apk not at canonical path: ${apk.absolutePath}")
             return false
         }
-        if (installViaHelper(pkg, apk)) return true
-        return installViaSu(pkg, apk)
+        val probe = probe(force = true)
+        if (!probe.ready) {
+            Log.e(TAG, "root daemon unavailable: ${probe.detail}")
+            return false
+        }
+        val resp = request(RootDaemonProtocol.installRequest(apk.absolutePath))
+        if (resp == null || !RootDaemonProtocol.isOk(resp)) {
+            Log.e(TAG, "daemon install failed: ${resp ?: "unreachable"}")
+            return false
+        }
+        return true // reboot dispatched by the daemon
     }
 
     fun rebootDevice(): Boolean {
         val probe = probe(force = true)
         if (!probe.ready) {
-            Log.e(TAG, "root bridge unavailable: ${probe.detail}")
+            Log.e(TAG, "root daemon unavailable: ${probe.detail}")
             return false
         }
-        if (rebootViaHelper()) return true
-        return rebootViaSu()
-    }
-
-    private fun rebootViaHelper(): Boolean = try {
-        val p = ProcessBuilder(rebootCommand())
-            .redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        val code = p.waitFor()
-        if (code != 0) {
-            Log.e(TAG, "helper reboot exited $code: ${out.take(200)}")
-            false
-        } else {
-            true
+        val resp = request(RootDaemonProtocol.rebootRequest())
+        if (resp == null || !RootDaemonProtocol.isOk(resp)) {
+            Log.e(TAG, "daemon reboot failed: ${resp ?: "unreachable"}")
+            return false
         }
-    } catch (e: Exception) {
-        Log.w(TAG, "helper reboot unavailable: ${e.javaClass.simpleName}")
-        false
-    }
-
-    private fun rebootViaSu(): Boolean = try {
-        val p = ProcessBuilder("su", "-c", "reboot")
-            .redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        val code = p.waitFor()
-        if (code != 0) {
-            Log.e(TAG, "su reboot exited $code: ${out.take(200)}")
-            false
-        } else {
-            true
-        }
-    } catch (e: Exception) {
-        Log.e(TAG, "su reboot failed: ${e.javaClass.simpleName}")
-        false
-    }
-
-    private fun installViaHelper(pkg: String, apk: File): Boolean = try {
-        val p = ProcessBuilder(helperCommand(pkg, apk.absolutePath))
-            .redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        val code = p.waitFor()
-        if (code != 0) {
-            Log.e(TAG, "helper install exited $code: ${out.take(200)}")
-            false
-        } else {
-            true // reboot dispatched
-        }
-    } catch (e: Exception) {
-        Log.w(TAG, "helper install unavailable: ${e.javaClass.simpleName}")
-        false
-    }
-
-    private fun installViaSu(pkg: String, apk: File): Boolean {
-        val script = installScript(pkg, apk.absolutePath)
-        return try {
-            val p = ProcessBuilder("su", "-c", script)
-                .redirectErrorStream(true).start()
-            val out = p.inputStream.bufferedReader().readText()
-            val code = p.waitFor()
-            if (code != 0) {
-                Log.e(TAG, "su install exited $code: ${out.take(200)}")
-                false
-            } else {
-                true // reboot dispatched
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "su install failed: ${e.javaClass.simpleName}")
-            false
-        }
+        return true
     }
 }

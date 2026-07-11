@@ -3,7 +3,8 @@
 #  lmw_setup.sh — ONE ON-BOX script that does EVERYTHING for a LAN-Media-Wall
 #  kiosk on YunOS/AliOS 4.4.2 (QZX_C1, Hi3798MV300, root adb):
 #     1. install / upgrade the media-wall player (from the pushed APK)
-#     2. arm the in-app push-update root helper
+#     2. install + start the root DAEMON (lmw_root_daemon) and a cold-boot hook,
+#        then verify it over its own local-socket PROBE protocol
 #     3. prime autostart (stopped-state lift)
 #     4. DISABLE EVERYTHING except the media wall + the OS essentials it needs
 #     5. make the player the default HOME so the box boots straight into it
@@ -37,9 +38,19 @@ APK_SRC=/data/local/tmp/lmw_player.apk
 DST=/data/app/$PKG-1.apk
 PHASE=/data/local/tmp/lmw_phase
 BEFORE_FILE=/data/local/tmp/lmw_before_version
-HELPER_SRC=/data/local/tmp/lmw_root_helper.new
-HELPER_DST=/system/xbin/lmw_root_helper
-HELPER_UID=/data/local/tmp/lmw_root_helper.uid
+# Root DAEMON (replaces the old setuid lmw_root_helper — a setuid bit is IGNORED
+# under zygote no_new_privs on these boxes, so the only design that works is a
+# process started AS root that stays root and exposes a restricted local socket).
+DAEMON_SRC=/data/local/tmp/lmw_root_daemon.new
+DAEMON_DST=/system/xbin/lmw_root_daemon
+# Root-owned file holding the single authorized Player uid (SO_PEERCRED check).
+# Matches LMW_UID_FILE in lmw_root_daemon.c.
+DAEMON_UID=/data/local/tmp/lmw_root_daemon.uid
+# Cold-boot hook: preferred ROM-supported init.d, else install-recovery.sh iff
+# the ROM demonstrably runs it. Matches names documented in QZX-KIOSK-TOOLS.md.
+INITD_DIR=/system/etc/init.d
+INITD_HOOK=/system/etc/init.d/99lmwdaemon
+RECOVERY_HOOK=/system/etc/install-recovery.sh
 COMPLETE=/data/local/tmp/lmw_setup_complete
 
 # ---------------------------------------------------------------------------
@@ -128,53 +139,106 @@ has_owner_group() {
   return 1
 }
 
-install_helper() {
+# Install the root daemon binary + the root-owned authorized-uid file, install a
+# ROM-supported cold-boot hook, START the daemon now, and VERIFY it over its own
+# PROBE protocol. Returns non-zero (and leaves no completion marker) on any failure.
+install_daemon() {
   uid="$(pkg_uid "$PKG")"
   if [ -z "$uid" ]; then
-    echo "  ERROR: package uid not found; cannot arm root helper." >&2
+    echo "  ERROR: package uid not found; cannot provision root daemon." >&2
     return 1
   fi
-  if [ ! -f "$HELPER_SRC" ]; then
-    echo "  ERROR: $HELPER_SRC missing; root helper not armed." >&2
+  if [ ! -f "$DAEMON_SRC" ]; then
+    echo "  ERROR: $DAEMON_SRC missing; root daemon not installed (the bat pushes it)." >&2
     return 1
   fi
   mount -o remount,rw /system 2>/dev/null || mount -o rw,remount /system 2>/dev/null || {
-    echo "  ERROR: cannot remount /system read-write for root helper." >&2
+    echo "  ERROR: cannot remount /system read-write for root daemon." >&2
     return 1
   }
-  helper_stage="$HELPER_DST.installing"
-  rm -f "$helper_stage"
-  cp "$HELPER_SRC" "$helper_stage" || { echo "  ERROR: helper copy failed" >&2; return 1; }
-  mv "$helper_stage" "$HELPER_DST" || { echo "  ERROR: helper install failed" >&2; return 1; }
-  chown 0:$uid "$HELPER_DST" 2>/dev/null || chown root:$uid "$HELPER_DST" 2>/dev/null || {
-    echo "  ERROR: helper chown root:$uid failed" >&2; return 1; }
-  chmod 6750 "$HELPER_DST" || { echo "  ERROR: helper chmod 6750 failed" >&2; return 1; }
-  echo "$uid" > "$HELPER_UID" || { echo "  ERROR: helper uid file write failed" >&2; return 1; }
-  chown 0:0 "$HELPER_UID" 2>/dev/null || chown root:root "$HELPER_UID" 2>/dev/null || {
-    echo "  ERROR: helper uid file chown failed" >&2; return 1; }
-  chmod 644 "$HELPER_UID" || { echo "  ERROR: helper uid file chmod failed" >&2; return 1; }
-  helper_mode="$(ls -l "$HELPER_DST" 2>/dev/null)"
-  echo "$helper_mode" | grep -q '^-rwsr-s---' || {
-    echo "  ERROR: filesystem stripped helper setuid/setgid bits: $helper_mode" >&2
-    rm -f "$HELPER_DST" "$HELPER_UID"
-    return 1
-  }
-  helper_numeric="$(ls -ln "$HELPER_DST" 2>/dev/null)"
-  set -- $helper_numeric
-  has_owner_group 0 "$uid" "$@" || {
-    echo "  ERROR: helper owner/group 0:$uid not found in: ${helper_numeric:-unknown}" >&2
-    rm -f "$HELPER_DST" "$HELPER_UID"
-    return 1
-  }
-  uid_numeric="$(ls -ln "$HELPER_UID" 2>/dev/null)"
+  # Binary: plain root-owned executable — NO setuid bit (it is started as root,
+  # never elevated by exec). system:system 0755 is enough to run + be readable.
+  daemon_stage="$DAEMON_DST.installing"
+  rm -f "$daemon_stage"
+  cp "$DAEMON_SRC" "$daemon_stage" || { echo "  ERROR: daemon copy failed" >&2; return 1; }
+  mv "$daemon_stage" "$DAEMON_DST" || { echo "  ERROR: daemon install failed" >&2; return 1; }
+  chown 0:0 "$DAEMON_DST" 2>/dev/null || chown root:root "$DAEMON_DST" 2>/dev/null || {
+    echo "  ERROR: daemon chown root:root failed" >&2; return 1; }
+  chmod 0755 "$DAEMON_DST" || { echo "  ERROR: daemon chmod 0755 failed" >&2; return 1; }
+
+  # Authorized-uid file: ROOT-owned, world-readable, app-UNwritable. The daemon
+  # reads the single allowed Player uid from here and checks it against SO_PEERCRED.
+  echo "$uid" > "$DAEMON_UID" || { echo "  ERROR: daemon uid file write failed" >&2; return 1; }
+  chown 0:0 "$DAEMON_UID" 2>/dev/null || chown root:root "$DAEMON_UID" 2>/dev/null || {
+    echo "  ERROR: daemon uid file chown root:root failed" >&2; return 1; }
+  chmod 644 "$DAEMON_UID" || { echo "  ERROR: daemon uid file chmod 644 failed" >&2; return 1; }
+  uid_numeric="$(ls -ln "$DAEMON_UID" 2>/dev/null)"
   set -- $uid_numeric
-  has_owner_group 0 0 "$@" && [ "$(cat "$HELPER_UID" 2>/dev/null)" = "$uid" ] || {
-    echo "  ERROR: helper uid file validation failed: ${uid_numeric:-unknown}" >&2
-    rm -f "$HELPER_DST" "$HELPER_UID"
+  has_owner_group 0 0 "$@" && [ "$(cat "$DAEMON_UID" 2>/dev/null)" = "$uid" ] || {
+    echo "  ERROR: daemon uid file validation failed (must be root:root): ${uid_numeric:-unknown}" >&2
+    rm -f "$DAEMON_DST" "$DAEMON_UID"
     return 1
   }
+
+  install_boot_hook   # best-effort cold-boot persistence (see function)
   mount -o remount,ro /system 2>/dev/null || mount -o ro,remount /system 2>/dev/null || true
-  echo "  root helper installed at $HELPER_DST for uid=$uid; app runtime probe required."
+
+  start_daemon
+  # VERIFY over the real protocol: the daemon's own -probe client connects to the
+  # abstract socket, sends PROBE, and exits 0 only on "ready ... daemon_euid=0".
+  # This is a true protocol probe, not a pgrep.
+  probe_out="$("$DAEMON_DST" -probe 2>&1)"; probe_rc=$?
+  echo "  daemon probe: $probe_out"
+  if [ "$probe_rc" != 0 ]; then
+    echo "  ERROR: root daemon did not answer a valid PROBE (rc=$probe_rc)." >&2
+    echo "         remote restart/update is NOT available; not writing completion." >&2
+    return 1
+  fi
+  echo "  root daemon running + verified for uid=$uid (socket @lmw_root_daemon)."
+}
+
+# Start the daemon as root NOW (double-forks + detaches itself).
+start_daemon() {
+  pgrep -f "$DAEMON_DST" >/dev/null 2>&1 && {
+    echo "  daemon already running; leaving it."; return 0; }
+  "$DAEMON_DST" 2>/dev/null
+  # give it a beat to bind the abstract socket before we probe
+  sleep 1
+}
+
+# Cold-boot persistence. PREFER a ROM-supported /system/etc/init.d hook; fall back
+# to appending a start line to an EXISTING install-recovery.sh ONLY if the ROM
+# ships one (demonstrable execution). If neither exists, we DO NOT fabricate a
+# persistence claim — setup still starts the daemon for this boot and warns that
+# true cold-boot persistence is a real-device acceptance gate.
+install_boot_hook() {
+  if [ -d "$INITD_DIR" ]; then
+    {
+      echo "#!/system/bin/sh"
+      echo "# lan-media-wall root daemon cold-boot start (installed by lmw_setup.sh)."
+      echo "[ -x $DAEMON_DST ] && $DAEMON_DST"
+    } > "$INITD_HOOK" 2>/dev/null && chmod 0755 "$INITD_HOOK" 2>/dev/null && {
+      chown 0:0 "$INITD_HOOK" 2>/dev/null || chown root:root "$INITD_HOOK" 2>/dev/null
+      echo "  cold-boot hook installed: $INITD_HOOK (ROM init.d)."
+      echo "  NOTE: verify init.d is actually run at cold boot on THIS ROM (acceptance gate)."
+      return 0
+    }
+  fi
+  if [ -f "$RECOVERY_HOOK" ]; then
+    # Only APPEND if a start line isn't already present (idempotent reruns).
+    if grep -q "$DAEMON_DST" "$RECOVERY_HOOK" 2>/dev/null; then
+      echo "  cold-boot hook already present in $RECOVERY_HOOK."
+    else
+      echo "[ -x $DAEMON_DST ] && $DAEMON_DST &" >> "$RECOVERY_HOOK" 2>/dev/null && \
+        echo "  cold-boot hook appended to existing $RECOVERY_HOOK." || \
+        echo "  WARN: could not append to $RECOVERY_HOOK; cold-boot persistence unset." >&2
+    fi
+    echo "  NOTE: confirm $RECOVERY_HOOK is executed at boot on THIS ROM (acceptance gate)."
+    return 0
+  fi
+  echo "  WARN: no ROM-supported boot hook ($INITD_DIR or $RECOVERY_HOOK) found." >&2
+  echo "        Daemon started for THIS boot only; COLD-BOOT PERSISTENCE IS NOT WIRED." >&2
+  echo "        Real-device step required: install a ROM-supported root start hook." >&2
 }
 
 # Disable (or uninstall) every installed package not in the whitelist.
@@ -293,8 +357,8 @@ installed)
     echo "  NOTE: versionName unchanged (${ver:-?}); pushed APK may be the same build." >&2
   fi
 
-  # Arm push-update helper.
-  install_helper || { echo "ERROR: root helper provisioning failed; remote restart/update unavailable." >&2; exit 1; }
+  # Install + start + PROBE-verify the root daemon (replaces the old setuid helper).
+  install_daemon || { echo "ERROR: root daemon provisioning/probe failed; remote restart/update unavailable." >&2; exit 1; }
 
   # Prime autostart (stopped-state lift) so BOOT_COMPLETED fires on future boots.
   am start -n "$MAIN" >/dev/null 2>&1 && echo "  autostart primed (am start)."

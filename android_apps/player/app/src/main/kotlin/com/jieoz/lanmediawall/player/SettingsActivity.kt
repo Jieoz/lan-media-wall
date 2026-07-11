@@ -195,22 +195,25 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun describeHelper(): String {
-        val f = File("/data/local/tmp/lmw_root_helper")
-        return buildList {
-            add(if (f.exists()) "exists" else "missing")
-            add(if (f.canExecute()) "exec" else "no-exec")
-            add(if (f.canRead()) "read" else "no-read")
-            val len = if (f.exists()) f.length() else -1L
-            if (len >= 0) add("${len}B")
-        }.joinToString(", ")
+        // §root-daemon: no more setuid helper file. Report the daemon uid file +
+        // live socket peer-probe instead (the only thing that proves it works).
+        val uidFile = File("/data/local/tmp/lmw_root_daemon.uid")
+        val probe = com.jieoz.lanmediawall.player.update.RootInstaller.probe()
+        return buildString {
+            append("socket=@lmw_root_daemon")
+            append(", uid_file=")
+            append(if (uidFile.exists()) "${uidFile.length()}B" else "missing")
+            append(", probe=")
+            append(if (probe.ready) "ready" else "blocked:${probe.detail}")
+        }
     }
 
     private fun describeRestart(): String {
-        val helper = File("/data/local/tmp/lmw_root_helper")
-        return when {
-            !helper.exists() -> "helper missing"
-            !helper.canExecute() -> "helper not executable"
-            else -> "helper present; reboot command routed via RootInstaller"
+        val probe = com.jieoz.lanmediawall.player.update.RootInstaller.probe()
+        return if (probe.ready) {
+            "root daemon ready; reboot routed via local socket"
+        } else {
+            "root daemon unavailable: ${probe.detail}"
         }
     }
 

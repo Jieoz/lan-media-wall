@@ -674,6 +674,9 @@ class PlayerService : Service() {
         // 从磁盘重建 ready 索引,使随后的 readyPath 命中本地文件而非回退到失效的 item.url
         // (黑屏根因)。纯读操作,幂等,已 ready 的不重复登记。
         pl?.items?.let { if (it.isNotEmpty()) downloader.restoreReadyFromDisk(it) }
+        // §6.4: drop cached thumbnails for items the active playlist no longer
+        // references, so the per-item thumbnail cache can't grow unbounded.
+        pl?.items?.map { it.itemId }?.toSet()?.let { controllerRef?.retainThumbnails(it) }
     }
 
     // --- §9.1 prepare -------------------------------------------------
@@ -936,6 +939,7 @@ class PlayerService : Service() {
             append("; play="); append(debugPlayState())
             append("; idx="); append(debugIndex())
             append("; item="); append(item ?: "none")
+            append("; vdec="); append(debugVideoDecoder())
             append("; ctrl="); append(debugControllerPresent())
             append("; audio_master="); append(debugAudioMaster())
             append("; cache="); append(debugCacheSummary())
@@ -970,6 +974,7 @@ class PlayerService : Service() {
             line("ip=$deviceIp")
             line("transport=${link?.javaClass?.simpleName ?: "none"} connected=${link?.isConnected ?: false}")
             line("play_state=${debugPlayState()} index=${debugIndex()} controller_present=${debugControllerPresent()}")
+            line("video_decoder=${debugVideoDecoder()}")
             line("current_item=${currentItemForDebug() ?: "none"}")
             line("cache=${debugCacheSummary()}")
             line("errors=${debugErrorsSummary()}")
@@ -981,14 +986,13 @@ class PlayerService : Service() {
             line("logDir=${logDir.absolutePath}")
             line("mediaCacheDir=${mediaStore.mediaCacheDir.absolutePath}")
         }
-        appendSection("helper") {
-            val helper = File("/system/xbin/lmw_root_helper")
-            val uid = File("/data/local/tmp/lmw_root_helper.uid")
+        appendSection("root_daemon") {
+            val uid = File("/data/local/tmp/lmw_root_daemon.uid")
             val probe = com.jieoz.lanmediawall.player.update.RootInstaller.probe()
-            line("helper_exists=${helper.exists()} canRead=${helper.canRead()} canExecute=${helper.canExecute()} size=${if (helper.exists()) helper.length() else 0}")
-            line("helper_uid_file=${readTail(uid, 4096).ifBlank { "missing-or-empty" }}")
-            line("helper_runtime_probe_ready=${probe.ready} detail=${probe.detail}")
-            line("helper_note=probe is read-only; diagnostic export never invokes install/reboot")
+            line("socket=@lmw_root_daemon (abstract AF_UNIX)")
+            line("daemon_uid_file=${readTail(uid, 4096).ifBlank { "missing-or-empty" }}")
+            line("daemon_probe_ready=${probe.ready} detail=${probe.detail}")
+            line("daemon_note=probe is read-only; diagnostic export never invokes install/reboot")
         }
         appendSection("player_log") {
             synchronized(logLock) {
@@ -1225,14 +1229,30 @@ class PlayerService : Service() {
                     currentItem()?.itemId,
                 )) continue
             val ctl = controllerRef ?: continue
-            val localVideo = item?.let { downloader.readyPath(it.itemId) } ?: continue
-            val positionMs = ctl.snapshot().positionMs
-            val res = ctl.captureThumbnail(
-                sourcePath = localVideo.absolutePath,
-                positionMs = positionMs,
-                maxWidth = 320,
-                quality = 70,
-            ) ?: continue
+            if (item == null || item.type != "video") continue
+            // Root-performance addendum: active video playback must never open a
+            // second decoder. Reuse a once-captured thumbnail; only extract while
+            // the video is NOT actively playing; suppress otherwise.
+            val itemId = item.itemId
+            val action = ThumbnailPolicy.decide(
+                isVideo = true,
+                videoActivePlayback = playState == "playing",
+                hasCachedThumbnail = ctl.cachedThumbnail(itemId) != null,
+            )
+            val res = when (action) {
+                ThumbnailPolicy.ThumbAction.REUSE_CACHED -> ctl.cachedThumbnail(itemId)
+                ThumbnailPolicy.ThumbAction.EXTRACT -> {
+                    val localVideo = downloader.readyPath(itemId) ?: continue
+                    ctl.captureThumbnail(
+                        itemId = itemId,
+                        sourcePath = localVideo.absolutePath,
+                        positionMs = ctl.snapshot().positionMs,
+                        maxWidth = 320,
+                        quality = 70,
+                    )
+                }
+                ThumbnailPolicy.ThumbAction.SUPPRESS -> null
+            } ?: continue
             val (seq, jpeg) = res
             coordinator.send("thumb_meta", jsonObj {
                 put("device_id", settings.deviceId)
@@ -1290,20 +1310,22 @@ class PlayerService : Service() {
     fun debugIndex(): Int = index
     fun debugControllerPresent(): Boolean = controllerPresent
     fun debugAudioMaster(): Boolean = audioMaster
+    /** §hardware-decode: selected video decoder + hw/sw classification for export. */
+    fun debugVideoDecoder(): String {
+        val name = controllerRef?.lastVideoDecoderName ?: return "none-initialized"
+        val cls = com.jieoz.lanmediawall.player.media.VideoCodecPolicy.classify(name, null)
+        return "$name ($cls)"
+    }
     fun debugErrorsSummary(): String = errors.toList().takeLast(5).joinToString(" | ").ifBlank { "none" }
     fun debugCacheSummary(): String = downloader.cacheStatus().entries
         .joinToString(", ") { (k, v) -> "$k=$v" }
         .ifBlank { "empty" }
     fun debugHealthProbeSummary(): String {
-        val helper = java.io.File("/system/xbin/lmw_root_helper")
-        val helperState = if (helper.exists()) {
-            "exists:${if (helper.canExecute()) "exec" else "no-exec"}:${if (helper.canRead()) "read" else "no-read"}:${helper.length()}B"
-        } else {
-            "missing"
-        }
+        val uidFile = java.io.File("/data/local/tmp/lmw_root_daemon.uid")
+        val uidState = if (uidFile.exists()) "uid_file:${uidFile.length()}B" else "uid_file:missing"
         val probe = com.jieoz.lanmediawall.player.update.RootInstaller.probe()
         val bridge = if (probe.ready) "ready" else "blocked:${probe.detail}"
-        return "helper=$helperState; root_bridge=$bridge; restart=$bridge; update=$bridge; version=${BuildConfig.VERSION_CODE}"
+        return "daemon=@lmw_root_daemon($uidState); root_bridge=$bridge; restart=$bridge; update=$bridge; version=${BuildConfig.VERSION_CODE}"
     }
 
     private fun persistLastTask(pid: String, idx: Int, seekMs: Long) {

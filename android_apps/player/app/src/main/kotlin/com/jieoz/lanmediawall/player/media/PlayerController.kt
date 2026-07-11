@@ -13,7 +13,10 @@ import com.google.android.exoplayer2.MediaItem as ExoMediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.ExoPlayer
+import com.google.android.exoplayer2.Format
+import com.google.android.exoplayer2.DefaultRenderersFactory
 import com.google.android.exoplayer2.analytics.AnalyticsListener
+import com.google.android.exoplayer2.mediacodec.MediaCodecSelector
 import com.google.android.exoplayer2.video.VideoSize
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -41,9 +44,17 @@ class PlayerController(context: Context) {
     @Volatile private var surfaceView: SurfaceView? = null
     @Volatile private var imageView: ImageView? = null
     @Volatile private var lastError: String? = null
+    /** §hardware-decode: last video decoder ExoPlayer initialized, for diagnostics
+     *  export. Null until the first onVideoDecoderInitialized. */
+    @Volatile var lastVideoDecoderName: String? = null
+        private set
     private val thumbSeq = AtomicInteger(0)
     private val thumbnailFlight = ThumbnailSingleFlight()
     @Volatile private var lastFirstFrameAtMs = 0L
+    /** §6.4 root-performance: one cached thumbnail per item, so active video
+     *  playback never re-extracts a live frame (see [ThumbnailPolicy.decide]).
+     *  Keyed by itemId; holds the (seq, jpeg) captured once while not playing. */
+    private val thumbnailCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, ByteArray>>()
 
     /** Called when ExoPlayer reports an unrecoverable error (watchdog hook). */
     @Volatile var onPlayerError: ((String) -> Unit)? = null
@@ -70,10 +81,39 @@ class PlayerController(context: Context) {
         else -> "state$state"
     }
 
+    /**
+     * §hardware-decode: a MediaCodecSelector that drops software VIDEO decoders
+     * (OMX.google.* / c2.android.* / API-reported softwareOnly) via
+     * [VideoCodecPolicy], so ExoPlayer can only pick a HiSilicon hardware decoder
+     * on the target. Audio is untouched. If filtering leaves NO video decoder we
+     * return the empty list and log it: ExoPlayer then raises a decoder-init error
+     * that surfaces as a real diagnostic, rather than silently decoding in
+     * software (the black-screen / overload trap on these boxes).
+     */
+    private val hardwareOnlyVideoSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+        val all = MediaCodecSelector.DEFAULT.getDecoderInfos(
+            mimeType, requiresSecureDecoder, requiresTunnelingDecoder,
+        )
+        if (!mimeType.startsWith("video/")) return@MediaCodecSelector all
+        val kept = all.filter { info ->
+            val flag = try { info.softwareOnly } catch (_: Throwable) { false }
+            VideoCodecPolicy.isHardware(info.name, flag)
+        }
+        val dropped = all.size - kept.size
+        log("codec_select mime=$mimeType total=${all.size} hardware=${kept.size} dropped_software=$dropped " +
+            "picked=${kept.firstOrNull()?.name ?: "NONE"}")
+        if (kept.isEmpty() && all.isNotEmpty()) {
+            log("codec_select_fail mime=$mimeType reason=no_hardware_decoder available=${all.joinToString(",") { it.name }}")
+        }
+        kept
+    }
+
     fun init() {
         runOnMain {
             if (player != null) return@runOnMain
-            val p = ExoPlayer.Builder(appContext).build()
+            val renderersFactory = DefaultRenderersFactory(appContext)
+                .setMediaCodecSelector(hardwareOnlyVideoSelector)
+            val p = ExoPlayer.Builder(appContext, renderersFactory).build()
             p.repeatMode = Player.REPEAT_MODE_OFF
             p.playWhenReady = false
             p.addListener(object : Player.Listener {
@@ -133,6 +173,31 @@ class PlayerController(context: Context) {
                     elapsedMs: Long,
                 ) {
                     log("dropped_frames count=$droppedFrames elapsed_ms=$elapsedMs position_ms=${p.currentPosition}")
+                }
+
+                // §hardware-decode diagnostics: the decisive evidence the exported
+                // player.log was missing — which decoder was actually chosen, its
+                // hardware/software classification, and how long init took. If a
+                // software decoder ever appears here it is a policy breach.
+                override fun onVideoDecoderInitialized(
+                    eventTime: AnalyticsListener.EventTime,
+                    decoderName: String,
+                    initializedTimestampMs: Long,
+                    initializationDurationMs: Long,
+                ) {
+                    lastVideoDecoderName = decoderName
+                    val cls = VideoCodecPolicy.classify(decoderName, null)
+                    log("video_decoder_init name=$decoderName class=$cls init_ms=$initializationDurationMs")
+                }
+
+                override fun onVideoInputFormatChanged(
+                    eventTime: AnalyticsListener.EventTime,
+                    format: Format,
+                    decoderReuseEvaluation: com.google.android.exoplayer2.decoder.DecoderReuseEvaluation?,
+                ) {
+                    log("video_input_format mime=${format.sampleMimeType} codecs=${format.codecs ?: "?"} " +
+                        "size=${format.width}x${format.height} fps=${format.frameRate} " +
+                        "bitrate=${format.bitrate}")
                 }
             })
             player = p
@@ -292,17 +357,31 @@ class PlayerController(context: Context) {
         }
     }
 
+    /** §6.4: the thumbnail already captured for [itemId], or null if none yet.
+     *  Reused during active playback so we never open a second decoder. */
+    fun cachedThumbnail(itemId: String): Pair<Int, ByteArray>? = thumbnailCache[itemId]
+
+    /** Drop cached thumbnails for items no longer referenced (playlist change). */
+    fun retainThumbnails(keepItemIds: Set<String>) {
+        thumbnailCache.keys.retainAll(keepItemIds)
+    }
+
     /**
-     * Extract a frame from the local cached video without reading back the
-     * SurfaceView. MediaMetadataRetriever can be slow on old codecs, so all work
-     * stays on Dispatchers.IO and the single-flight guard prevents overlap.
+     * Extract ONE frame from the local cached video and memoize it under [itemId].
+     * This is the only path that opens a MediaMetadataRetriever, and the caller
+     * ([PlayerService.thumbnailLoop] via [ThumbnailPolicy.decide]) must only invoke
+     * it while the video is NOT actively playing — so it never races ExoPlayer's
+     * live HiSilicon decoder. All work stays on Dispatchers.IO; the single-flight
+     * guard prevents overlap; the result is cached so playback reuses it.
      */
     suspend fun captureThumbnail(
+        itemId: String,
         sourcePath: String,
         positionMs: Long,
         maxWidth: Int = 320,
         quality: Int = 70,
     ): Pair<Int, ByteArray>? = withContext(Dispatchers.IO) {
+        thumbnailCache[itemId]?.let { return@withContext it }
         val lease = thumbnailFlight.tryAcquire() ?: run {
             log("thumb_skip reason=busy")
             return@withContext null
@@ -344,11 +423,13 @@ class PlayerController(context: Context) {
             val jpeg = out.toByteArray()
             val encodeMs = SystemClock.elapsedRealtime() - encodeStarted
             val runtime = Runtime.getRuntime()
-            log("thumb_capture source=file extract_ms=$extractMs encode_ms=$encodeMs " +
+            log("thumb_capture item=$itemId source=file extract_ms=$extractMs encode_ms=$encodeMs " +
                 "bitmap=${bmp.width}x${bmp.height} jpeg_bytes=${jpeg.size} " +
                 "heap_used=${runtime.totalMemory() - runtime.freeMemory()} heap_max=${runtime.maxMemory()}")
             bmp.recycle()
-            thumbSeq.incrementAndGet() to jpeg
+            val captured = thumbSeq.incrementAndGet() to jpeg
+            thumbnailCache[itemId] = captured
+            captured
         } finally {
             lease.close()
         }

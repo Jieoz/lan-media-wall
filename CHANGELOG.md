@@ -1,12 +1,21 @@
 # Changelog
 
+## [v1.14.0] — 2026-07-11
+
+- Replaced the setuid root helper with a **root-started local daemon** (`scripts/lmw_root_daemon.c`, `lmw_root_daemon`). On QZX_C1 / YunOS 4.4.2 the box exposes root to adb, but zygote sets `no_new_privs`, so a setuid bit on an app-exec'd binary is ignored — the app keeps `euid=10020`. The daemon is started as root by provisioning, stays root, and exposes a restricted abstract AF_UNIX socket (`@lmw_root_daemon`).
+- The daemon authenticates every connection with kernel peer credentials (`SO_PEERCRED`) against a root-owned uid file, accepts only `PROBE` / `REBOOT` / `INSTALL <canonical-path>`, installs only the single canonical cache/update APK path (`O_NOFOLLOW` + regular-file + non-empty checked), copies atomically (temp + fsync + rename + `system:system` 0644), and never executes a shell.
+- `RootInstaller` is now a thin `LocalSocket` client of the daemon; the app-side `su`/setuid fallback was removed because it never worked on the target and only added misleading complexity. The pure wire protocol lives in `RootDaemonProtocol` (unit-tested).
+- ExoPlayer now selects **hardware video decoders only** via a `MediaCodecSelector` that excludes `OMX.google.*` / `c2.android.*` / API-reported software-only codecs (audio is untouched). When no hardware video decoder exists, playback fails explicitly and logs the reason instead of silently decoding in software. Exported logs record the selected decoder name, hardware/software classification, init duration, and input format.
+- Active video playback can no longer trigger recurring `MediaMetadataRetriever` frame extraction: the controller memoizes one thumbnail per item and the thumbnail loop reuses the cache or suppresses extraction while a video is actively playing, so it never opens a second decoder alongside ExoPlayer's live HiSilicon decoder.
+- `lmw_setup.sh` / `lmw_setup.bat` now push + install + immediately start the daemon, verify it over its own `-probe` protocol (requires `ready ... daemon_euid=0`), install a ROM-supported cold-boot hook (`/system/etc/init.d`, else an existing `install-recovery.sh`), and only write the completion marker after the protocol probe succeeds. CI builds the armv7 daemon, runs the host daemon unit tests, and packages the daemon (not the old helper) into the QZX update tools zip.
+
 ## [v1.13.15] — 2026-07-11
 
 - Moved Android video output from `TextureView` to `SurfaceView`, allowing legacy HiSilicon hardware decode to use the HWC/overlay path instead of forcing every frame through Mali composition.
 - Preserved controller thumbnails by extracting low-frequency frames asynchronously from the local cached video; extraction is single-flight and failures retain the previous thumbnail without blocking playback.
 - Added ExoPlayer dropped-frame timing diagnostics to exported player logs.
-- Moved the setuid root bridge from `/data/local/tmp` (the target mounts `/data` with `nosuid`) to `/system/xbin/lmw_root_helper` and added a real runtime probe requiring the application caller to reach `euid=0`.
-- Remote reboot and pushed APK installation now share the same verified root bridge and force a fresh probe before executing.
+- ~~Moved the setuid root bridge from `/data/local/tmp` (the target mounts `/data` with `nosuid`) to `/system/xbin/lmw_root_helper` and added a real runtime probe requiring the application caller to reach `euid=0`.~~ **Superseded by v1.14.0**: the setuid helper is ignored under zygote `no_new_privs` on these boxes and was replaced by the `lmw_root_daemon` root-started local daemon.
+- ~~Remote reboot and pushed APK installation now share the same verified root bridge and force a fresh probe before executing.~~ **Superseded by v1.14.0**: both now route through the root daemon over its local socket.
 
 ## [v1.13.14] — 2026-07-11
 

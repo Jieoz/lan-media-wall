@@ -164,53 +164,22 @@ class UpdateGuardTest {
         assertTrue(d is UpdateGuard.Decision.Proceed)
     }
 
-    // --- guardrail 4: install command shape -----------------------------
+    // --- guardrail 4: daemon install request shape ----------------------
+    // (The full wire protocol + probe parsing is covered by
+    //  RootDaemonProtocolTest; here we only assert the install target the app
+    //  will ever ask the daemon to install is the single canonical cache path.)
 
     @Test
-    fun helperCommand_targets_provisioned_setuid_helper() {
-        val c = RootInstaller.helperCommand(
-            "com.jieoz.lanmediawall.player", "/data/data/com.jieoz.lanmediawall.player/cache/update/x.apk")
-        assertEquals("/system/xbin/lmw_root_helper", c[0])
-        assertEquals("com.jieoz.lanmediawall.player", c[1])
-        assertEquals("/data/data/com.jieoz.lanmediawall.player/cache/update/x.apk", c[2])
-    }
-
-    @Test
-    fun rebootCommand_targets_provisioned_setuid_helper() {
-        val c = RootInstaller.rebootCommand()
-        assertEquals("/system/xbin/lmw_root_helper", c[0])
-        assertEquals("reboot", c[1])
-        assertEquals(2, c.size)
-    }
-
-    @Test
-    fun probeCommand_targets_system_setuid_helper() {
+    fun canonical_install_path_is_the_only_install_target() {
         assertEquals(
-            listOf("/system/xbin/lmw_root_helper", "probe"),
-            RootInstaller.probeCommand(),
+            "/data/data/com.jieoz.lanmediawall.player/cache/update/" +
+                "com.jieoz.lanmediawall.player-update.apk",
+            RootDaemonProtocol.CANONICAL_APK_PATH,
         )
-    }
-
-    @Test
-    fun installScript_targets_data_app_and_reboots() {
-        val s = RootInstaller.installScript(
-            "com.jieoz.lanmediawall.player", "/data/data/pkg/cache/update/x.apk")
-        // copies into the package-scanner-adopted /data/app slot...
-        assertTrue(s.contains("/data/app/com.jieoz.lanmediawall.player-1.apk"))
-        // ...world-readable so the boot scanner can read it...
-        assertTrue(s.contains("chmod 644"))
-        // ...and reboots to trigger adoption (the only path that works on 4.4 boxes).
-        assertTrue(s.trimEnd().endsWith("reboot"))
-        // fail-fast so a bad cp doesn't reboot into a half-copied apk.
-        assertTrue(s.startsWith("set -e"))
-    }
-
-    @Test
-    fun installScript_single_quotes_paths() {
-        // a path with a space must stay one argument (defense-in-depth even
-        // though our real cache path is ASCII/space-free).
-        val s = RootInstaller.installScript("pkg", "/tmp/a b/x.apk")
-        assertTrue(s.contains("'/tmp/a b/x.apk'"))
+        assertEquals(
+            "INSTALL ${RootDaemonProtocol.CANONICAL_APK_PATH}",
+            RootDaemonProtocol.installRequest(RootDaemonProtocol.CANONICAL_APK_PATH),
+        )
     }
 
     // --- Envelope.authed semantics (guardrail 1 substrate) --------------

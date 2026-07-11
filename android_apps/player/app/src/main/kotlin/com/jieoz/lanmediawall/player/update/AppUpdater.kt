@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit
  * §22 self-update orchestration glue: download the APK from the broker media
  * store (resumable Range GET), re-verify its sha256, then hand off to
  * [RootInstaller]. The security DECISIONS live in [UpdateGuard] (pure, tested);
- * the install COMMAND lives in [RootInstaller.installScript] (pure, tested).
+ * the daemon wire protocol lives in [RootDaemonProtocol] (pure, tested).
  * This class is the thin side-effecting wiring between them.
  *
  * Result is reported back to the controller by the caller ([PlayerService]).
@@ -40,6 +40,9 @@ class AppUpdater(
      */
     fun downloadVerifyInstall(pkg: String, url: String, expectedSha256: String): Result {
         val dir = File(cacheDir, "update").apply { mkdirs() }
+        // ONE fixed canonical filename — the daemon only ever installs this exact
+        // path (RootDaemonProtocol.CANONICAL_APK_PATH / LMW_CANONICAL_APK). Using
+        // "$pkg-update.apk" keeps that contract regardless of the pushed package.
         val apk = File(dir, "$pkg-update.apk")
         val part = File(dir, "$pkg-update.apk.part")
         try {
@@ -73,11 +76,9 @@ class AppUpdater(
                 part.copyTo(apk, overwrite = true); part.delete()
             }
 
-            // Do NOT preflight `su` here. On QZX/YunOS boxes the app UID is
-            // usually denied by stock su, while the provisioned setuid helper is
-            // exactly the supported path for in-app push upgrades. RootInstaller
-            // tries the helper first and falls back to su only if helper is not
-            // available.
+            // Hand off to the root daemon over its local socket. There is NO su
+            // fallback — on the target su denies the app UID and setuid is a
+            // no-op under no_new_privs, so the daemon is the only path that works.
             return if (RootInstaller.install(pkg, apk)) Result.Installing
                    else Result.Failed("install-failed")
         } catch (e: Exception) {

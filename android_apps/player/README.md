@@ -1,6 +1,6 @@
 # LAN Media Wall — Android Player (被控端)
 
-**播放稳定性(v1.13.15)**：视频输出改用 `SurfaceView`，让 API 19/HiSilicon 硬解走 HWC/overlay，避开 Mali 对 `TextureView` 的逐帧合成。控制端缩略图保留，但改为从本地缓存视频异步低频抽帧；抽帧单飞、失败保留上一张，不阻塞播放。
+**视频硬解 + root 守护进程(v1.14.0)**:视频输出用 `SurfaceView` 让 API 19/HiSilicon 硬解走 HWC/overlay;ExoPlayer 经 `MediaCodecSelector` **只选硬件视频解码器**(排除 `OMX.google.*`/`c2.android.*`/API 报告的 softwareOnly),无硬件解码器时显式失败并记日志,绝不静默软解(音频照常)。导出日志含所选解码器名 + 硬/软分类 + 初始化耗时。控制端缩略图改为一次性缓存帧复用——**视频正在播放时绝不再开第二个解码器抽帧**。远程重启/推送升级改由 root 守护进程 `lmw_root_daemon`(见下),弃用 setuid helper(目标机 `no_new_privs` 下失效)。
 
 Native Android (Kotlin + Media3/ExoPlayer) player for the LAN Media Wall. It is
 behaviorally **on par with the Windows player** (`../../windows_player/`) — same
@@ -10,7 +10,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.13.15 / versionCode 47`** — derived from
+> **Current build: `versionName 1.14.0 / versionCode 48`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -32,11 +32,13 @@ prefetch barrier §21, remote self-update §23).
 > `category.HOME` 解析表(`am -c HOME` 恒 `unable to resolve`),迁到真 Activity 后
 > 4.4 stock 框架才认它作 HOME 候选。
 
-> **`restart` 命令(v1.13.3).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
-> 命令白名单含 `"restart"` → `hRestart` 分支**重启整台设备**。优先调用 provision
-> 到 `/system/xbin/lmw_root_helper` 的 root bridge；执行前真实 `probe` 必须返回应用 UID
-> 调用且 `euid=0`。该路径避开目标机 `/data` 的 `nosuid`。若 probe/执行失败，只上报错误，
-> 绝不杀掉播放端进程。
+> **`restart` 命令(v1.14.0).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
+> 命令白名单含 `"restart"` → `hRestart` 分支**重启整台设备**。经 root 守护进程
+> `lmw_root_daemon`:`RootInstaller` 作为本地套接字客户端连抽象套接字 `@lmw_root_daemon`
+> 发 `REBOOT`;执行前真实 `probe` 必须回 `ready ... daemon_euid=0`(证明对端确为 root)。
+> 守护进程用 `SO_PEERCRED` 反向校验本 App 的 UID。**无 `su`/setuid 回退**——目标机
+> zygote `no_new_privs` 让二者均失效,那是死路径,只会添乱。若 probe/执行失败,只上报
+> 错误,绝不杀掉播放端进程。
 >
 > **远程日志下载 + 调试快照(v1.13.4).** `PlayerService` 处理控制端发来的
 > `download_logs` / `debug_snapshot`:前者读取持久化 `player.log` 的滚动尾段并通过

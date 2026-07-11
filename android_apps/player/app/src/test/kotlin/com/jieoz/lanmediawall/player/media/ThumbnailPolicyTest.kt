@@ -38,4 +38,46 @@ class ThumbnailPolicyTest {
         assertEquals(false, ThumbnailPolicy.canCapture("item-a", "item-b"))
         assertEquals(false, ThumbnailPolicy.canCapture(null, null))
     }
+
+    // --- root-performance addendum: no live extraction during active playback ---
+
+    @Test fun `active video playback can never trigger live frame extraction`() {
+        // The decisive invariant: for a video that is actively playing, the loop
+        // must NEVER extract (which would open a second HiSilicon decoder). It may
+        // only reuse a cached thumbnail or suppress the refresh.
+        assertEquals(
+            ThumbnailPolicy.ThumbAction.SUPPRESS,
+            ThumbnailPolicy.decide(isVideo = true, videoActivePlayback = true, hasCachedThumbnail = false),
+        )
+        assertEquals(
+            ThumbnailPolicy.ThumbAction.REUSE_CACHED,
+            ThumbnailPolicy.decide(isVideo = true, videoActivePlayback = true, hasCachedThumbnail = true),
+        )
+    }
+
+    @Test fun `exhaustive - decide never yields EXTRACT while video is actively playing`() {
+        for (hasCached in listOf(false, true)) {
+            val action = ThumbnailPolicy.decide(
+                isVideo = true, videoActivePlayback = true, hasCachedThumbnail = hasCached,
+            )
+            assertTrue(
+                "video playback must not extract (hasCached=$hasCached)",
+                action != ThumbnailPolicy.ThumbAction.EXTRACT,
+            )
+        }
+    }
+
+    @Test fun `a paused or not-yet-playing video may extract once`() {
+        assertEquals(
+            ThumbnailPolicy.ThumbAction.EXTRACT,
+            ThumbnailPolicy.decide(isVideo = true, videoActivePlayback = false, hasCachedThumbnail = false),
+        )
+    }
+
+    @Test fun `a cached thumbnail is always reused regardless of state`() {
+        assertEquals(
+            ThumbnailPolicy.ThumbAction.REUSE_CACHED,
+            ThumbnailPolicy.decide(isVideo = true, videoActivePlayback = false, hasCachedThumbnail = true),
+        )
+    }
 }
