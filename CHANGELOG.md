@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.13.15] — 2026-07-11
+
+- Moved Android video output from `TextureView` to `SurfaceView`, allowing legacy HiSilicon hardware decode to use the HWC/overlay path instead of forcing every frame through Mali composition.
+- Preserved controller thumbnails by extracting low-frequency frames asynchronously from the local cached video; extraction is single-flight and failures retain the previous thumbnail without blocking playback.
+- Added ExoPlayer dropped-frame timing diagnostics to exported player logs.
+- Moved the setuid root bridge from `/data/local/tmp` (the target mounts `/data` with `nosuid`) to `/system/xbin/lmw_root_helper` and added a real runtime probe requiring the application caller to reach `euid=0`.
+- Remote reboot and pushed APK installation now share the same verified root bridge and force a fresh probe before executing.
+
 ## [v1.13.14] — 2026-07-11
 
 - Fixed QZX helper provisioning: the on-box script no longer copies the pushed `.new` helper onto itself, which caused `cp: ... No such file or directory` on the target shell.

@@ -1,6 +1,6 @@
 # LAN Media Wall — Android Player (被控端)
 
-**播放稳定性**：API 19 播放期间缩略图直接按最大 320px 宽度抓取，不再先分配整张 1920x1080 Java 位图，降低周期性 GC 对硬解渲染的干扰。
+**播放稳定性(v1.13.15)**：视频输出改用 `SurfaceView`，让 API 19/HiSilicon 硬解走 HWC/overlay，避开 Mali 对 `TextureView` 的逐帧合成。控制端缩略图保留，但改为从本地缓存视频异步低频抽帧；抽帧单飞、失败保留上一张，不阻塞播放。
 
 Native Android (Kotlin + Media3/ExoPlayer) player for the LAN Media Wall. It is
 behaviorally **on par with the Windows player** (`../../windows_player/`) — same
@@ -10,7 +10,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.13.12 / versionCode 44`** — derived from
+> **Current build: `versionName 1.13.15 / versionCode 47`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -34,7 +34,8 @@ prefetch barrier §21, remote self-update §23).
 
 > **`restart` 命令(v1.13.3).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
 > 命令白名单含 `"restart"` → `hRestart` 分支**重启整台设备**。优先调用 provision
-> 过的 `lmw_root_helper reboot`,再回退 `su -c reboot`;若两者都失败,只上报错误,
+> 到 `/system/xbin/lmw_root_helper` 的 root bridge；执行前真实 `probe` 必须返回应用 UID
+> 调用且 `euid=0`。该路径避开目标机 `/data` 的 `nosuid`。若 probe/执行失败，只上报错误，
 > 绝不杀掉播放端进程。
 >
 > **远程日志下载 + 调试快照(v1.13.4).** `PlayerService` 处理控制端发来的
@@ -89,8 +90,9 @@ prefetch barrier §21, remote self-update §23).
   `Range`, WebDAV/HTTP GET) into the app's private cache dir, sha256-verified,
   atomic publish; progress reflected in `status.cache`. Playlists persisted.
 - **§6.4 thumbnails** — when a controller is online (or `always_collect`),
-  grabs the current frame off the video `TextureView`, scales to ≤320px JPEG,
-  sends `thumb_meta` + a binary frame.
+  asynchronously extracts the current frame from the locally cached video,
+  scales it to ≤320px JPEG, and sends `thumb_meta` + a binary frame. Playback uses
+  an independent `SurfaceView`; thumbnail extraction never reads back that surface.
 - **§8 clock sync** — SNTP-style `time_sync` on connect + every 30s, min-rtt
   offset selection, `play_at` folded to a local target instant.
 - **§9 three-phase handshake** — `prepare` → cache-ready + preload/seek →
