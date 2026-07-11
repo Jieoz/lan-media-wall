@@ -40,6 +40,7 @@ BEFORE_FILE=/data/local/tmp/lmw_before_version
 HELPER_SRC=/data/local/tmp/lmw_root_helper.new
 HELPER_DST=/data/local/tmp/lmw_root_helper
 HELPER_UID=/data/local/tmp/lmw_root_helper.uid
+COMPLETE=/data/local/tmp/lmw_setup_complete
 
 # ---------------------------------------------------------------------------
 # CLEANUP TARGET POLICY  —  "box is ONLY a media wall"
@@ -127,9 +128,10 @@ install_helper() {
     echo "  ERROR: $HELPER_SRC missing; root helper not armed." >&2
     return 1
   fi
-  rm -f "$HELPER_DST.new"
-  cp "$HELPER_SRC" "$HELPER_DST.new" || { echo "  ERROR: helper copy failed" >&2; return 1; }
-  mv "$HELPER_DST.new" "$HELPER_DST" || { echo "  ERROR: helper install failed" >&2; return 1; }
+  helper_stage="$HELPER_DST.installing"
+  rm -f "$helper_stage"
+  cp "$HELPER_SRC" "$helper_stage" || { echo "  ERROR: helper copy failed" >&2; return 1; }
+  mv "$helper_stage" "$HELPER_DST" || { echo "  ERROR: helper install failed" >&2; return 1; }
   chown 0:$uid "$HELPER_DST" 2>/dev/null || chown root:$uid "$HELPER_DST" 2>/dev/null || {
     echo "  ERROR: helper chown root:$uid failed" >&2; return 1; }
   chmod 6750 "$HELPER_DST" || { echo "  ERROR: helper chmod 6750 failed" >&2; return 1; }
@@ -143,13 +145,15 @@ install_helper() {
     rm -f "$HELPER_DST" "$HELPER_UID"
     return 1
   }
-  helper_owner="$(ls -ln "$HELPER_DST" 2>/dev/null | awk '{print $3 ":" $4}')"
+  set -- $(ls -ln "$HELPER_DST" 2>/dev/null)
+  helper_owner="$3:$4"
   [ "$helper_owner" = "0:$uid" ] || {
     echo "  ERROR: helper owner must be 0:$uid, got ${helper_owner:-unknown}" >&2
     rm -f "$HELPER_DST" "$HELPER_UID"
     return 1
   }
-  uid_owner="$(ls -ln "$HELPER_UID" 2>/dev/null | awk '{print $3 ":" $4}')"
+  set -- $(ls -ln "$HELPER_UID" 2>/dev/null)
+  uid_owner="$3:$4"
   [ "$uid_owner" = "0:0" ] && [ "$(cat "$HELPER_UID" 2>/dev/null)" = "$uid" ] || {
     echo "  ERROR: helper uid file validation failed" >&2
     rm -f "$HELPER_DST" "$HELPER_UID"
@@ -294,6 +298,7 @@ installed)
   fi
 
   rm -f "$PHASE" "$BEFORE_FILE" 2>/dev/null
+  echo complete > "$COMPLETE" || { echo "ERROR: setup completion marker write failed" >&2; exit 1; }
   echo
   echo "############################################################"
   echo "#  SETUP COMPLETE. Player versionName=${ver:-?}."

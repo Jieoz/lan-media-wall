@@ -32,6 +32,7 @@ if "%APK%"=="" (
 if not exist "%APK%" ( echo ERROR: APK not found: %APK% & exit /b 1 )
 
 set "HERE=%~dp0"
+set "COMPLETE_LOCAL=%TEMP%\lmw_setup_complete_%RANDOM%.txt"
 if not exist "%HERE%lmw_setup.sh"     ( echo ERROR: lmw_setup.sh not found next to this bat.     & exit /b 1 )
 if not exist "%HERE%lmw_root_helper"  ( echo ERROR: lmw_root_helper not found next to this bat.  & exit /b 1 )
 
@@ -56,13 +57,16 @@ adb root >nul 2>&1
 adb wait-for-device
 
 echo [2/5] pushing setup script, helper binary, and APK to the box...
+del /q "%COMPLETE_LOCAL%" >nul 2>&1
+adb shell rm -f /data/local/tmp/lmw_setup_complete >nul 2>&1
 adb push "%HERE%lmw_setup.sh"    /data/local/tmp/lmw_setup.sh        || ( echo ERROR: push setup.sh failed & exit /b 1 )
 adb push "%HERE%lmw_root_helper" /data/local/tmp/lmw_root_helper.new || ( echo ERROR: push helper failed   & exit /b 1 )
 adb push "%APK%"                 /data/local/tmp/lmw_player.apk      || ( echo ERROR: push apk failed      & exit /b 1 )
 adb shell chmod 755 /data/local/tmp/lmw_setup.sh
 
 echo [3/5] phase 1: install/upgrade player (box will reboot once)...
-adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!" || ( echo ERROR: setup phase 1 failed & exit /b 1 )
+adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!"
+adb pull /data/local/tmp/lmw_setup_complete "%COMPLETE_LOCAL%" >nul 2>&1 && goto verify
 
 echo     waiting for the box to reboot and come back...
 REM give it a moment to actually start rebooting before we wait
@@ -74,12 +78,15 @@ REM let the package scanner + boot settle
 ping -n 16 127.0.0.1 >nul
 
 echo [4/5] phase 2: arm helper + disable everything + bind HOME...
-adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!" || ( echo ERROR: setup phase 2 failed & exit /b 1 )
+adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!"
+adb pull /data/local/tmp/lmw_setup_complete "%COMPLETE_LOCAL%" >nul 2>&1 || ( echo ERROR: setup did not complete; review the errors above & exit /b 1 )
 
+:verify
 echo [5/5] verifying player is installed and enabled...
 adb shell "pm list packages | grep -i lanmediawall.player" || ( echo ERROR: player package missing & exit /b 1 )
-adb shell "uid=$(cat /data/local/tmp/lmw_root_helper.uid) && test -n \"$uid\" && test \"$(stat -c %%u /data/local/tmp/lmw_root_helper)\" = 0 && test \"$(stat -c %%g /data/local/tmp/lmw_root_helper)\" = \"$uid\" && ls -l /data/local/tmp/lmw_root_helper | grep \"^-rwsr-s---\"" || ( echo ERROR: helper owner/group/mode invalid; restart/update will not work & exit /b 1 )
+findstr /x "complete" "%COMPLETE_LOCAL%" >nul || ( echo ERROR: invalid setup completion marker & exit /b 1 )
+del /q "%COMPLETE_LOCAL%" >nul 2>&1
 echo.
-echo === DONE. If you saw 'SETUP COMPLETE' above, the box is now a media-wall-only kiosk. ===
+echo === DONE. SETUP COMPLETE was verified; the box is now a media-wall-only kiosk. ===
 echo     To undo the app-disabling later:  push+run lmw_restore.sh, or reflash.
 endlocal

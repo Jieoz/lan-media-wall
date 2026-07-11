@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.13.14] — 2026-07-11
+
+- Fixed QZX helper provisioning: the on-box script no longer copies the pushed `.new` helper onto itself, which caused `cp: ... No such file or directory` on the target shell.
+- Re-running setup with a leftover installed phase now skips the obsolete reboot wait and proceeds directly to verified completion.
+- Replaced the KitKat-incompatible `stat` verification in the Windows wrapper with an on-box completion marker; failed provisioning can no longer print `DONE`.
+
 ## [v1.13.13] — 2026-07-11
 
 - Android 4.4 video thumbnails keep using direct 320px `TextureView` readback, now reuse one small bitmap, run single-flight, and capture every 15 seconds during legacy video playback to reduce GPU synchronization and Dalvik allocation pressure.
