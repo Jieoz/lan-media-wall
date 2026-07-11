@@ -3,19 +3,23 @@ package com.jieoz.lanmediawall.player.media
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.view.TextureView
+import android.view.SurfaceView
 import android.widget.ImageView
 import com.google.android.exoplayer2.MediaItem as ExoMediaItem
 import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.ExoPlayer
+import com.google.android.exoplayer2.analytics.AnalyticsListener
 import com.google.android.exoplayer2.video.VideoSize
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Media3 (ExoPlayer) wrapper — the Android analogue of windows_player's mpv
@@ -34,12 +38,11 @@ class PlayerController(context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile private var player: ExoPlayer? = null
-    @Volatile private var textureView: TextureView? = null
+    @Volatile private var surfaceView: SurfaceView? = null
     @Volatile private var imageView: ImageView? = null
     @Volatile private var lastError: String? = null
     private val thumbSeq = AtomicInteger(0)
     private val thumbnailFlight = ThumbnailSingleFlight()
-    @Volatile private var thumbnailBitmap: Bitmap? = null
     @Volatile private var lastFirstFrameAtMs = 0L
 
     /** Called when ExoPlayer reports an unrecoverable error (watchdog hook). */
@@ -123,16 +126,25 @@ class PlayerController(context: Context) {
                     log("is_playing $isPlaying")
                 }
             })
+            p.addAnalyticsListener(object : AnalyticsListener {
+                override fun onDroppedVideoFrames(
+                    eventTime: AnalyticsListener.EventTime,
+                    droppedFrames: Int,
+                    elapsedMs: Long,
+                ) {
+                    log("dropped_frames count=$droppedFrames elapsed_ms=$elapsedMs position_ms=${p.currentPosition}")
+                }
+            })
             player = p
-            textureView?.let { p.setVideoTextureView(it) }
-            log("init done")
+            surfaceView?.let { p.setVideoSurfaceView(it) }
+            log("init done surface=SurfaceView")
         }
     }
 
-    fun attachSurface(view: TextureView) {
+    fun attachSurface(view: SurfaceView) {
         runOnMain {
-            textureView = view
-            player?.setVideoTextureView(view)
+            surfaceView = view
+            player?.setVideoSurfaceView(view)
         }
     }
 
@@ -143,8 +155,8 @@ class PlayerController(context: Context) {
 
     fun detachSurface() {
         runOnMain {
-            player?.clearVideoTextureView(textureView)
-            textureView = null
+            player?.clearVideoSurfaceView(surfaceView)
+            surfaceView = null
             imageView = null
         }
     }
@@ -281,54 +293,62 @@ class PlayerController(context: Context) {
     }
 
     /**
-     * Capture the current video frame as a ≤[maxWidth]px-wide JPEG (§6.4).
-     * Reads pixels off the attached TextureView (works for video surfaces).
-     * Returns (seq, jpegBytes) or null if no frame is available.
+     * Extract a frame from the local cached video without reading back the
+     * SurfaceView. MediaMetadataRetriever can be slow on old codecs, so all work
+     * stays on Dispatchers.IO and the single-flight guard prevents overlap.
      */
-    fun captureThumbnail(maxWidth: Int = 320, quality: Int = 70): Pair<Int, ByteArray>? {
+    suspend fun captureThumbnail(
+        sourcePath: String,
+        positionMs: Long,
+        maxWidth: Int = 320,
+        quality: Int = 70,
+    ): Pair<Int, ByteArray>? = withContext(Dispatchers.IO) {
         val lease = thumbnailFlight.tryAcquire() ?: run {
             log("thumb_skip reason=busy")
-            return null
+            return@withContext null
         }
         try {
-            val view = textureView ?: return null
-            var readbackMs = 0L
-            val bmp = blockingOnMain {
-                if (view.width <= 0 || view.height <= 0 || !view.isAvailable) {
-                    null
-                } else {
-                    try {
-                        val target = ThumbnailPolicy.captureSize(view.width, view.height, maxWidth)
-                            ?: return@blockingOnMain null
-                        var reusable = thumbnailBitmap
-                        if (reusable == null || reusable.isRecycled ||
-                            reusable.width != target.width || reusable.height != target.height) {
-                            reusable?.recycle()
-                            reusable = Bitmap.createBitmap(
-                                target.width, target.height, Bitmap.Config.ARGB_8888)
-                            thumbnailBitmap = reusable
-                        }
-                        val started = SystemClock.elapsedRealtime()
-                        view.getBitmap(reusable)
-                        readbackMs = SystemClock.elapsedRealtime() - started
-                        reusable
-                    } catch (e: Exception) {
-                        log("thumb_error stage=readback type=${e.javaClass.simpleName}")
-                        null
-                    }
-                }
-            } ?: return null
-
+            val file = File(sourcePath.removePrefix("file://"))
+            if (!file.isFile) return@withContext null
+            val extractStarted = SystemClock.elapsedRealtime()
+            val retriever = MediaMetadataRetriever()
+            val frame = try {
+                retriever.setDataSource(file.absolutePath)
+                retriever.getFrameAtTime(
+                    positionMs.coerceAtLeast(0L) * 1000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                )
+            } catch (e: Exception) {
+                log("thumb_error stage=extract type=${e.javaClass.simpleName}")
+                null
+            } finally {
+                try { retriever.release() } catch (_: Exception) { }
+            } ?: return@withContext null
+            val extractMs = SystemClock.elapsedRealtime() - extractStarted
+            val target = ThumbnailPolicy.captureSize(frame.width, frame.height, maxWidth)
+            if (target == null) {
+                frame.recycle()
+                return@withContext null
+            }
+            val bmp = if (frame.width == target.width && frame.height == target.height) {
+                frame
+            } else {
+                Bitmap.createScaledBitmap(frame, target.width, target.height, true).also { frame.recycle() }
+            }
             val encodeStarted = SystemClock.elapsedRealtime()
             val out = ByteArrayOutputStream(32 * 1024)
-            if (!bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)) return null
+            if (!bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), out)) {
+                bmp.recycle()
+                return@withContext null
+            }
             val jpeg = out.toByteArray()
             val encodeMs = SystemClock.elapsedRealtime() - encodeStarted
             val runtime = Runtime.getRuntime()
-            log("thumb_capture readback_ms=$readbackMs encode_ms=$encodeMs " +
+            log("thumb_capture source=file extract_ms=$extractMs encode_ms=$encodeMs " +
                 "bitmap=${bmp.width}x${bmp.height} jpeg_bytes=${jpeg.size} " +
                 "heap_used=${runtime.totalMemory() - runtime.freeMemory()} heap_max=${runtime.maxMemory()}")
-            return thumbSeq.incrementAndGet() to jpeg
+            bmp.recycle()
+            thumbSeq.incrementAndGet() to jpeg
         } finally {
             lease.close()
         }
@@ -338,9 +358,7 @@ class PlayerController(context: Context) {
     fun release() = runOnMain {
         player?.release()
         player = null
-        thumbnailBitmap?.recycle()
-        thumbnailBitmap = null
-        textureView = null
+        surfaceView = null
         imageView = null
     }
 

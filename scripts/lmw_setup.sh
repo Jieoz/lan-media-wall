@@ -38,7 +38,7 @@ DST=/data/app/$PKG-1.apk
 PHASE=/data/local/tmp/lmw_phase
 BEFORE_FILE=/data/local/tmp/lmw_before_version
 HELPER_SRC=/data/local/tmp/lmw_root_helper.new
-HELPER_DST=/data/local/tmp/lmw_root_helper
+HELPER_DST=/system/xbin/lmw_root_helper
 HELPER_UID=/data/local/tmp/lmw_root_helper.uid
 COMPLETE=/data/local/tmp/lmw_setup_complete
 
@@ -118,6 +118,16 @@ pkg_uid() {
   echo "$uid"
 }
 
+has_owner_group() {
+  expected_owner="$1"; expected_group="$2"; shift 2
+  previous=""
+  for field in "$@"; do
+    [ "$previous" = "$expected_owner" ] && [ "$field" = "$expected_group" ] && return 0
+    previous="$field"
+  done
+  return 1
+}
+
 install_helper() {
   uid="$(pkg_uid "$PKG")"
   if [ -z "$uid" ]; then
@@ -128,6 +138,10 @@ install_helper() {
     echo "  ERROR: $HELPER_SRC missing; root helper not armed." >&2
     return 1
   fi
+  mount -o remount,rw /system 2>/dev/null || mount -o rw,remount /system 2>/dev/null || {
+    echo "  ERROR: cannot remount /system read-write for root helper." >&2
+    return 1
+  }
   helper_stage="$HELPER_DST.installing"
   rm -f "$helper_stage"
   cp "$HELPER_SRC" "$helper_stage" || { echo "  ERROR: helper copy failed" >&2; return 1; }
@@ -145,21 +159,22 @@ install_helper() {
     rm -f "$HELPER_DST" "$HELPER_UID"
     return 1
   }
-  set -- $(ls -ln "$HELPER_DST" 2>/dev/null)
-  helper_owner="$3:$4"
-  [ "$helper_owner" = "0:$uid" ] || {
-    echo "  ERROR: helper owner must be 0:$uid, got ${helper_owner:-unknown}" >&2
+  helper_numeric="$(ls -ln "$HELPER_DST" 2>/dev/null)"
+  set -- $helper_numeric
+  has_owner_group 0 "$uid" "$@" || {
+    echo "  ERROR: helper owner/group 0:$uid not found in: ${helper_numeric:-unknown}" >&2
     rm -f "$HELPER_DST" "$HELPER_UID"
     return 1
   }
-  set -- $(ls -ln "$HELPER_UID" 2>/dev/null)
-  uid_owner="$3:$4"
-  [ "$uid_owner" = "0:0" ] && [ "$(cat "$HELPER_UID" 2>/dev/null)" = "$uid" ] || {
-    echo "  ERROR: helper uid file validation failed" >&2
+  uid_numeric="$(ls -ln "$HELPER_UID" 2>/dev/null)"
+  set -- $uid_numeric
+  has_owner_group 0 0 "$@" && [ "$(cat "$HELPER_UID" 2>/dev/null)" = "$uid" ] || {
+    echo "  ERROR: helper uid file validation failed: ${uid_numeric:-unknown}" >&2
     rm -f "$HELPER_DST" "$HELPER_UID"
     return 1
   }
-  echo "  in-app push-update helper armed for uid=$uid."
+  mount -o remount,ro /system 2>/dev/null || mount -o ro,remount /system 2>/dev/null || true
+  echo "  root helper installed at $HELPER_DST for uid=$uid; app runtime probe required."
 }
 
 # Disable (or uninstall) every installed package not in the whitelist.

@@ -982,11 +982,13 @@ class PlayerService : Service() {
             line("mediaCacheDir=${mediaStore.mediaCacheDir.absolutePath}")
         }
         appendSection("helper") {
-            val helper = File("/data/local/tmp/lmw_root_helper")
+            val helper = File("/system/xbin/lmw_root_helper")
             val uid = File("/data/local/tmp/lmw_root_helper.uid")
+            val probe = com.jieoz.lanmediawall.player.update.RootInstaller.probe()
             line("helper_exists=${helper.exists()} canRead=${helper.canRead()} canExecute=${helper.canExecute()} size=${if (helper.exists()) helper.length() else 0}")
             line("helper_uid_file=${readTail(uid, 4096).ifBlank { "missing-or-empty" }}")
-            line("helper_note=diagnostic export never invokes helper install/reboot; this section is file-state only")
+            line("helper_runtime_probe_ready=${probe.ready} detail=${probe.detail}")
+            line("helper_note=probe is read-only; diagnostic export never invokes install/reboot")
         }
         appendSection("player_log") {
             synchronized(logLock) {
@@ -1223,7 +1225,14 @@ class PlayerService : Service() {
                     currentItem()?.itemId,
                 )) continue
             val ctl = controllerRef ?: continue
-            val res = ctl.captureThumbnail(maxWidth = 320, quality = 70) ?: continue
+            val localVideo = item?.let { downloader.readyPath(it.itemId) } ?: continue
+            val positionMs = ctl.snapshot().positionMs
+            val res = ctl.captureThumbnail(
+                sourcePath = localVideo.absolutePath,
+                positionMs = positionMs,
+                maxWidth = 320,
+                quality = 70,
+            ) ?: continue
             val (seq, jpeg) = res
             coordinator.send("thumb_meta", jsonObj {
                 put("device_id", settings.deviceId)
@@ -1286,15 +1295,15 @@ class PlayerService : Service() {
         .joinToString(", ") { (k, v) -> "$k=$v" }
         .ifBlank { "empty" }
     fun debugHealthProbeSummary(): String {
-        val helper = java.io.File("/data/local/tmp/lmw_root_helper")
+        val helper = java.io.File("/system/xbin/lmw_root_helper")
         val helperState = if (helper.exists()) {
             "exists:${if (helper.canExecute()) "exec" else "no-exec"}:${if (helper.canRead()) "read" else "no-read"}:${helper.length()}B"
         } else {
             "missing"
         }
-        val restart = if (helper.exists() && helper.canExecute()) "probe=ready" else "probe=blocked"
-        val update = "update_ready=${BuildConfig.VERSION_CODE}"
-        return "helper=$helperState; restart=$restart; update=$update"
+        val probe = com.jieoz.lanmediawall.player.update.RootInstaller.probe()
+        val bridge = if (probe.ready) "ready" else "blocked:${probe.detail}"
+        return "helper=$helperState; root_bridge=$bridge; restart=$bridge; update=$bridge; version=${BuildConfig.VERSION_CODE}"
     }
 
     private fun persistLastTask(pid: String, idx: Int, seekMs: Long) {

@@ -102,7 +102,12 @@ int main(int argc, char **argv) {
     int allowed = read_allowed_uid();
     if (allowed <= 0) return fail_msg("missing allowed uid file; reprovision with lmw_update.bat");
     if ((int)ruid != allowed) return fail_msg("caller uid not allowed");
-    if (euid != 0) return fail_msg("helper is not setuid root; reprovision with lmw_update.bat");
+    if (euid != 0) return fail_msg("helper is not setuid root; reprovision with lmw_setup.bat");
+
+    if (argc == 2 && strcmp(argv[1], "probe") == 0) {
+        printf("ready ruid=%d euid=%d allowed=%d\n", (int)ruid, (int)euid, allowed);
+        return 0;
+    }
 
     if (argc == 2 && strcmp(argv[1], "reboot") == 0) {
         sync();
@@ -112,7 +117,7 @@ int main(int argc, char **argv) {
     }
 
     if (argc != 3) {
-        return fail_msg("usage: lmw_root_helper reboot | <package> <source-apk>");
+        return fail_msg("usage: lmw_root_helper probe | reboot | <package> <source-apk>");
     }
 
     const char *pkg = argv[1];

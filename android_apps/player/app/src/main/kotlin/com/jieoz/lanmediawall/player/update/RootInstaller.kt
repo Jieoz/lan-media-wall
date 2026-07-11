@@ -28,7 +28,10 @@ import java.io.File
  */
 object RootInstaller {
     private const val TAG = "lmw.RootInstaller"
-    private const val HELPER = "/data/local/tmp/lmw_root_helper"
+    private const val HELPER = "/system/xbin/lmw_root_helper"
+    private const val PROBE_CACHE_MS = 30_000L
+    @Volatile private var cachedProbe: Probe? = null
+    @Volatile private var cachedProbeAtMs = 0L
 
     /**
      * The helper argv used by the preferred install path. lmw_update.bat arms
@@ -39,6 +42,34 @@ object RootInstaller {
     fun helperCommand(pkg: String, srcApk: String): List<String> = listOf(HELPER, pkg, srcApk)
 
     fun rebootCommand(): List<String> = listOf(HELPER, "reboot")
+
+    fun probeCommand(): List<String> = listOf(HELPER, "probe")
+
+    data class Probe(val ready: Boolean, val detail: String)
+
+    @Synchronized
+    fun probe(force: Boolean = false): Probe {
+        val now = android.os.SystemClock.elapsedRealtime()
+        cachedProbe?.let {
+            if (!force && now - cachedProbeAtMs < PROBE_CACHE_MS) return it
+        }
+        val result = probeNow()
+        cachedProbe = result
+        cachedProbeAtMs = now
+        return result
+    }
+
+    private fun probeNow(): Probe = try {
+        val p = ProcessBuilder(probeCommand()).redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText().trim()
+        val code = p.waitFor()
+        Probe(
+            ready = code == 0 && out.startsWith("ready ") && out.contains("euid=0"),
+            detail = out.ifBlank { "exit=$code" },
+        )
+    } catch (e: Exception) {
+        Probe(false, e.javaClass.simpleName)
+    }
 
     /**
      * The fallback shell script piped to `su`. Pure string builder so it's unit-testable
@@ -85,11 +116,21 @@ object RootInstaller {
             Log.e(TAG, "apk missing/empty: ${apk.absolutePath}")
             return false
         }
+        val probe = probe(force = true)
+        if (!probe.ready) {
+            Log.e(TAG, "root bridge unavailable: ${probe.detail}")
+            return false
+        }
         if (installViaHelper(pkg, apk)) return true
         return installViaSu(pkg, apk)
     }
 
     fun rebootDevice(): Boolean {
+        val probe = probe(force = true)
+        if (!probe.ready) {
+            Log.e(TAG, "root bridge unavailable: ${probe.detail}")
+            return false
+        }
         if (rebootViaHelper()) return true
         return rebootViaSu()
     }

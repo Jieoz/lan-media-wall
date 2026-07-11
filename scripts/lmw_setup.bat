@@ -58,7 +58,9 @@ adb wait-for-device
 
 echo [2/5] pushing setup script, helper binary, and APK to the box...
 del /q "%COMPLETE_LOCAL%" >nul 2>&1
-adb shell rm -f /data/local/tmp/lmw_setup_complete >nul 2>&1
+REM This is a new PC-driven setup run. Clear stale state so the APK argument
+REM is always installed before the helper is configured.
+adb shell rm -f /data/local/tmp/lmw_setup_complete /data/local/tmp/lmw_phase /data/local/tmp/lmw_before_version >nul 2>&1
 adb push "%HERE%lmw_setup.sh"    /data/local/tmp/lmw_setup.sh        || ( echo ERROR: push setup.sh failed & exit /b 1 )
 adb push "%HERE%lmw_root_helper" /data/local/tmp/lmw_root_helper.new || ( echo ERROR: push helper failed   & exit /b 1 )
 adb push "%APK%"                 /data/local/tmp/lmw_player.apk      || ( echo ERROR: push apk failed      & exit /b 1 )
@@ -84,7 +86,9 @@ adb pull /data/local/tmp/lmw_setup_complete "%COMPLETE_LOCAL%" >nul 2>&1 || ( ec
 :verify
 echo [5/5] verifying player is installed and enabled...
 adb shell "pm list packages | grep -i lanmediawall.player" || ( echo ERROR: player package missing & exit /b 1 )
-findstr /x "complete" "%COMPLETE_LOCAL%" >nul || ( echo ERROR: invalid setup completion marker & exit /b 1 )
+REM The marker was deleted both locally and on-box at the start of this run.
+REM A successful adb pull therefore proves this run reached the on-box verified
+REM completion point; do not parse its Unix newline with locale-sensitive findstr.
 del /q "%COMPLETE_LOCAL%" >nul 2>&1
 echo.
 echo === DONE. SETUP COMPLETE was verified; the box is now a media-wall-only kiosk. ===

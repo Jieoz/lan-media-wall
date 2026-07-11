@@ -170,7 +170,7 @@ class UpdateGuardTest {
     fun helperCommand_targets_provisioned_setuid_helper() {
         val c = RootInstaller.helperCommand(
             "com.jieoz.lanmediawall.player", "/data/data/com.jieoz.lanmediawall.player/cache/update/x.apk")
-        assertEquals("/data/local/tmp/lmw_root_helper", c[0])
+        assertEquals("/system/xbin/lmw_root_helper", c[0])
         assertEquals("com.jieoz.lanmediawall.player", c[1])
         assertEquals("/data/data/com.jieoz.lanmediawall.player/cache/update/x.apk", c[2])
     }
@@ -178,9 +178,17 @@ class UpdateGuardTest {
     @Test
     fun rebootCommand_targets_provisioned_setuid_helper() {
         val c = RootInstaller.rebootCommand()
-        assertEquals("/data/local/tmp/lmw_root_helper", c[0])
+        assertEquals("/system/xbin/lmw_root_helper", c[0])
         assertEquals("reboot", c[1])
         assertEquals(2, c.size)
+    }
+
+    @Test
+    fun probeCommand_targets_system_setuid_helper() {
+        assertEquals(
+            listOf("/system/xbin/lmw_root_helper", "probe"),
+            RootInstaller.probeCommand(),
+        )
     }
 
     @Test

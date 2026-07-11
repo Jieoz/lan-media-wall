@@ -4,9 +4,9 @@
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <!-- Video surface. A TextureView (not SurfaceView) so we can read pixels
-         for thumbnail capture (§6.4). -->
-    <TextureView
+    <!-- Video uses SurfaceView so HiSilicon hardware decode can take the HWC
+         overlay path instead of compositing every frame through Mali/TextureView. -->
+    <SurfaceView
         android:id="@+id/video_surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
