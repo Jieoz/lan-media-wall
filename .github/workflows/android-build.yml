@@ -198,6 +198,20 @@ jobs:
             QZX-KIOSK-TOOLS.md lmw_root_daemon)
           ls -la LANMediaWall-QZX-Update-Tools.zip
 
+      - name: Verify QZX restart and package contracts
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        run: |
+          python3 scripts/tests/test_qzx_release_contract.py
+          python3 - <<'PY'
+          import zipfile
+          names=set(zipfile.ZipFile('LANMediaWall-QZX-Update-Tools.zip').namelist())
+          required={'qzx_field_check.bat','qzx_field_check.sh','lmw_root_daemon'}
+          missing=required-names
+          if missing: raise SystemExit(f'missing QZX release assets: {sorted(missing)}')
+          print('QZX_ZIP_CONTENT_PASS', sorted(required))
+          PY
+
       - name: Upload QZX updater tools
         if: steps.detect.outputs.present == 'true'
         uses: actions/upload-artifact@v4

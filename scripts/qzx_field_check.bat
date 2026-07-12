@@ -22,7 +22,8 @@ REM  override file and restarting our OWN app - both reverted at the end.
 REM
 REM  Production socket auth is NOT weakened: lmw_root_daemon -restart is reachable
 REM  only by a caller already root (like -probe). If the daemon binary is absent it
-REM  falls back to a clearly-labeled MANUAL controller-restart checkpoint.
+REM  fails inconclusive when the real daemon worker cannot be executed; manual UI
+REM  action is never accepted as automatic-recovery evidence.
 REM
 REM  Usage: double-click, or:  qzx_field_check.bat [serial]
 REM  Optional env before running: PLAY_SECONDS (default 60), RESTART_TIMEOUT (30).

@@ -31,7 +31,8 @@
 # daemon exposes a root-only `-restart` CLI that runs the same state machine inline and
 # exits 0/1 — reachable only by a caller that is already root, exactly like `-probe`.
 # Production socket auth is NOT weakened. If the daemon binary is not found, the script
-# falls back to a clearly-labeled manual controller-UI restart checkpoint.
+# fails inconclusive when the real daemon worker cannot be executed; manual UI
+# action is never accepted as automatic-recovery evidence.
 #
 # USAGE:  scripts/qzx_field_check.sh [serial]
 #   no serial → the single attached 'device' (refuses if >1 unless a serial is given)
