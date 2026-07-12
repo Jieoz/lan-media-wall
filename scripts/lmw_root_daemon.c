@@ -29,7 +29,7 @@
 //     it (the proven path on these boxes; PackageInstaller is broken here).
 //
 // Build (cloud CI, armv7, inside the NDK) — FULLY STATIC, NON-PIE:
-//   "$NDK/.../armv7a-linux-androideabi21-clang" -Os -static -no-pie -fno-PIE -s
+//   "$NDK/.../armv7a-linux-androideabi21-clang" -Os -static -fno-PIE -s
 //     -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
 // WHY static+non-PIE (v1.14.1 root fix): the daemon runs on API19 bionic. A
 //   DYNAMIC build resolves libc symbols against the DEVICE bionic at exec time,
@@ -37,7 +37,12 @@
 //   `signal`) → "cannot locate symbol" and the daemon never starts. A static
 //   binary carries its own libc, so there is nothing to resolve on-device: it
 //   runs identically on API19..current. Non-PIE avoids the static-PIE loader
-//   path (unreliable on 4.4 kernels). scripts/check_daemon_elf.sh gates this.
+//   path (unreliable on 4.4 kernels): on the NDK `-static` already produces a
+//   classic non-PIE ET_EXEC (static-PIE needs an explicit `-static-pie`) and
+//   `-fno-PIE` fixes codegen to match. `-no-pie` is intentionally NOT passed —
+//   with `-static` it is a link-only no-op the clang driver flags as "argument
+//   unused during compilation", failing the `-Werror` build. The ELF ship gate
+//   (scripts/check_daemon_elf.sh) is what actually proves the output is static.
 //   (The NDK's min API is 21, so we compile with the api21 clang but link
 //   static — the API level only picks headers; static linking makes it moot.)
 //

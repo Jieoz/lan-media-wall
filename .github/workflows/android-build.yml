@@ -150,14 +150,20 @@ jobs:
           #    does not export some symbols modern NDK headers reference (signal)
           #    → the daemon never starts. Static carries its own libc → runs on
           #    API19..current with nothing to resolve. Non-PIE avoids the
-          #    static-PIE loader path (unreliable on 4.4 kernels).
+          #    static-PIE loader path (unreliable on 4.4 kernels): on the NDK
+          #    `-static` already yields a classic non-PIE ET_EXEC (static-PIE
+          #    would need an explicit `-static-pie`), and `-fno-PIE` fixes the
+          #    codegen to match. We do NOT pass `-no-pie`: with `-static` it is
+          #    a link-only no-op that clang reports as "argument unused during
+          #    compilation", which `-Werror` turns into a build failure. The
+          #    ELF ship gate below is what actually proves the output is static.
           NDK_BIN="$(find "$ANDROID_HOME/ndk" -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin' -type d | sort | tail -1)"
           if [ -z "$NDK_BIN" ]; then
             echo "Android NDK linux-x86_64 toolchain not found" >&2
             exit 1
           fi
           CC="$NDK_BIN/armv7a-linux-androideabi21-clang"
-          "$CC" -Os -static -no-pie -fno-PIE -Wall -Wextra -Werror -s \
+          "$CC" -Os -static -fno-PIE -Wall -Wextra -Werror -s \
             -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
           file scripts/lmw_root_daemon
           # 3) SHIP GATE: fail the build unless the produced armv7 binary is fully
