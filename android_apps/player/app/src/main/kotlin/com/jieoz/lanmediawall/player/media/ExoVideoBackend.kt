@@ -255,7 +255,9 @@ class ExoVideoBackend(context: Context) : VideoBackend {
         player?.volume = volume0to1.coerceIn(0f, 1f)
     }
 
-    override fun snapshot(): VideoSnapshot = blockingOnMain {
+    override fun snapshot(): VideoSnapshot = blockingOnMain(
+        VideoSnapshot(0, 0, false, "snapshot_timeout", player != null, lastError),
+    ) {
         val p = player
         if (p == null) {
             VideoSnapshot(0, 0, false, "idle", false, lastError)
@@ -284,14 +286,14 @@ class ExoVideoBackend(context: Context) : VideoBackend {
         else mainHandler.post(block)
     }
 
-    private fun <T> blockingOnMain(block: () -> T): T {
+    private fun <T> blockingOnMain(fallback: T, block: () -> T): T {
         if (Looper.myLooper() == Looper.getMainLooper()) return block()
         val latch = java.util.concurrent.CountDownLatch(1)
         var result: Any? = null
         mainHandler.post {
             try { result = block() } finally { latch.countDown() }
         }
-        latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+        if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) return fallback
         @Suppress("UNCHECKED_CAST")
         return result as T
     }

@@ -5,7 +5,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.2+50`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.3+51`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+>
+> **v1.14.3**:发布后稳健性修复，收紧 Android 播放端双后端快照线程安全、原生 MediaPlayer 异步 seek/start 时序，以及 root daemon 的 `pm install` 成功判定和 App 重启派发 ACK；控制端功能无改动，版本随全端 pubspec 同步递增。
 >
 > **v1.14.2**:Android 被控端新增原生 `android.media.MediaPlayer` 视频内核,与 ExoPlayer 可 A/B 切换(`status.video_backend` 上报当前内核);控制端本身无功能改动,版本随全端 pubspec 同步递增。
 >
@@ -17,7 +19,7 @@ LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播
 >
 > **v1.13.7**:播放端 HOME/桌面绑定根因修复——把 `category.HOME` 从 activity-alias 迁到真 Activity(`MainActivity`),遥控物理主页键在 QZX_C1/HiSTBAndroidV6(4.4)上真正回到媒体墙;删除设置页「设为桌面」开关。控制端本身无功能改动,版本随全端 pubspec 同步递增。
 >
-> **单台设备面板(v1.13)**:设备墙里单击一台盒子的详情弹窗,除改名/设组/音量/推送升级外,新增只针对**这一台 `deviceId`** 的:①**单台播放控制**——暂停/恢复/停止(`WallState.pause/resume/stop(deviceId:)`);②**单播推送内容**——上传+下发 playlist/prepare-play 只锁这一台;③**状态/版本一览**(`_DeviceStatusView`)——展示 `DeviceStatus` 的应用版本(`appVersion`)/在线相位/当前播放项/缓存态/组/音量;④**restart 按钮**(带二次确认)——下发 `restart` 命令**重启整台设备**,协议 `Commands.restart` + `WallState.restart(deviceId:)`,被控端 `PlayerService` 走命令白名单 `hRestart` 分支。
+> **单台设备面板(v1.13)**:设备墙里单击一台盒子的详情弹窗,除改名/设组/音量/推送升级外,新增只针对**这一台 `deviceId`** 的:①**单台播放控制**——暂停/恢复/停止(`WallState.pause/resume/stop(deviceId:)`);②**单播推送内容**——上传+下发 playlist/prepare-play 只锁这一台;③**状态/版本一览**(`_DeviceStatusView`)——展示 `DeviceStatus` 的应用版本(`appVersion`)/在线相位/当前播放项/缓存态/组/音量;④**restart 按钮**(带二次确认)——下发 `restart` 命令**只重启播放 App**,协议 `Commands.restart` + `WallState.restart(deviceId:)`,被控端 `PlayerService` 走命令白名单 `hRestart` 分支并向 root daemon 派发 `RESTART_APP`;整机 `REBOOT` 是独立高风险命令。
 >
 > **远程诊断日志包 + 可复制调试快照(v1.13.5,端到端闭环).** 单台设备详情弹窗「下载日志」现在导出排障包而不是临时 player.log:播放端 `download_logs_result` 包含版本/网络/传输/播放态/cache/errors/helper/root/update 探针、helper uid/usage、player.log/rotated tail 与可读 logcat tail;控制端保存前再追加 controller_summary/controller_log,优先落到 Android `Download/LANMediaWall/logs` 或桌面 `~/Downloads/LANMediaWall/logs`。调试快照不再只 toast,改为可选择文本对话框并提供「复制全部」。broker 模式下 broker 必须转发请求和回包;P2P 模式下 `P2pCoordinator` 必须把两类回包喂回 `WallState` 的相同回调。缺任何一跳都会表现为按钮超时。
 >

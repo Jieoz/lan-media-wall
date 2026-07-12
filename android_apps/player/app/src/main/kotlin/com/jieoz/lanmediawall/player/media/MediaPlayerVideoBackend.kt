@@ -72,6 +72,7 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     @Volatile private var pendingSeekMs: Long = 0
     /** caller asked to play before prepare finished → start on prepared. */
     @Volatile private var startWhenPrepared = false
+    @Volatile private var preparedSeekInProgress = false
     /** current item should loop (single-item playlist). */
     @Volatile private var looping = false
     /** last volume set by the facade (0..1), re-applied after (re)prepare. */
@@ -155,9 +156,13 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     private fun doLoad(uri: String, seekMs: Long, loop: Boolean, autoStart: Boolean) {
         val tag = if (autoStart) "loadAndPlay" else "loadPaused"
         log("$tag uri=${describeUri(uri)} seekMs=$seekMs loop=$loop backend=${backend.id}")
+        // Retire the old instance and its latched callbacks before installing the
+        // state for this load. releasePlayer() intentionally clears old start intent.
+        releasePlayer()
         lastError = null
         pendingSeekMs = seekMs.coerceAtLeast(0)
         startWhenPrepared = autoStart
+        preparedSeekInProgress = false
         looping = loop
         firstFrameSeen = false
         knownDurationMs = 0
@@ -166,7 +171,6 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
 
         // fresh player each load: reset() from Error is unreliable on 4.4, and a
         // clean instance sidesteps stale listener/state carry-over.
-        releasePlayer()
         val mp = MediaPlayer()
         player = mp
         state = State.PREPARING
@@ -180,7 +184,13 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
             metrics.onVideoSize(w, h)
             log("video_size ${w}x${h}")
         }
-        mp.setOnSeekCompleteListener { log("seek_complete position_ms=${safePosition()}") }
+        mp.setOnSeekCompleteListener {
+            if (player !== mp) return@setOnSeekCompleteListener
+            val completesPreparedSeek = preparedSeekInProgress
+            preparedSeekInProgress = false
+            log("seek_complete position_ms=${safePosition()}")
+            if (completesPreparedSeek && startWhenPrepared) doStart()
+        }
 
         try {
             mp.setDataSource(appContext, resolveUri(uri))
@@ -215,9 +225,15 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
         log("prepared duration_ms=$knownDurationMs seek_pending=$pendingSeekMs start=$startWhenPrepared")
         applyVolume(mp)
         if (pendingSeekMs > 0) {
-            try { mp.seekTo(pendingSeekMs.toInt()) } catch (t: Throwable) { log("seek_fail ${t.javaClass.simpleName}") }
+            try {
+                preparedSeekInProgress = true
+                mp.seekTo(pendingSeekMs.toInt())
+            } catch (t: Throwable) {
+                preparedSeekInProgress = false
+                log("seek_fail ${t.javaClass.simpleName}")
+            }
         }
-        if (startWhenPrepared) {
+        if (startWhenPrepared && !preparedSeekInProgress) {
             doStart()
         } else {
             // Prime a still first frame while paused: a seekTo (even to current pos)
@@ -282,7 +298,10 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     override fun play() = runOnMain {
         when (state) {
             State.PREPARING -> { startWhenPrepared = true } // start on prepared
-            State.PREPARED, State.PAUSED, State.STARTED, State.COMPLETED -> doStart()
+            State.PREPARED, State.PAUSED, State.STARTED, State.COMPLETED -> {
+                startWhenPrepared = true
+                if (!preparedSeekInProgress) doStart()
+            }
             else -> log("play ignored state=$state")
         }
     }
@@ -334,13 +353,13 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
         try { mp.setVolume(volume, volume) } catch (t: Throwable) { log("volume_fail ${t.javaClass.simpleName}") }
     }
 
-    override fun snapshot(): VideoSnapshot {
+    override fun snapshot(): VideoSnapshot = blockingOnMain(snapshotFallback()) {
         val mp = player
         val hasMedia = mp != null && state != State.IDLE && state != State.ERROR
         val pos = if (hasMedia) safePosition() else 0
         val dur = if (knownDurationMs > 0) knownDurationMs else 0
         val isPlaying = state == State.STARTED && (try { mp?.isPlaying == true } catch (_: Throwable) { false })
-        return VideoSnapshot(
+        VideoSnapshot(
             positionMs = pos,
             durationMs = dur,
             isPlaying = isPlaying,
@@ -349,6 +368,11 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
             error = lastError,
         )
     }
+
+    private fun snapshotFallback() = VideoSnapshot(
+        0, knownDurationMs.coerceAtLeast(0), false, "snapshot_timeout",
+        state != State.IDLE && state != State.ERROR, lastError,
+    )
 
     private fun safePosition(): Long {
         return try {
@@ -372,6 +396,8 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     }
 
     private fun releasePlayer() {
+        preparedSeekInProgress = false
+        startWhenPrepared = false
         val mp = player ?: return
         player = null
         try { mp.setOnPreparedListener(null) } catch (_: Throwable) {}
@@ -399,5 +425,15 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     private fun runOnMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block()
         else mainHandler.post(block)
+    }
+
+    private fun <T> blockingOnMain(fallback: T, block: () -> T): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var result: Any? = null
+        mainHandler.post { try { result = block() } finally { latch.countDown() } }
+        if (!latch.await(2, java.util.concurrent.TimeUnit.SECONDS)) return fallback
+        @Suppress("UNCHECKED_CAST")
+        return result as T
     }
 }

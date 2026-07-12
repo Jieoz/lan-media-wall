@@ -1444,7 +1444,7 @@ class PlayerService : Service() {
         // fresh controller un-wired. Re-wire whenever the instance changes.
         if (wiredController === ctl) return
         wiredController = ctl
-        ctl.logSink = { msg -> logEvent("exo $msg") }
+        ctl.logSink = { msg -> logEvent("video_backend=${ctl.backend.id} $msg") }
         ctl.onPlayerError = { code ->
             logEvent("player_error code=$code prevState=$playState item=${currentItem()?.itemId ?: "none"}")
             pushError("player:$code")

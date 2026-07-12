@@ -339,8 +339,8 @@ class Hub:
             "stop": self._on_route_to_players,
             "next": self._on_route_to_players,
             "prev": self._on_route_to_players,
-            # §9.4 restart：重启被控端整台设备（单台/整组）。纯转发给目标 player，
-            # player 侧 hRestart 通过 root helper / su 执行 reboot。
+            # §restart-semantics: app-only restart (single player/group); the player
+            # dispatches RESTART_APP to its root daemon and preserves device uptime.
             "restart": self._on_route_to_players,
             "set_volume": self._on_route_to_players,
             "set_mute": self._on_route_to_players,

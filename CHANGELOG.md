@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.14.3] — 2026-07-12
+
+- Fixed ExoPlayer and native MediaPlayer diagnostic snapshots so thread-confined player state is read on Android's main looper, with an explicit conservative timeout result instead of an unsafe nullable cast.
+- Fixed native MediaPlayer synchronized start ordering on API 19: a requested start now waits for the asynchronous prepared seek to complete, while pause/release reliably cancel the latched start.
+- Hardened root-daemon update/restart results: `pm install -r` now requires both a successful exit status and an exact trimmed `Success` line; app-restart acknowledgements report dispatch acceptance rather than completion and expose dispatch failure.
+- Updated restart/update documentation and backend log labels to match the app-only restart contract; whole-device reboot remains a separate high-risk action.
+
 ## [v1.14.2] — 2026-07-12
 
 - **Added a first-class native `android.media.MediaPlayer` video backend for the QZX_C1 / HiSilicon / YunOS 4.4.2 boxes, selectable A/B against the existing ExoPlayer path.** The hardware-only ExoPlayer (Media3) kernel can drop frames or black-screen on this legacy HiSilicon silicon; the native player drives the OEM's own Stagefright/OMX pipeline — the path the vendor firmware is actually tuned for — so it can succeed where the generic codec plumbing stalls. Both kernels now implement one `VideoBackend` contract; `PlayerController` became a thin facade that owns exactly one kernel plus the (decoder-independent) image + thumbnail paths, so the whole service/protocol layer is kernel-agnostic and every command (load/play_at/pause/resume/stop/seek/volume/playlist/status/heartbeat) behaves identically on both.

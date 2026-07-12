@@ -92,8 +92,8 @@ class RootDaemonProtocolTest {
 
     @Test
     fun install_response_ok_detected() {
-        assertTrue(RootDaemonProtocol.isOk("ok install activated via=pm_install restarting_app"))
-        assertTrue(RootDaemonProtocol.isOk("ok restart_app restarting_app"))
+        assertTrue(RootDaemonProtocol.isOk("ok install activated via=pm_install restart_dispatched"))
+        assertTrue(RootDaemonProtocol.isOk("ok restart_app accepted restart_dispatched"))
         assertTrue(RootDaemonProtocol.isOk("ok reboot rebooting"))
         assertFalse(RootDaemonProtocol.isOk("error install pm_failed detail=Failure [INSTALL_FAILED]"))
         assertFalse(RootDaemonProtocol.isOk("error install path rejected code=6"))

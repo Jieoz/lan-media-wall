@@ -218,7 +218,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun describeRestart(): String {
         val probe = com.jieoz.lanmediawall.player.update.RootInstaller.probe()
         return if (probe.ready) {
-            "root daemon ready; reboot routed via local socket"
+            "root daemon ready; app restart routed via local socket"
         } else {
             "root daemon unavailable: ${probe.detail}"
         }

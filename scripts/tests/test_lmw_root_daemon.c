@@ -111,6 +111,15 @@ static void test_read_allowed_uid(void) {
     CHECK(lmw_read_allowed_uid("/nonexistent/lmw.uid") == -1, "missing uid file -> -1");
 }
 
+static void test_pm_success_line(void) {
+    CHECK(lmw_pm_has_success_line("Success\n") == 1, "exact Success line accepted");
+    CHECK(lmw_pm_has_success_line("  Success  \r\n") == 1, "trimmed Success line accepted");
+    CHECK(lmw_pm_has_success_line("note\nSuccess\n") == 1, "Success line accepted after diagnostics");
+    CHECK(lmw_pm_has_success_line("Successfully installed\n") == 0, "Success substring rejected");
+    CHECK(lmw_pm_has_success_line("Failure [mentions Success]\n") == 0, "Success in failure rejected");
+    CHECK(lmw_pm_has_success_line("") == 0, "empty output rejected");
+}
+
 int main(void) {
     test_parse_probe();
     test_parse_reboot();
@@ -120,6 +129,7 @@ int main(void) {
     test_peer_authorized();
     test_command_requires_auth();
     test_read_allowed_uid();
+    test_pm_success_line();
     printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

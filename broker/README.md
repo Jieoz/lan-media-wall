@@ -42,6 +42,8 @@ reply directions.
 
 ## Ports
 
+Normal `restart` messages are routed unchanged to selected players. On Android this is an app-only `RESTART_APP` daemon dispatch that preserves device uptime and Wi-Fi; whole-device `reboot` remains a separate high-risk command.
+
 - `8770` WS (always on)
 - `8771` WSS (enabled automatically when `certs/cert.pem` + `certs/key.pem` exist)
 - `8772` UDP discovery (on by default; `enable_discovery: false` to disable)

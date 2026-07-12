@@ -231,6 +231,19 @@ static int lmw_read_allowed_uid(const char *path) {
     return uid;
 }
 
+static int lmw_pm_has_success_line(const char *out) {
+    const char *p = out;
+    while (*p) {
+        const char *end = strchr(p, '\n');
+        if (!end) end = p + strlen(p);
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
+        while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+        if ((size_t)(end - p) == 7 && memcmp(p, "Success", 7) == 0) return 1;
+        p = *end ? end + 1 : end;
+    }
+    return 0;
+}
+
 #ifndef LMW_DAEMON_TEST
 
 // ---- device-only side-effecting daemon ------------------------------------
@@ -312,9 +325,9 @@ static void lmw_restart_app_worker(void) {
 
 // Fork a detached grandchild to run the restart worker, so the daemon neither
 // blocks nor accumulates a zombie (double-fork → grandchild reparents to init).
-static void lmw_restart_app(void) {
+static int lmw_restart_app(void) {
     pid_t pid = fork();
-    if (pid < 0) return;
+    if (pid < 0) return 0;
     if (pid == 0) {
         setsid();               // leave the daemon's session/process group
         pid_t g = fork();
@@ -323,7 +336,9 @@ static void lmw_restart_app(void) {
         lmw_restart_app_worker();
         _exit(0);
     }
-    waitpid(pid, NULL, 0);      // reap the intermediate child immediately
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 // Run `pm install -r <stage>` and return 1 iff PackageManager reports success.
@@ -345,10 +360,10 @@ static int lmw_pm_install(char *out, size_t outsz) {
         if (used + len < outsz - 1) { memcpy(out + used, buf, len); used += len; }
     }
     out[used] = '\0';
-    pclose(p);
-    // "Success" is the only affirmative PM reply; anything else (incl. "Failure",
-    // empty output when pm is missing, or INSTALL_FAILED_*) is treated as failure.
-    return strstr(out, "Success") != NULL ? 1 : 0;
+    int status = pclose(p);
+    // Require both a clean shell/pm exit and an exact, independently trimmed result line.
+    return status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+           lmw_pm_has_success_line(out);
 }
 
 // Collapse pm's multi-line output to a single greppable token for the reply line.
@@ -405,10 +420,12 @@ static void lmw_handle_install(int fd, const char *path) {
         dprintf(fd, "error install pm_failed detail=%s\n", summary);
         return; // NO reboot fallback — a failed update must not strand the box.
     }
-    dprintf(fd, "ok install activated via=pm_install restarting_app\n");
-    fsync(fd);
     // Relaunch the freshly-installed app (pm force-stopped it). App-only; no reboot.
-    lmw_restart_app();
+    if (lmw_restart_app())
+        dprintf(fd, "ok install activated via=pm_install restart_dispatched\n");
+    else
+        dprintf(fd, "error install activated_but_restart_dispatch_failed\n");
+    fsync(fd);
 }
 
 static int lmw_get_peer_uid(int fd) {
@@ -468,10 +485,12 @@ static void lmw_serve(int listen_fd) {
                 // Normal controller restart: app-only, preserves Wi-Fi + uptime.
                 // Reply first, then fork the detached worker that force-stops +
                 // relaunches ONLY the allowlisted component (never reboots).
-                dprintf(fd, "ok restart_app restarting_app\n");
+                if (lmw_restart_app())
+                    dprintf(fd, "ok restart_app accepted restart_dispatched\n");
+                else
+                    dprintf(fd, "error restart_app dispatch_failed\n");
                 fsync(fd);
                 close(fd);
-                lmw_restart_app();
                 break;
             case CMD_REBOOT:
                 dprintf(fd, "ok reboot rebooting\n");

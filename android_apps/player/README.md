@@ -12,7 +12,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.2 / versionCode 50`** — derived from
+> **Current build: `versionName 1.14.3 / versionCode 51`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -34,10 +34,10 @@ prefetch barrier §21, remote self-update §23).
 > `category.HOME` 解析表(`am -c HOME` 恒 `unable to resolve`),迁到真 Activity 后
 > 4.4 stock 框架才认它作 HOME 候选。
 
-> **`restart` 命令(v1.14.0).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
-> 命令白名单含 `"restart"` → `hRestart` 分支**重启整台设备**。经 root 守护进程
-> `lmw_root_daemon`:`RootInstaller` 作为本地套接字客户端连抽象套接字 `@lmw_root_daemon`
-> 发 `REBOOT`;执行前真实 `probe` 必须回 `ready ... daemon_euid=0`(证明对端确为 root)。
+> **`restart` 命令(v1.14.2).** 遥控端可对单台下发 `restart`,被控端 `PlayerService`
+> 命令白名单含 `"restart"` → `hRestart` 分支**只重启播放 App**。经 root 守护进程
+> `lmw_root_daemon`(抽象套接字 `@lmw_root_daemon`)向 daemon 发
+> `RESTART_APP`;执行前真实 `probe` 必须回 `ready ... daemon_euid=0`(证明对端确为 root)。
 > 守护进程用 `SO_PEERCRED` 反向校验本 App 的 UID。**无 `su`/setuid 回退**——目标机
 > zygote `no_new_privs` 让二者均失效,那是死路径,只会添乱。若 probe/执行失败,只上报
 > 错误,绝不杀掉播放端进程。
