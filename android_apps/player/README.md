@@ -12,7 +12,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.4 / versionCode 52`** — derived from
+> **Current build: `versionName 1.14.5 / versionCode 53`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

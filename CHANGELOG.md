@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.14.5] — 2026-07-12
+
+- Fixed the immutable QZX Update Tools package manifest to include the new one-click real-device acceptance harness, `qzx_field_check.bat` and `qzx_field_check.sh`. The previous v1.14.4 source and builds passed, but its promoted ZIP omitted these two files; v1.14.5 republishes the same fail-closed app-restart implementation with the complete acceptance bundle.
+
 ## [v1.14.4] — 2026-07-12
 
 - **Root-daemon app-restart is now a deterministic verify-and-retry state machine that proves recovery with TWO signals, not a blind shell chain.** Field ground truth on QZX_C1 was that `RESTART_APP` force-stopped the Player but the relaunch did not reliably take, leaving a black kiosk until a manual explicit `am start` (log 16:10). The daemon worker (`lmw_restart_app_run`) now force-stops once, then explicit-launches the allowlisted component (`am start -n <pkg>/.MainActivity`, dropping the unreliable `-a MAIN -c HOME` implicit resolution), waits, and VERIFIES before retrying — up to a bounded attempt budget, with no reboot fallback. Verification distinguishes **PROCESS_UP** (the package's main process appears in `ps`) from **ACTIVITY_RESUMED** (our component is the resumed/focused activity per `dumpsys activity activities`, falling back to `dumpsys window windows` `mCurrentFocus`). Full recovery requires BOTH; a process that came back *behind the launcher* is a partial failure, not success.

@@ -5,9 +5,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.4+52`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.5+53`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
-> **v1.14.4**:root daemon 的 `RESTART_APP` 改为确定性「验证-重试」状态机,区分 PROCESS_UP 与 ACTIVITY_RESUMED(仅进程回来但活动没到前台=部分失败,不算恢复),重启证据日志给出显式 `restart_verified`/`restart_failed` 终态;新增一键真机 `scripts/qzx_field_check.*`(重启双信号验证 + ExoPlayer/MediaPlayer A/B)。控制端功能无改动,版本随全端 pubspec 同步递增。
+> **v1.14.5**:修正 QZX 发布资产清单，确保一键真机 `qzx_field_check.bat/.sh` 与守护进程一起进入 Update Tools ZIP；同时包含 v1.14.4 的 root daemon `RESTART_APP` 改为确定性「验证-重试」状态机,区分 PROCESS_UP 与 ACTIVITY_RESUMED(仅进程回来但活动没到前台=部分失败,不算恢复),重启证据日志给出显式 `restart_verified`/`restart_failed` 终态;新增一键真机 `scripts/qzx_field_check.*`(重启双信号验证 + ExoPlayer/MediaPlayer A/B)。控制端功能无改动,版本随全端 pubspec 同步递增。
 >
 > **v1.14.2**:Android 被控端新增原生 `android.media.MediaPlayer` 视频内核,与 ExoPlayer 可 A/B 切换(`status.video_backend` 上报当前内核);控制端本身无功能改动,版本随全端 pubspec 同步递增。
 >
