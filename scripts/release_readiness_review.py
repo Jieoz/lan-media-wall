@@ -40,11 +40,16 @@ Config (optional YAML at <repo>/.release-review.yml or via --config):
   dart_dirs: [remote_flutter]
   contract_keys:            # each key must be spelled identically across files
     - {key: key_mode, files: ["broker/router.py","windows_player/main.py","remote_flutter/lib/protocol/messages.dart"]}
+  command_gates:            # arbitrary argv-style project checks; every non-zero exit blocks
+    - {name: protocol_policy, run: [python3, scripts/tests/test_protocol_policy.py]}
+  archive_contracts:        # inspect payload contents, not only archive existence/hash
+    - {path: dist/tools.zip, required_entries: [bin/tool, README.md]}
+  require_clean_worktree: true
 
 With no config, runs the auto-detected gates (py_compile on *.py, dart analyze,
 R.id existence) — still useful, just less targeted.
 """
-import argparse, glob, json, os, re, subprocess, sys
+import argparse, glob, json, os, re, shlex, subprocess, sys, zipfile
 
 def sh(cmd, cwd=None, timeout=300):
     try:
@@ -198,11 +203,55 @@ def gate_contract(repo, cfg):
             g.note(f"key '{key}' consistent across {len(present)} files")
     return g
 
-def gate_git(repo):
+def gate_commands(repo, cfg):
+    specs = cfg.get("command_gates") or []
+    if not specs: return None
+    g = Gate("COMMANDS")
+    for spec in specs:
+        name = spec.get("name") or spec.get("run", "command")
+        command = spec.get("run")
+        if not command:
+            g.fail(f"{name}: missing run command")
+            continue
+        argv = shlex.split(command) if isinstance(command, str) else command
+        rc, out, err = sh(argv, cwd=repo, timeout=int(spec.get("timeout", 300)))
+        if rc != 0:
+            detail = (out + err).strip().splitlines()[-1:] or [f"exit {rc}"]
+            g.fail(f"{name}: {detail[0]}")
+        else:
+            g.note(f"{name}: OK")
+    return g
+
+def gate_archives(repo, cfg):
+    specs = cfg.get("archive_contracts") or []
+    if not specs: return None
+    g = Gate("ARCHIVES")
+    for spec in specs:
+        rel = spec.get("path", "")
+        path = os.path.join(repo, rel)
+        if not os.path.isfile(path):
+            if spec.get("required", True): g.fail(f"missing archive: {rel}")
+            else: g.note(f"optional archive absent: {rel}")
+            continue
+        try:
+            with zipfile.ZipFile(path) as zf:
+                names = set(zf.namelist())
+        except Exception as e:
+            g.fail(f"cannot inspect {rel}: {e}")
+            continue
+        missing = [x for x in spec.get("required_entries", []) if x not in names]
+        if missing: g.fail(f"{rel} missing entries: {', '.join(missing)}")
+        else: g.note(f"{rel}: {len(names)} entries, contract OK")
+    return g
+
+def gate_git(repo, cfg):
     g = Gate("GIT")
     rc, out, _ = sh(["git", "status", "--short"], cwd=repo)
     dirty = [l for l in out.splitlines() if l.strip()]
-    g.note(f"worktree: {'clean' if not dirty else str(len(dirty))+' uncommitted files'}")
+    if dirty and cfg.get("require_clean_worktree", False):
+        g.fail(f"worktree has {len(dirty)} uncommitted files")
+    else:
+        g.note(f"worktree: {'clean' if not dirty else str(len(dirty))+' uncommitted files'}")
     rc, out, _ = sh(["git", "rev-list", "--count", "origin/main..HEAD"], cwd=repo)
     if rc == 0: g.note(f"local ahead of origin/main by {out.strip()} commits")
     return g
@@ -218,11 +267,17 @@ def main():
         print(f"ERROR repo not found: {repo}"); sys.exit(2)
     cfg = load_cfg(repo, args.config)
     gates = []
+    if cfg.get("_cfg_error"):
+        g = Gate("CONFIG")
+        g.fail(cfg["_cfg_error"])
+        gates.append(g)
     for fn in (lambda: gate_python(repo, cfg),
                lambda: gate_kotlin(repo, cfg),
                lambda: gate_dart(repo, cfg),
                lambda: gate_contract(repo, cfg),
-               lambda: gate_git(repo)):
+               lambda: gate_commands(repo, cfg),
+               lambda: gate_archives(repo, cfg),
+               lambda: gate_git(repo, cfg)):
         g = fn()
         if g is not None: gates.append(g)
     overall_ok = all(g.ok for g in gates)

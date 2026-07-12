@@ -20,3 +20,5 @@ contract_keys:
   - {key: update_state, files: ["protocol_spec.md", "broker/broker.py", "remote_flutter/lib/protocol/messages.dart"]}
   - {key: update_detail, files: ["protocol_spec.md", "broker/broker.py", "remote_flutter/lib/protocol/messages.dart"]}
   - {key: update_version_code, files: ["protocol_spec.md", "broker/broker.py", "remote_flutter/lib/protocol/messages.dart"]}
+command_gates:
+  - {name: qzx_restart_contract, run: "python3 scripts/tests/test_qzx_release_contract.py"}
