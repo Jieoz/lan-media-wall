@@ -28,6 +28,25 @@ for line in $(pm list packages -d 2>/dev/null); do
 done
 echo "re-enabled $n package(s)."
 
+# Remove the cold-boot daemon hooks lmw_setup.sh may have installed (reversible).
+# The init.d hook is our own file → delete it. install-recovery.sh may be either
+# ours (created) or a pre-existing ROM file we appended a line to; delete only if
+# it is ONLY our created hook, otherwise strip nothing destructive and just warn.
+INITD_HOOK=/system/etc/init.d/99lmwdaemon
+RECOVERY_HOOK=/system/etc/install-recovery.sh
+DAEMON_DST=/system/xbin/lmw_root_daemon
+mount -o remount,rw /system 2>/dev/null || mount -o rw,remount /system 2>/dev/null
+if [ -f "$INITD_HOOK" ]; then
+  rm -f "$INITD_HOOK" 2>/dev/null && echo "  removed cold-boot hook $INITD_HOOK."
+fi
+if [ -f "$RECOVERY_HOOK" ] && grep -q "created by lmw_setup.sh" "$RECOVERY_HOOK" 2>/dev/null; then
+  rm -f "$RECOVERY_HOOK" 2>/dev/null && echo "  removed lmw-created $RECOVERY_HOOK."
+elif [ -f "$RECOVERY_HOOK" ] && grep -q "$DAEMON_DST" "$RECOVERY_HOOK" 2>/dev/null; then
+  echo "  NOTE: $RECOVERY_HOOK is a pre-existing ROM file with an appended lmw line;"
+  echo "        left in place to avoid clobbering ROM recovery logic. Edit by hand if needed."
+fi
+mount -o remount,ro /system 2>/dev/null || mount -o ro,remount /system 2>/dev/null || true
+
 # Let the system settle HOME again: clear the forced kiosk HOME so the stock
 # launcher (if re-enabled) can win the HOME resolver again.
 pm clear-preferred-activities >/dev/null 2>&1

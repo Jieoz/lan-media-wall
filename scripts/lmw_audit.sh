@@ -118,6 +118,42 @@ echo "===== [9] AUTOSTART / RECEIVERS hint (who wakes on boot) ====="
 dumpsys package 2>/dev/null | grep -iE 'BOOT_COMPLETED' | grep -iE 'com\.|cn\.' 2>/dev/null
 
 echo
+echo "===== [10] ROOT COLD-BOOT HOOK MECHANISMS (for lmw_root_daemon persistence) ====="
+# Read-only: report which root boot-hook mechanisms THIS ROM actually supports,
+# so cold-boot persistence for the daemon is decided on evidence, not guesswork.
+if [ -d /system/etc/init.d ]; then
+  echo "  init.d dir      : PRESENT (/system/etc/init.d)"
+  ls -la /system/etc/init.d 2>/dev/null | grep -v '^total' | grep -v ' \.$' | grep -v ' \.\.$'
+else
+  echo "  init.d dir      : absent"
+fi
+RUNPARTS_HIT=""
+for rc in /init.rc /init.*.rc /system/etc/init/*.rc; do
+  [ -f "$rc" ] || continue
+  if grep -q "run-parts" "$rc" 2>/dev/null && grep -q "init\.d" "$rc" 2>/dev/null; then
+    RUNPARTS_HIT="$rc"; break
+  fi
+done
+[ -n "$RUNPARTS_HIT" ] && echo "  init.d run-parts: WIRED by $RUNPARTS_HIT (dropping a script there runs at boot)" \
+                       || echo "  init.d run-parts: NOT found in any init*.rc (init.d alone would NOT run at boot)"
+if [ -f /system/etc/install-recovery.sh ]; then
+  echo "  install-recovery: script PRESENT (/system/etc/install-recovery.sh)"
+else
+  echo "  install-recovery: script absent"
+fi
+REC_SVC=""
+for rc in /init.rc /init.*.rc /system/etc/init/*.rc; do
+  [ -f "$rc" ] || continue
+  svc="$(grep -m1 install-recovery.sh "$rc" 2>/dev/null)"
+  case "$svc" in \#*) svc="";; esac
+  [ -n "$svc" ] && { REC_SVC="$rc: $svc"; break; }
+done
+[ -n "$REC_SVC" ] && echo "  install-recovery service: $REC_SVC" \
+                  || echo "  install-recovery service: NOT referenced in any init*.rc"
+echo "  (lmw_setup installs a cold-boot hook ONLY where one of the above is real ROM"
+echo "   evidence; otherwise it starts the daemon per-boot and says persistence is unwired.)"
+
+echo
 echo "############################################################"
 echo "#  AUDIT COMPLETE — copy this ENTIRE output back."
 echo "#  Nothing was changed. Send report from ONE box per batch."

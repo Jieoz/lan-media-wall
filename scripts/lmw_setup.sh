@@ -206,39 +206,113 @@ start_daemon() {
   sleep 1
 }
 
-# Cold-boot persistence. PREFER a ROM-supported /system/etc/init.d hook; fall back
-# to appending a start line to an EXISTING install-recovery.sh ONLY if the ROM
-# ships one (demonstrable execution). If neither exists, we DO NOT fabricate a
-# persistence claim — setup still starts the daemon for this boot and warns that
-# true cold-boot persistence is a real-device acceptance gate.
+# Records how cold-boot persistence was (or was not) wired, so the final summary
+# can HONESTLY separate "daemon verified THIS boot" from "cold-boot persistence
+# proven". One of: initd | recovery-created | recovery-appended | none.
+BOOT_HOOK_STATE=none
+BOOT_HOOK_PATH=""
+
+# Scan the ROM's OWN init scripts for a service line that executes an
+# install-recovery.sh, and echo the referenced script path (empty if none).
+# This is the on-device EVIDENCE that the ROM runs that path as root at boot —
+# AOSP ships `service flash_recovery /system/etc/install-recovery.sh` (class
+# main, oneshot). toybox-safe: grep + word-splitting only (no sed/awk/head).
+find_recovery_service_path() {
+  for rc in /init.rc /init.*.rc /system/etc/init/*.rc; do
+    [ -f "$rc" ] || continue
+    line="$(grep -m1 install-recovery.sh "$rc" 2>/dev/null)"
+    [ -z "$line" ] && continue
+    # Skip commented lines (leading '#').
+    case "$line" in \#*) continue;; esac
+    for tok in $line; do
+      case "$tok" in
+        /*install-recovery.sh) echo "$tok"; return 0;;
+      esac
+    done
+  done
+  return 1
+}
+
+# Is the /system/etc/init.d dir demonstrably executed at boot? (some init*.rc
+# run-parts it). Only then is dropping a script there real persistence.
+initd_is_wired() {
+  for rc in /init.rc /init.*.rc /system/etc/init/*.rc; do
+    [ -f "$rc" ] || continue
+    grep -q "run-parts" "$rc" 2>/dev/null && grep -q "init\.d" "$rc" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# Cold-boot persistence — the honest hard part on QZX_C1. This ROM ships NO
+# /system/etc/init.d and NO install-recovery.sh, so there is no turnkey hook. We
+# install one ONLY where the ROM's OWN init*.rc demonstrably wires it (real
+# on-device evidence), NEVER by fabricating an init.rc edit:
+#   (P1) init.d present AND an init*.rc run-parts it            -> drop 99lmwdaemon
+#   (P2) an init*.rc runs an install-recovery.sh path (absent)  -> CREATE that
+#        script; the ROM already execs it as root at boot, so populating it is a
+#        real, ROM-sanctioned hook (reversible: lmw_restore.sh removes it)
+#   (P3) a pre-existing install-recovery.sh                     -> append (idempotent)
+# If none of these hold we DO NOT claim persistence. We set BOOT_HOOK_STATE so
+# the summary tells the operator the truth and names the real-device step.
 install_boot_hook() {
-  if [ -d "$INITD_DIR" ]; then
+  # (P1) init.d — only if the ROM actually run-parts it.
+  if [ -d "$INITD_DIR" ] && initd_is_wired; then
     {
       echo "#!/system/bin/sh"
       echo "# lan-media-wall root daemon cold-boot start (installed by lmw_setup.sh)."
       echo "[ -x $DAEMON_DST ] && $DAEMON_DST"
     } > "$INITD_HOOK" 2>/dev/null && chmod 0755 "$INITD_HOOK" 2>/dev/null && {
       chown 0:0 "$INITD_HOOK" 2>/dev/null || chown root:root "$INITD_HOOK" 2>/dev/null
-      echo "  cold-boot hook installed: $INITD_HOOK (ROM init.d)."
-      echo "  NOTE: verify init.d is actually run at cold boot on THIS ROM (acceptance gate)."
+      BOOT_HOOK_STATE=initd; BOOT_HOOK_PATH="$INITD_HOOK"
+      echo "  cold-boot hook installed: $INITD_HOOK (ROM init.d, run-parts-wired)."
       return 0
     }
   fi
-  if [ -f "$RECOVERY_HOOK" ]; then
-    # Only APPEND if a start line isn't already present (idempotent reruns).
-    if grep -q "$DAEMON_DST" "$RECOVERY_HOOK" 2>/dev/null; then
-      echo "  cold-boot hook already present in $RECOVERY_HOOK."
+
+  # (P2)/(P3) install-recovery.sh — prefer the path the ROM's init*.rc names.
+  rec="$(find_recovery_service_path)"
+  [ -z "$rec" ] && rec="$RECOVERY_HOOK"   # fall back to the AOSP-canonical path
+  start_line="[ -x $DAEMON_DST ] && $DAEMON_DST &"
+
+  if [ -f "$rec" ]; then
+    # (P3) exists → append idempotently, preserving any real recovery-flash logic.
+    if grep -q "$DAEMON_DST" "$rec" 2>/dev/null; then
+      BOOT_HOOK_STATE=recovery-appended; BOOT_HOOK_PATH="$rec"
+      echo "  cold-boot hook already present in $rec."
+    elif echo "$start_line" >> "$rec" 2>/dev/null; then
+      BOOT_HOOK_STATE=recovery-appended; BOOT_HOOK_PATH="$rec"
+      echo "  cold-boot hook appended to existing $rec."
     else
-      echo "[ -x $DAEMON_DST ] && $DAEMON_DST &" >> "$RECOVERY_HOOK" 2>/dev/null && \
-        echo "  cold-boot hook appended to existing $RECOVERY_HOOK." || \
-        echo "  WARN: could not append to $RECOVERY_HOOK; cold-boot persistence unset." >&2
+      echo "  WARN: could not append to $rec; cold-boot persistence unset." >&2
     fi
-    echo "  NOTE: confirm $RECOVERY_HOOK is executed at boot on THIS ROM (acceptance gate)."
     return 0
   fi
-  echo "  WARN: no ROM-supported boot hook ($INITD_DIR or $RECOVERY_HOOK) found." >&2
-  echo "        Daemon started for THIS boot only; COLD-BOOT PERSISTENCE IS NOT WIRED." >&2
-  echo "        Real-device step required: install a ROM-supported root start hook." >&2
+
+  if [ -n "$(find_recovery_service_path)" ]; then
+    # (P2) the ROM runs this path but the script is ABSENT → create it. The
+    # daemon start runs in the FOREGROUND here (the service is oneshot and we are
+    # already root); no '&' so the oneshot completes deterministically.
+    if {
+         echo "#!/system/bin/sh"
+         echo "# install-recovery.sh created by lmw_setup.sh: the ROM's init service"
+         echo "# execs this path at boot as root, so it is our cold-boot daemon start."
+         echo "[ -x $DAEMON_DST ] && $DAEMON_DST"
+       } > "$rec" 2>/dev/null && chmod 0755 "$rec" 2>/dev/null; then
+      chown 0:0 "$rec" 2>/dev/null || chown root:root "$rec" 2>/dev/null
+      BOOT_HOOK_STATE=recovery-created; BOOT_HOOK_PATH="$rec"
+      echo "  cold-boot hook CREATED at ROM-referenced $rec (init service execs it as root)."
+      return 0
+    fi
+    echo "  WARN: init*.rc references $rec but creating it failed; persistence unset." >&2
+    return 0
+  fi
+
+  # No ROM-supported mechanism found — DO NOT fabricate persistence.
+  BOOT_HOOK_STATE=none
+  echo "  WARN: no ROM-supported boot hook found (no run-parts init.d, no init*.rc" >&2
+  echo "        install-recovery service). COLD-BOOT PERSISTENCE IS NOT WIRED." >&2
+  echo "        The daemon is started + verified for THIS boot; on cold boot it will" >&2
+  echo "        NOT auto-start until a ROM-supported root hook is added (real-device step)." >&2
 }
 
 # Disable (or uninstall) every installed package not in the whitelist.
@@ -383,6 +457,21 @@ installed)
   echo "#  SETUP COMPLETE. Player versionName=${ver:-?}."
   echo "#  The box now boots straight into the media wall and every"
   echo "#  other app is disabled. Undo cleanup: lmw_restore.sh"
+  echo "#"
+  echo "#  root daemon: STARTED + PROBE-VERIFIED for THIS boot (remote"
+  echo "#               restart/update are live now)."
+  case "$BOOT_HOOK_STATE" in
+    initd|recovery-created|recovery-appended)
+      echo "#  cold-boot:   hook installed via $BOOT_HOOK_STATE"
+      echo "#               ($BOOT_HOOK_PATH)."
+      echo "#               NOT YET PROVEN — real-device acceptance gate: reboot the"
+      echo "#               box, then run 'lmw_root_daemon -probe' and confirm it"
+      echo "#               still returns 'ready ... daemon_euid=0'." ;;
+    *)
+      echo "#  cold-boot:   NOT WIRED — no ROM-supported hook on this ROM. The daemon"
+      echo "#               will NOT auto-start after a power cycle until a root boot"
+      echo "#               hook is added. Remote restart/update work until then." ;;
+  esac
   echo "############################################################"
   ;;
 

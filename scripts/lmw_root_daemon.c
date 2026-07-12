@@ -28,9 +28,18 @@
 //     chmod 0644, fsync + sync, then reboots so the boot package scanner adopts
 //     it (the proven path on these boxes; PackageInstaller is broken here).
 //
-// Build (cloud CI, armv7, inside the NDK):
-//   "$NDK/.../armv7a-linux-androideabi19-clang" -Os -fPIE -pie -static -s
+// Build (cloud CI, armv7, inside the NDK) — FULLY STATIC, NON-PIE:
+//   "$NDK/.../armv7a-linux-androideabi21-clang" -Os -static -no-pie -fno-PIE -s
 //     -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
+// WHY static+non-PIE (v1.14.1 root fix): the daemon runs on API19 bionic. A
+//   DYNAMIC build resolves libc symbols against the DEVICE bionic at exec time,
+//   and API19 does not export some symbols modern NDK headers reference (e.g.
+//   `signal`) → "cannot locate symbol" and the daemon never starts. A static
+//   binary carries its own libc, so there is nothing to resolve on-device: it
+//   runs identically on API19..current. Non-PIE avoids the static-PIE loader
+//   path (unreliable on 4.4 kernels). scripts/check_daemon_elf.sh gates this.
+//   (The NDK's min API is 21, so we compile with the api21 clang but link
+//   static — the API level only picks headers; static linking makes it moot.)
 //
 // Host unit tests: scripts/tests/test_lmw_root_daemon.c (see LMW_DAEMON_TEST).
 
@@ -359,8 +368,20 @@ static int lmw_probe_client(void) {
     return 3;
 }
 
+// Ignore SIGPIPE so a client that hangs up mid-reply cannot kill the daemon.
+// Uses sigaction (a real exported bionic symbol since API1), NOT signal(): on
+// old bionic <signal.h> made signal() a static-inline shim over bsd_signal, so
+// API19 libc.so never exported `signal` — a dynamic daemon that referenced it
+// died at exec with `cannot locate symbol "signal"` (the v1.14.0 field failure).
+static void lmw_ignore_sigpipe(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &sa, NULL);
+}
+
 int main(int argc, char **argv) {
-    signal(SIGPIPE, SIG_IGN);
+    lmw_ignore_sigpipe();
 
     // Client mode: verify a running daemon over the protocol. Runs as any uid
     // (PROBE needs no auth), so ADB/setup can call it directly.
