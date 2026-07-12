@@ -21,6 +21,7 @@ import com.jieoz.lanmediawall.player.cache.Playlist
 import com.jieoz.lanmediawall.player.cache.PlaylistOps
 import com.jieoz.lanmediawall.player.media.PlayerController
 import com.jieoz.lanmediawall.player.media.ThumbnailPolicy
+import com.jieoz.lanmediawall.player.media.TransitionPolicy
 import com.jieoz.lanmediawall.player.net.BrokerClient
 import com.jieoz.lanmediawall.player.net.AuthMode
 import com.jieoz.lanmediawall.player.net.CoordinatorLink
