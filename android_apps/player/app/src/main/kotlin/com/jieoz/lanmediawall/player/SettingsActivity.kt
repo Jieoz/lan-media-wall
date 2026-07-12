@@ -89,6 +89,13 @@ class SettingsActivity : AppCompatActivity() {
         // §13/§15.3 open semantics: DEFAULT_PSK means "no key" → show empty.
         binding.inputPsk.setText(if (settings.psk == Settings.DEFAULT_PSK) "" else settings.psk)
         binding.inputAlwaysThumbs.isChecked = settings.alwaysCollectThumbnails
+        // §backend-ab: reflect the persisted video-kernel choice.
+        val checkedId = when (com.jieoz.lanmediawall.player.media.PlayerBackend.fromId(settings.videoBackend)) {
+            com.jieoz.lanmediawall.player.media.PlayerBackend.EXOPLAYER -> R.id.backend_exoplayer
+            com.jieoz.lanmediawall.player.media.PlayerBackend.MEDIAPLAYER -> R.id.backend_mediaplayer
+            else -> R.id.backend_auto // auto/blank/unknown
+        }
+        binding.groupVideoBackend.check(checkedId)
     }
 
     /**
@@ -240,10 +247,14 @@ class SettingsActivity : AppCompatActivity() {
                 append(service.debugIndex())
                 append(", item=")
                 append(item ?: "none")
+                append(", backend=")
+                append(service.debugBackend())
                 append(", controller=")
                 append(service.debugControllerPresent())
                 append(", audio_master=")
                 append(service.debugAudioMaster())
+                append("\n  ab: ")
+                append(service.debugBackendMetrics())
             }
         }
     }
@@ -321,6 +332,14 @@ class SettingsActivity : AppCompatActivity() {
         settings.groupId = if (groupId.isEmpty()) "default" else groupId
         settings.psk = psk
         settings.alwaysCollectThumbnails = binding.inputAlwaysThumbs.isChecked
+        // §backend-ab: persist the selected video kernel. Takes effect when the
+        // kiosk Activity (re)builds the controller — the MainActivity launch below
+        // recreates it, so the new kernel is live immediately on Save.
+        settings.videoBackend = when (binding.groupVideoBackend.checkedRadioButtonId) {
+            R.id.backend_exoplayer -> com.jieoz.lanmediawall.player.media.PlayerBackend.EXOPLAYER.id
+            R.id.backend_mediaplayer -> com.jieoz.lanmediawall.player.media.PlayerBackend.MEDIAPLAYER.id
+            else -> Settings.VIDEO_BACKEND_AUTO
+        }
         settings.markConfigured()
 
         // Restart the service so it picks up the new connection settings.

@@ -9,15 +9,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.SurfaceView
 import android.widget.ImageView
-import com.google.android.exoplayer2.MediaItem as ExoMediaItem
-import com.google.android.exoplayer2.PlaybackException
-import com.google.android.exoplayer2.Player
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.Format
-import com.google.android.exoplayer2.DefaultRenderersFactory
-import com.google.android.exoplayer2.analytics.AnalyticsListener
-import com.google.android.exoplayer2.mediacodec.MediaCodecSelector
-import com.google.android.exoplayer2.video.VideoSize
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
@@ -25,193 +16,68 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Media3 (ExoPlayer) wrapper — the Android analogue of windows_player's mpv
- * controller. Owns one ExoPlayer instance and exposes the operations the
- * protocol drives: load/play(at)/pause/seek/volume/mute + a current-frame
- * snapshot for thumbnails (§6.4).
+ * Playback facade — the Android analogue of windows_player's mpv controller. Owns
+ * ONE swappable [VideoBackend] (ExoPlayer or native MediaPlayer — §backend-ab) and
+ * exposes the operations the protocol drives: load/play(at)/pause/seek/volume/mute
+ * + a current-frame snapshot for thumbnails (§6.4).
  *
- * Threading: ExoPlayer must be touched only from the thread that created it
- * (the app main thread). Every public mutator posts onto [mainHandler], so the
- * service/WS threads can call freely. Read-only snapshots also marshal to main
- * and block briefly for the value.
+ * The video KERNEL is chosen once at construction ([backend]); everything the
+ * service calls is kernel-agnostic. Image display (§6.1) and thumbnail extraction
+ * (§6.4) stay here because they use BitmapFactory / MediaMetadataRetriever, which
+ * are decoder-independent — so switching kernels never touches them.
+ *
+ * Threading: the backend marshals video ops to the main thread; image ops here
+ * marshal via [mainHandler]; thumbnail extraction runs on Dispatchers.IO.
  */
-class PlayerController(context: Context) {
+class PlayerController(
+    context: Context,
+    private val videoBackend: VideoBackend,
+) {
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    @Volatile private var player: ExoPlayer? = null
-    @Volatile private var surfaceView: SurfaceView? = null
     @Volatile private var imageView: ImageView? = null
     @Volatile private var lastError: String? = null
-    /** §hardware-decode: last video decoder ExoPlayer initialized, for diagnostics
-     *  export. Null until the first onVideoDecoderInitialized. */
-    @Volatile var lastVideoDecoderName: String? = null
-        private set
     private val thumbSeq = AtomicInteger(0)
     private val thumbnailFlight = ThumbnailSingleFlight()
-    @Volatile private var lastFirstFrameAtMs = 0L
-    /** §6.4 root-performance: one cached thumbnail per item, so active video
-     *  playback never re-extracts a live frame (see [ThumbnailPolicy.decide]).
-     *  Keyed by itemId; holds the (seq, jpeg) captured once while not playing. */
+    /** §6.4 root-performance: one cached thumbnail per item (keyed by itemId). */
     private val thumbnailCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, ByteArray>>()
 
-    /** Called when ExoPlayer reports an unrecoverable error (watchdog hook). */
-    @Volatile var onPlayerError: ((String) -> Unit)? = null
+    /** Which video kernel is active (for diagnostics/status). */
+    val backend: PlayerBackend get() = videoBackend.backend
 
-    /** Called once when a non-looping video reaches its end (STATE_ENDED), so
-     *  the service can auto-advance the playlist (§6.3 carousel). */
-    @Volatile var onVideoEnded: (() -> Unit)? = null
+    /** §backend-ab: the active kernel's A/B metrics. */
+    val metrics: BackendMetrics get() = videoBackend.metrics
+
+    /** §hardware-decode: last video decoder the kernel reported, or null (native
+     *  MediaPlayer never exposes it). */
+    val lastVideoDecoderName: String? get() = videoBackend.lastVideoDecoderName
+
+    /** Called when the kernel reports an unrecoverable error (watchdog hook). */
+    var onPlayerError: ((String) -> Unit)?
+        get() = videoBackend.onError
+        set(value) { videoBackend.onError = value }
+
+    /** Called once when a non-looping video reaches its end (§6.3 carousel). */
+    var onVideoEnded: (() -> Unit)?
+        get() = videoBackend.onEnded
+        set(value) { videoBackend.onEnded = value }
 
     /**
      * Diagnostic sink → PlayerService.logEvent, so decode-path events land in the
-     * **exported** player.log rather than logcat (which is heavily truncated on
-     * the 4.4/HiSilicon boxes — the blind spot that made the last black-screen
-     * regression impossible to diagnose from the pulled log). Every message is
-     * prefixed `exo ` by the service side; keep payloads terse and machine-greppable.
+     * EXPORTED player.log rather than the truncated logcat. Setting it wires the
+     * kernel's sink too (prefixing so both kernels' lines are greppable).
      */
-    @Volatile var logSink: ((String) -> Unit)? = null
-    private fun log(msg: String) { logSink?.invoke(msg) }
-
-    private fun stateName(state: Int): String = when (state) {
-        Player.STATE_IDLE -> "IDLE"
-        Player.STATE_BUFFERING -> "BUFFERING"
-        Player.STATE_READY -> "READY"
-        Player.STATE_ENDED -> "ENDED"
-        else -> "state$state"
-    }
-
-    /**
-     * §hardware-decode: a MediaCodecSelector that drops software VIDEO decoders
-     * (OMX.google.* / c2.android.* / API-reported softwareOnly) via
-     * [VideoCodecPolicy], so ExoPlayer can only pick a HiSilicon hardware decoder
-     * on the target. Audio is untouched. If filtering leaves NO video decoder we
-     * return the empty list and log it: ExoPlayer then raises a decoder-init error
-     * that surfaces as a real diagnostic, rather than silently decoding in
-     * software (the black-screen / overload trap on these boxes).
-     */
-    private val hardwareOnlyVideoSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
-        val all = MediaCodecSelector.DEFAULT.getDecoderInfos(
-            mimeType, requiresSecureDecoder, requiresTunnelingDecoder,
-        )
-        if (!mimeType.startsWith("video/")) return@MediaCodecSelector all
-        val kept = all.filter { info ->
-            val flag = try { info.softwareOnly } catch (_: Throwable) { false }
-            VideoCodecPolicy.isHardware(info.name, flag)
+    var logSink: ((String) -> Unit)? = null
+        set(value) {
+            field = value
+            videoBackend.logSink = value
         }
-        val dropped = all.size - kept.size
-        log("codec_select mime=$mimeType total=${all.size} hardware=${kept.size} dropped_software=$dropped " +
-            "picked=${kept.firstOrNull()?.name ?: "NONE"}")
-        if (kept.isEmpty() && all.isNotEmpty()) {
-            log("codec_select_fail mime=$mimeType reason=no_hardware_decoder available=${all.joinToString(",") { it.name }}")
-        }
-        kept
-    }
 
-    fun init() {
-        runOnMain {
-            if (player != null) return@runOnMain
-            val renderersFactory = DefaultRenderersFactory(appContext)
-                .setMediaCodecSelector(hardwareOnlyVideoSelector)
-            val p = ExoPlayer.Builder(appContext, renderersFactory).build()
-            p.repeatMode = Player.REPEAT_MODE_OFF
-            p.playWhenReady = false
-            p.addListener(object : Player.Listener {
-                override fun onPlayerError(error: PlaybackException) {
-                    lastError = error.errorCodeName
-                    // errorCodeName is the greppable enum; cause pins the decoder
-                    // failure (e.g. OMX_ErrorStreamCorrupt vs format-unsupported).
-                    val cause = error.cause?.let { "${it.javaClass.simpleName}:${it.message}" } ?: "none"
-                    log("error code=${error.errorCodeName} codeInt=${error.errorCode} cause=$cause")
-                    onPlayerError?.invoke(error.errorCodeName)
-                }
+    fun init() = videoBackend.init()
 
-                override fun onPlaybackStateChanged(state: Int) {
-                    log("state ${stateName(state)}")
-                    // §6.3: a finished non-looping video hands control back so the
-                    // service advances. REPEAT_MODE_ONE loops never reach ENDED.
-                    if (state == Player.STATE_ENDED) onVideoEnded?.invoke()
-                }
-
-                override fun onRenderedFirstFrame() {
-                    // The single most decisive signal: pixels actually reached the
-                    // surface. Its ABSENCE (state=READY but no first-frame) is the
-                    // fingerprint of a decoded-but-black stream.
-                    val now = SystemClock.elapsedRealtime()
-                    val previous = lastFirstFrameAtMs
-                    lastFirstFrameAtMs = now
-                    log("first_frame rendered position_ms=${p.currentPosition} " +
-                        "delta_ms=${if (previous == 0L) -1 else now - previous}")
-                }
-
-                override fun onMediaItemTransition(mediaItem: ExoMediaItem?, reason: Int) {
-                    log("media_transition reason=$reason position_ms=${p.currentPosition}")
-                }
-
-                override fun onPositionDiscontinuity(
-                    oldPosition: Player.PositionInfo,
-                    newPosition: Player.PositionInfo,
-                    reason: Int,
-                ) {
-                    log("position_discontinuity reason=$reason old_ms=${oldPosition.positionMs} " +
-                        "new_ms=${newPosition.positionMs}")
-                }
-
-                override fun onVideoSizeChanged(videoSize: VideoSize) {
-                    log("video_size ${videoSize.width}x${videoSize.height} " +
-                        "par=${videoSize.pixelWidthHeightRatio}")
-                }
-
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    log("is_playing $isPlaying")
-                }
-            })
-            p.addAnalyticsListener(object : AnalyticsListener {
-                override fun onDroppedVideoFrames(
-                    eventTime: AnalyticsListener.EventTime,
-                    droppedFrames: Int,
-                    elapsedMs: Long,
-                ) {
-                    log("dropped_frames count=$droppedFrames elapsed_ms=$elapsedMs position_ms=${p.currentPosition}")
-                }
-
-                // §hardware-decode diagnostics: the decisive evidence the exported
-                // player.log was missing — which decoder was actually chosen, its
-                // hardware/software classification, and how long init took. If a
-                // software decoder ever appears here it is a policy breach.
-                override fun onVideoDecoderInitialized(
-                    eventTime: AnalyticsListener.EventTime,
-                    decoderName: String,
-                    initializedTimestampMs: Long,
-                    initializationDurationMs: Long,
-                ) {
-                    lastVideoDecoderName = decoderName
-                    val cls = VideoCodecPolicy.classify(decoderName, null)
-                    log("video_decoder_init name=$decoderName class=$cls init_ms=$initializationDurationMs")
-                }
-
-                override fun onVideoInputFormatChanged(
-                    eventTime: AnalyticsListener.EventTime,
-                    format: Format,
-                    decoderReuseEvaluation: com.google.android.exoplayer2.decoder.DecoderReuseEvaluation?,
-                ) {
-                    log("video_input_format mime=${format.sampleMimeType} codecs=${format.codecs ?: "?"} " +
-                        "size=${format.width}x${format.height} fps=${format.frameRate} " +
-                        "bitrate=${format.bitrate}")
-                }
-            })
-            player = p
-            surfaceView?.let { p.setVideoSurfaceView(it) }
-            log("init done surface=SurfaceView")
-        }
-    }
-
-    fun attachSurface(view: SurfaceView) {
-        runOnMain {
-            surfaceView = view
-            player?.setVideoSurfaceView(view)
-        }
-    }
+    fun attachSurface(view: SurfaceView) = videoBackend.attachSurface(view)
 
     /** Attach the ImageView used to draw `type=="image"` playlist items (§6.1). */
     fun attachImageView(view: ImageView) {
@@ -219,70 +85,31 @@ class PlayerController(context: Context) {
     }
 
     fun detachSurface() {
-        runOnMain {
-            player?.clearVideoSurfaceView(surfaceView)
-            surfaceView = null
-            imageView = null
-        }
+        videoBackend.detachSurface()
+        runOnMain { imageView = null }
     }
 
     /** Load a file/URL, seek, and stay paused — primes for a synced start. */
     fun loadPaused(uri: String, seekMs: Long = 0, loop: Boolean = false) {
-        runOnMain {
-            val p = player ?: return@runOnMain
-            log("loadPaused uri=${describeUri(uri)} seekMs=$seekMs loop=$loop")
-            hideImage()
-            lastError = null
-            p.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            p.setMediaItem(ExoMediaItem.fromUri(uri))
-            p.playWhenReady = false
-            p.prepare()
-            if (seekMs > 0) p.seekTo(seekMs)
-        }
+        hideImage()
+        lastError = null
+        videoBackend.loadPaused(uri, seekMs, loop)
     }
 
     /** Load and start playing immediately (used for non-synced / advance). */
     fun loadAndPlay(uri: String, seekMs: Long = 0, loop: Boolean = false) {
-        runOnMain {
-            val p = player ?: return@runOnMain
-            log("loadAndPlay uri=${describeUri(uri)} seekMs=$seekMs loop=$loop")
-            hideImage()
-            lastError = null
-            p.repeatMode = if (loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-            p.setMediaItem(ExoMediaItem.fromUri(uri))
-            p.prepare()
-            if (seekMs > 0) p.seekTo(seekMs)
-            p.playWhenReady = true
-        }
+        hideImage()
+        lastError = null
+        videoBackend.loadAndPlay(uri, seekMs, loop)
     }
 
-    /**
-     * Terse, greppable description of the source being primed: whether it is a
-     * local cached file (and its on-disk size) or a remote URL. A remote URL
-     * here is itself a red flag — §11 black-screen root cause was falling back
-     * to a dead `item.url` when the cache path was wrongly discarded.
-     */
-    private fun describeUri(uri: String): String {
-        return try {
-            if (uri.startsWith("http://") || uri.startsWith("https://")) {
-                "REMOTE_URL($uri)"
-            } else {
-                val f = File(uri.removePrefix("file://"))
-                "local(${f.name},exists=${f.exists()},size=${if (f.exists()) f.length() else -1})"
-            }
-        } catch (e: Exception) {
-            "uri($uri)"
-        }
-    }
-
-    fun play() = runOnMain { player?.playWhenReady = true }
-    fun pause() = runOnMain { player?.playWhenReady = false }
+    fun play() = videoBackend.play()
+    fun pause() = videoBackend.pause()
 
     /**
-     * §6.1 image item: decode a local file (or file:// path) and show it on the
-     * ImageView above the video surface, pausing + hiding the video so a still
-     * actually appears (ExoPlayer can't render one). No-op if the ImageView
-     * isn't attached yet (no kiosk Activity foregrounded).
+     * §6.1 image item: decode a local file and show it on the ImageView above the
+     * video surface, pausing + hiding the video so a still actually appears (the
+     * video kernels can't render one). No-op if the ImageView isn't attached yet.
      */
     fun showImage(path: String) = runOnMain {
         val iv = imageView ?: return@runOnMain
@@ -297,7 +124,7 @@ class PlayerController(context: Context) {
             onPlayerError?.invoke("image-decode-failed")
             return@runOnMain
         }
-        player?.playWhenReady = false
+        videoBackend.pause()
         iv.setImageBitmap(bmp)
         iv.visibility = ImageView.VISIBLE
     }
@@ -310,55 +137,52 @@ class PlayerController(context: Context) {
         }
     }
 
-    fun stop() = runOnMain {
-        val p = player ?: return@runOnMain
-        p.stop()
-        p.clearMediaItems()
+    fun stop() {
+        videoBackend.stop()
         hideImage()
     }
 
-    fun seekTo(ms: Long) = runOnMain { player?.seekTo(ms) }
+    fun seekTo(ms: Long) = videoBackend.seekTo(ms)
 
-    /** ExoPlayer volume is 0.0–1.0; protocol volume is 0–100. */
-    fun setVolume(volume0to100: Int) = runOnMain {
-        player?.volume = (volume0to100.coerceIn(0, 100)) / 100f
-    }
+    /** ExoPlayer/MediaPlayer volume is 0.0–1.0; protocol volume is 0–100. */
+    fun setVolume(volume0to100: Int) =
+        videoBackend.setVolume(volume0to100.coerceIn(0, 100) / 100f)
 
-    fun setMuted(muted: Boolean) = runOnMain {
-        player?.volume = if (muted) 0f else (currentVolumePercent / 100f)
-    }
+    fun setMuted(muted: Boolean) =
+        videoBackend.setVolume(if (muted) 0f else currentVolumePercent / 100f)
 
     @Volatile var currentVolumePercent: Int = 80
 
-    /** Snapshot of position/duration/paused/volume — for §5 status. */
+    /** Snapshot of position/duration/paused/volume — for §5 status. Kept the same
+     *  shape the service already reads (positionMs/durationMs/error). */
     data class Snapshot(
         val positionMs: Long,
         val durationMs: Long,
         val isPlaying: Boolean,
-        val playbackState: Int,
+        val state: String,
         val hasMedia: Boolean,
         val error: String?,
     )
 
-    fun snapshot(): Snapshot = blockingOnMain {
-        val p = player
-        if (p == null) {
-            Snapshot(0, 0, false, Player.STATE_IDLE, false, lastError)
-        } else {
-            val dur = p.duration
-            Snapshot(
-                positionMs = p.currentPosition.coerceAtLeast(0),
-                durationMs = if (dur > 0) dur else 0,
-                isPlaying = p.isPlaying,
-                playbackState = p.playbackState,
-                hasMedia = p.currentMediaItem != null,
-                error = lastError,
-            )
-        }
+    fun snapshot(): Snapshot {
+        val s = videoBackend.snapshot()
+        return Snapshot(
+            positionMs = s.positionMs,
+            durationMs = s.durationMs,
+            isPlaying = s.isPlaying,
+            state = s.state,
+            hasMedia = s.hasMedia,
+            error = s.error ?: lastError,
+        )
     }
 
-    /** §6.4: the thumbnail already captured for [itemId], or null if none yet.
-     *  Reused during active playback so we never open a second decoder. */
+    /** §backend-ab: one greppable diagnostics line — active kernel + its metrics.
+     *  Fed into PlayerService's debug snapshot / status so old-vs-native is
+     *  comparable from a pulled log on the real box. */
+    fun backendDiagnostics(): String =
+        "backend=${backend.id} decoder=${lastVideoDecoderName ?: "n/a"}; ${metrics.summary()}"
+
+    /** §6.4: the thumbnail already captured for [itemId], or null if none yet. */
     fun cachedThumbnail(itemId: String): Pair<Int, ByteArray>? = thumbnailCache[itemId]
 
     /** Drop cached thumbnails for items no longer referenced (playlist change). */
@@ -368,11 +192,8 @@ class PlayerController(context: Context) {
 
     /**
      * Extract ONE frame from the local cached video and memoize it under [itemId].
-     * This is the only path that opens a MediaMetadataRetriever, and the caller
-     * ([PlayerService.thumbnailLoop] via [ThumbnailPolicy.decide]) must only invoke
-     * it while the video is NOT actively playing — so it never races ExoPlayer's
-     * live HiSilicon decoder. All work stays on Dispatchers.IO; the single-flight
-     * guard prevents overlap; the result is cached so playback reuses it.
+     * Decoder-independent (MediaMetadataRetriever), so identical for both kernels.
+     * The caller must only invoke it while the video is NOT actively playing.
      */
     suspend fun captureThumbnail(
         itemId: String,
@@ -435,30 +256,15 @@ class PlayerController(context: Context) {
         }
     }
 
-
-    fun release() = runOnMain {
-        player?.release()
-        player = null
-        surfaceView = null
-        imageView = null
+    fun release() {
+        videoBackend.release()
+        runOnMain { imageView = null }
     }
 
-    // --- threading helpers -------------------------------------------
+    private fun log(msg: String) { logSink?.invoke(msg) }
+
     private fun runOnMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block()
         else mainHandler.post(block)
-    }
-
-    private fun <T> blockingOnMain(block: () -> T): T {
-        if (Looper.myLooper() == Looper.getMainLooper()) return block()
-        val latch = java.util.concurrent.CountDownLatch(1)
-        @Suppress("UNCHECKED_CAST")
-        var result: Any? = null
-        mainHandler.post {
-            try { result = block() } finally { latch.countDown() }
-        }
-        latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
-        @Suppress("UNCHECKED_CAST")
-        return result as T
     }
 }

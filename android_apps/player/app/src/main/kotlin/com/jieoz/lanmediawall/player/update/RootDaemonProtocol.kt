@@ -9,9 +9,16 @@ package com.jieoz.lanmediawall.player.update
  *
  * Contract (must stay in lockstep with lmw_root_daemon.c):
  *   socket : abstract namespace, name [SOCKET_NAME]
- *   request: one line — "PROBE" | "REBOOT" | "INSTALL <abs-path>"
+ *   request: one line — "PROBE" | "RESTART_APP" | "REBOOT" | "INSTALL <abs-path>"
  *   probe  : ready iff response begins "ready " AND contains "daemon_euid=0"
  *            (proves the peer we reached is genuinely root, not a spoof)
+ *
+ * §restart-semantics — RESTART_APP vs REBOOT are DIFFERENT actions and must not be
+ * conflated: RESTART_APP force-stops + relaunches ONLY the Player app (the normal
+ * controller "restart" — preserves Wi-Fi + uptime). REBOOT restarts the whole
+ * device (a separate HIGH-RISK action: a warm reboot loses Wi-Fi on QZX_C1 until a
+ * cold power cycle). INSTALL now activates the new APK via `pm install -r` + an
+ * app restart, never a whole-device reboot.
  */
 object RootDaemonProtocol {
     /** Abstract socket name; matches LMW_SOCKET_NAME in the daemon. */
@@ -24,7 +31,14 @@ object RootDaemonProtocol {
             "com.jieoz.lanmediawall.player-update.apk"
 
     fun probeRequest(): String = "PROBE"
+
+    /** Normal restart: force-stop + relaunch ONLY the Player app (app-only, never
+     *  a whole-device reboot). See §restart-semantics. */
+    fun restartAppRequest(): String = "RESTART_APP"
+
+    /** Whole-device reboot — the separate HIGH-RISK action only. */
     fun rebootRequest(): String = "REBOOT"
+
     fun installRequest(absPath: String): String = "INSTALL $absPath"
 
     data class Probe(val ready: Boolean, val detail: String)

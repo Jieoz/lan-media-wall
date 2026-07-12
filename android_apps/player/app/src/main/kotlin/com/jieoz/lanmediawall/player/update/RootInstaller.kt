@@ -81,10 +81,31 @@ object RootInstaller {
     }
 
     /**
-     * Install [apk] for package [pkg], then reboot (the daemon does both). The
-     * APK MUST already be at the canonical path — [AppUpdater] downloads it there.
-     * Returns false (no partial state) if the daemon is unreachable/not-root or
-     * rejects the request.
+     * §restart-semantics: ask the daemon to force-stop + relaunch ONLY the Player
+     * app (the normal controller "restart" — preserves Wi-Fi + uptime, NEVER a
+     * whole-device reboot). Returns false if the daemon is unreachable/not-root or
+     * rejects the request; the caller then reports failure and does NOT fall back
+     * to reboot (a normal restart must never warm-reboot on QZX_C1).
+     */
+    fun restartApp(): Boolean {
+        val probe = probe(force = true)
+        if (!probe.ready) {
+            Log.e(TAG, "root daemon unavailable: ${probe.detail}")
+            return false
+        }
+        val resp = request(RootDaemonProtocol.restartAppRequest())
+        if (resp == null || !RootDaemonProtocol.isOk(resp)) {
+            Log.e(TAG, "daemon restart_app failed: ${resp ?: "unreachable"}")
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Install [apk] for package [pkg]: the daemon activates it via `pm install -r`
+     * then restarts ONLY the app (no whole-device reboot). The APK MUST already be
+     * at the canonical path — [AppUpdater] downloads it there. Returns false (no
+     * partial state) if the daemon is unreachable/not-root or rejects the request.
      */
     fun install(pkg: String, apk: File): Boolean {
         if (pkg != "com.jieoz.lanmediawall.player") {
@@ -109,9 +130,11 @@ object RootInstaller {
             Log.e(TAG, "daemon install failed: ${resp ?: "unreachable"}")
             return false
         }
-        return true // reboot dispatched by the daemon
+        return true // pm-install + app-restart dispatched by the daemon (no reboot)
     }
 
+    /** Whole-device reboot — the separate HIGH-RISK action, only for the explicit
+     *  `reboot` command. NOT used by normal restart or update (§restart-semantics). */
     fun rebootDevice(): Boolean {
         val probe = probe(force = true)
         if (!probe.ready) {

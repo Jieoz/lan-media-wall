@@ -1,7 +1,23 @@
-// lmw_root_daemon.c — root-started local daemon that performs the two privileged
+// lmw_root_daemon.c — root-started local daemon that performs the privileged
 // operations the media-wall player needs on QZX_C1 / YunOS 4.4.2 boxes:
-//   * INSTALL a downloaded+verified APK into /data/app and reboot (self-update)
-//   * REBOOT the whole device (controller-triggered restart)
+//   * RESTART_APP: force-stop + relaunch ONLY the Player app (the normal
+//     controller "restart" — preserves Wi-Fi + device uptime; see WHY below)
+//   * INSTALL a downloaded+verified APK via the PackageManager (`pm install -r`)
+//     then RESTART_APP so the new version is live WITHOUT a whole-device reboot
+//     (self-update). See WHY PM-INSTALL (not /data/app overwrite) below.
+//   * REBOOT the whole device — a separate HIGH-RISK advanced action only, never
+//     the normal restart (on QZX_C1 a warm reboot loses Wi-Fi until a cold power
+//     cycle: the SDIO WCN card fails to re-init — see §restart-semantics)
+//
+// WHY APP-ONLY RESTART (not whole-device reboot) IS THE NORMAL PATH:
+//   Field ground truth on QZX_C1: a warm reboot leaves the SDIO Wi-Fi card
+//   un-init'd ("mmc1: error -110 whilst initialising SDIO card"); wlan0 never
+//   appears and only a COLD power cycle recovers it. So rebooting to restart the
+//   app strands the box off-network. Restarting just the app preserves the live
+//   Wi-Fi + uptime. The old app-restart-via-AlarmManager was unreliable (process
+//   exit killed the pending relaunch), which is exactly why this runs in the
+//   daemon: the daemon is a SEPARATE root process (not the app's uid / process
+//   group), so `am force-stop`-ing the caller cannot stop the relaunch it forked.
 //
 // WHY A DAEMON (not the old setuid helper):
 //   These boxes expose root to adb, but zygote sets no_new_privs, so a setuid
@@ -18,15 +34,33 @@
 //   * Every connection is authenticated with SO_PEERCRED: the peer uid MUST
 //     equal the configured Player uid read from a ROOT-OWNED uid file
 //     (LMW_UID_FILE). A uid supplied in the request is never trusted.
-//   * Protocol is a single line: "PROBE" | "REBOOT" | "INSTALL <abs-path>".
-//     Extra args, unknown verbs, and oversized input are rejected.
+//   * Protocol is a single line: "PROBE" | "RESTART_APP" | "REBOOT" |
+//     "INSTALL <abs-path>". Extra args, unknown verbs, oversized input rejected.
+//   * RESTART_APP and REBOOT take NO argument — the app package/component is a
+//     compile-time constant (LMW_PKG / LMW_COMPONENT), never request-supplied, so
+//     there is no shell-injection / arbitrary-launch surface. RESTART_APP forks a
+//     detached root worker that force-stops then relaunches only LMW_COMPONENT.
 //   * INSTALL only accepts EXACTLY the one canonical cache/update path
 //     (LMW_CANONICAL_APK). That single-string policy makes traversal, wrong
 //     directory and wrong filename all rejections by construction; the open is
 //     additionally O_NOFOLLOW + regular-file + non-empty checked at runtime.
-//   * INSTALL copies atomically (temp + rename) to LMW_DST, chown system:system,
-//     chmod 0644, fsync + sync, then reboots so the boot package scanner adopts
-//     it (the proven path on these boxes; PackageInstaller is broken here).
+//   * INSTALL copies the verified APK to a WORLD-READABLE stage (LMW_STAGED_APK,
+//     0644 so system_server/installd uid 1000 can read it — the app's own
+//     cache/update dir is 0700 app-private and PM cannot read it), then runs
+//     `pm install -r <stage>` and, only on a "Success" reply, RESTART_APP. No
+//     whole-device reboot (see WHY PM-INSTALL below).
+//
+// WHY PM-INSTALL (not the old /data/app overwrite + whole-device reboot):
+//   The old path copied the APK straight into /data/app/<pkg>-1.apk and rebooted
+//   so the boot package scanner would adopt it. But (a) a warm reboot bricks Wi-Fi
+//   on QZX_C1 (SDIO -110, see §restart-semantics) and (b) overwriting the file
+//   without going through PackageManager leaves PM's recorded versionCode stale
+//   until a scan — the running dex may be new while the platform still reports the
+//   OLD version, which is NOT a verified update contract. `pm install -r` is the
+//   platform-blessed atomic activation: it re-dexopts, swaps, refreshes the
+//   recorded versionCode, and force-stops the app — no device reboot needed. If pm
+//   fails the daemon reports the failure and does NOT reboot (a broken update must
+//   never strand the box off-network). Real-device acceptance: scripts/qzx_verify_update.sh.
 //
 // Build (cloud CI, armv7, inside the NDK) — FULLY STATIC, NON-PIE:
 //   "$NDK/.../armv7a-linux-androideabi21-clang" -Os -static -fno-PIE -s
@@ -68,10 +102,18 @@
 #include <unistd.h>
 
 #define LMW_PKG           "com.jieoz.lanmediawall.player"
+// Explicit launch component for RESTART_APP. Hardcoded (not request-supplied) so
+// the daemon can only ever relaunch THIS one allowlisted activity — no arbitrary
+// component/shell surface. Matches AndroidManifest .MainActivity (HOME/LAUNCHER).
+#define LMW_COMPONENT     "com.jieoz.lanmediawall.player/.MainActivity"
 #define LMW_CACHE_PREFIX  "/data/data/com.jieoz.lanmediawall.player/cache/update/"
 // ONE fixed canonical update filename below cache/update (matches AppUpdater).
 #define LMW_CANONICAL_APK LMW_CACHE_PREFIX "com.jieoz.lanmediawall.player-update.apk"
-#define LMW_DST           "/data/app/com.jieoz.lanmediawall.player-1.apk"
+// World-readable staging path for `pm install -r`. The verified APK is copied
+// here (0644) because system_server/installd (uid 1000) cannot read the app's
+// 0700-private cache/update dir. NOT /data/app — we no longer hand-place the APK
+// there; PackageManager owns activation now.
+#define LMW_STAGED_APK    "/data/local/tmp/lmw_update_staged.apk"
 // Root-owned file holding the single authorized Player uid (written by setup).
 #define LMW_UID_FILE      "/data/local/tmp/lmw_root_daemon.uid"
 // Abstract socket name (leading NUL added at bind time). Kotlin connects with
@@ -84,8 +126,9 @@
 typedef enum {
     CMD_INVALID = 0,
     CMD_PROBE,
-    CMD_REBOOT,
-    CMD_INSTALL,
+    CMD_REBOOT,       // whole-device reboot (HIGH-RISK advanced action only)
+    CMD_INSTALL,      // stage APK then RESTART_APP (no whole-device reboot)
+    CMD_RESTART_APP,  // force-stop + relaunch ONLY the Player app (normal restart)
 } lmw_cmd;
 
 typedef struct {
@@ -146,6 +189,7 @@ static lmw_cmd lmw_parse_request(const char *line_in, lmw_request *out) {
 
     if (lmw_str_eq(line, "PROBE")) return CMD_PROBE;
     if (lmw_str_eq(line, "REBOOT")) return CMD_REBOOT;
+    if (lmw_str_eq(line, "RESTART_APP")) return CMD_RESTART_APP;
 
     const char *prefix = "INSTALL ";
     size_t plen = strlen(prefix);
@@ -193,6 +237,7 @@ static int lmw_read_allowed_uid(const char *path) {
 
 #include <signal.h>
 #include <sys/reboot.h>
+#include <sys/wait.h>
 
 static int lmw_copy_regular(const char *src, const char *dst) {
     // O_NOFOLLOW: refuse if src is a symlink (defense against a swapped path).
@@ -232,23 +277,109 @@ static void lmw_do_reboot(void) {
     reboot(RB_AUTOBOOT);
 }
 
-// Perform INSTALL: validate + atomic copy + chown/chmod + reboot. On any failure
-// writes a terse reason to the client and returns without rebooting.
+// Force-stop + relaunch ONLY the Player app (the normal controller restart).
+//
+// Runs in a DETACHED root grandchild so it survives the very force-stop it issues
+// against the caller: the caller (the Player app, uid 10020) is what triggers the
+// restart, and `am force-stop LMW_PKG` kills that app's process — but this worker
+// is a root process in its own session, NOT in the app's uid/process-group, so it
+// keeps running and completes the relaunch. This is the whole reason the restart
+// lives in the daemon rather than the app (the app cannot reliably relaunch after
+// killing itself; AlarmManager self-relaunch was the unreliable old path).
+//
+// The command string is a COMPILE-TIME CONSTANT (LMW_PKG / LMW_COMPONENT) — no
+// byte of it comes from the request (RESTART_APP takes no arg), so `sh -c` here is
+// not an arbitrary-shell surface: the daemon can only ever force-stop + relaunch
+// this one allowlisted component. `am` is invoked via sh so it inherits the
+// framework env (BOOTCLASSPATH etc.) the toolbox `am` wrapper needs.
+static void lmw_restart_app_worker(void) {
+    // small settle so the daemon's "ok ... restarting_app" reply flushes to the
+    // caller BEFORE we force-stop it (the reply socket is the caller's process).
+    usleep(300 * 1000);
+    sync();
+    // force-stop then relaunch. `am start` on a force-stopped package still works
+    // with an explicit component; the MainActivity re-starts PlayerService.
+    execl("/system/bin/sh", "sh", "-c",
+          "am force-stop " LMW_PKG " ; sleep 1 ; "
+          "am start -n " LMW_COMPONENT
+          " -a android.intent.action.MAIN -c android.intent.category.HOME"
+          " -f 0x10200000",  // NEW_TASK | RESET_TASK_IF_NEEDED: clean relaunch
+          (char *)NULL);
+    // If sh is missing the app just stays stopped; the caller already got its ack
+    // and this worker exits. (No reboot fallback — normal restart must not reboot.)
+    _exit(0);
+}
+
+// Fork a detached grandchild to run the restart worker, so the daemon neither
+// blocks nor accumulates a zombie (double-fork → grandchild reparents to init).
+static void lmw_restart_app(void) {
+    pid_t pid = fork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        setsid();               // leave the daemon's session/process group
+        pid_t g = fork();
+        if (g < 0) _exit(1);
+        if (g > 0) _exit(0);    // intermediate child exits → grandchild to init
+        lmw_restart_app_worker();
+        _exit(0);
+    }
+    waitpid(pid, NULL, 0);      // reap the intermediate child immediately
+}
+
+// Run `pm install -r <stage>` and return 1 iff PackageManager reports success.
+// On 4.4 `pm` prints "Success" / "Failure [reason]" to stdout and its exit code
+// is unreliable, so we scan the captured output for "Success" (the authoritative
+// signal). The command is built from COMPILE-TIME CONSTANTS only (LMW_STAGED_APK
+// is not request-derived — the request path is validated == LMW_CANONICAL_APK and
+// we copy THAT to our own fixed stage), so this popen carries no external bytes.
+// `pm` is invoked via the shell so it inherits init's framework env (BOOTCLASSPATH
+// etc.) the toolbox `pm` wrapper needs.
+static int lmw_pm_install(char *out, size_t outsz) {
+    out[0] = '\0';
+    FILE *p = popen("pm install -r " LMW_STAGED_APK " 2>&1", "r");
+    if (!p) return 0;
+    size_t used = 0;
+    char buf[256];
+    while (fgets(buf, sizeof(buf), p) != NULL) {
+        size_t len = strlen(buf);
+        if (used + len < outsz - 1) { memcpy(out + used, buf, len); used += len; }
+    }
+    out[used] = '\0';
+    pclose(p);
+    // "Success" is the only affirmative PM reply; anything else (incl. "Failure",
+    // empty output when pm is missing, or INSTALL_FAILED_*) is treated as failure.
+    return strstr(out, "Success") != NULL ? 1 : 0;
+}
+
+// Collapse pm's multi-line output to a single greppable token for the reply line.
+static void lmw_pm_summary(const char *out, char *summary, size_t sz) {
+    const char *f = strstr(out, "Failure");
+    const char *src = f ? f : out;
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j < sz - 1; i++) {
+        char c = src[i];
+        if (c == '\n' || c == '\r') break;
+        summary[j++] = c;
+    }
+    summary[j] = '\0';
+    if (j == 0) snprintf(summary, sz, "no-pm-output");
+}
+
+// Perform INSTALL: validate + copy to a world-readable stage + `pm install -r` +
+// (on success) RESTART_APP. NO whole-device reboot. On any failure writes a terse
+// reason to the client and returns without installing or rebooting.
 static void lmw_handle_install(int fd, const char *path) {
     lmw_path_status ps = lmw_install_path_status(path);
     if (ps != PATH_OK) {
         dprintf(fd, "error install path rejected code=%d\n", (int)ps);
         return;
     }
-    const char *tmp = LMW_DST ".tmp";
+    // Copy the verified canonical APK to the world-readable stage (0644) so
+    // system_server/installd can read it during `pm install`.
+    const char *tmp = LMW_STAGED_APK ".tmp";
     unlink(tmp);
     if (lmw_copy_regular(path, tmp) != 0) {
         dprintf(fd, "error install copy failed errno=%d\n", errno);
-        return;
-    }
-    if (chown(tmp, 1000, 1000) != 0) { // system:system
-        dprintf(fd, "error install chown failed errno=%d\n", errno);
-        unlink(tmp);
         return;
     }
     if (chmod(tmp, 0644) != 0) {
@@ -256,16 +387,28 @@ static void lmw_handle_install(int fd, const char *path) {
         unlink(tmp);
         return;
     }
-    if (rename(tmp, LMW_DST) != 0) {
+    if (rename(tmp, LMW_STAGED_APK) != 0) {
         dprintf(fd, "error install rename failed errno=%d\n", errno);
         unlink(tmp);
         return;
     }
     sync();
-    dprintf(fd, "ok install staged dst=%s rebooting\n", LMW_DST);
-    // Give the socket a moment to flush before the process is replaced.
+    // Atomic activation via PackageManager (refreshes the recorded versionCode and
+    // force-stops the app). This blocks for the install; updates are rare so a few
+    // seconds on the daemon is acceptable and lets us report the real outcome.
+    char pmout[1024];
+    int ok = lmw_pm_install(pmout, sizeof(pmout));
+    unlink(LMW_STAGED_APK); // never leave a world-readable APK lying around
+    if (!ok) {
+        char summary[128];
+        lmw_pm_summary(pmout, summary, sizeof(summary));
+        dprintf(fd, "error install pm_failed detail=%s\n", summary);
+        return; // NO reboot fallback — a failed update must not strand the box.
+    }
+    dprintf(fd, "ok install activated via=pm_install restarting_app\n");
     fsync(fd);
-    lmw_do_reboot();
+    // Relaunch the freshly-installed app (pm force-stopped it). App-only; no reboot.
+    lmw_restart_app();
 }
 
 static int lmw_get_peer_uid(int fd) {
@@ -320,6 +463,15 @@ static void lmw_serve(int listen_fd) {
                 dprintf(fd, "ready daemon_euid=%d peer_uid=%d allowed_uid=%d pkg=%s\n",
                         (int)geteuid(), peer, allowed, LMW_PKG);
                 close(fd);
+                break;
+            case CMD_RESTART_APP:
+                // Normal controller restart: app-only, preserves Wi-Fi + uptime.
+                // Reply first, then fork the detached worker that force-stops +
+                // relaunches ONLY the allowlisted component (never reboots).
+                dprintf(fd, "ok restart_app restarting_app\n");
+                fsync(fd);
+                close(fd);
+                lmw_restart_app();
                 break;
             case CMD_REBOOT:
                 dprintf(fd, "ok reboot rebooting\n");

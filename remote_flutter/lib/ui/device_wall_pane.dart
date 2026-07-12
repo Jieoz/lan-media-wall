@@ -726,15 +726,26 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         }
                       },
                     ),
-                    // §9.4 重启整台设备,二次确认。
+                    // §9.4 只重启播放 App(安全,保住 Wi-Fi)。无需重启整机。
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.orange),
                       icon: const Icon(Icons.restart_alt),
-                      label: const Text('重启设备'),
+                      label: const Text('重启播放 App'),
                       onPressed: () {
                         Navigator.pop(ctx);
-                        _confirmRestartDevice(context, state, device);
+                        _confirmRestartApp(context, state, device);
+                      },
+                    ),
+                    // §10 整机重启——高危,会中断 Wi-Fi(QZX_C1 需冷启动恢复)。强二次确认。
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red),
+                      icon: const Icon(Icons.power_settings_new),
+                      label: const Text('重启整机(高危)'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _confirmRebootDevice(context, state, device);
                       },
                     ),
                     OutlinedButton.icon(
@@ -899,17 +910,18 @@ Future<void> _showCopyableDebugSnapshot(
   );
 }
 
-/// §9.4 重启设备二次确认:重启的是整台盒子,不是只重启播放软件。
-Future<void> _confirmRestartDevice(
+/// §9.4 只重启播放 App(安全)。经 root 守护进程 RESTART_APP:只 force-stop+拉起
+/// 播放 App,保住 Wi-Fi 与整机 uptime,不整机重启。
+Future<void> _confirmRestartApp(
     BuildContext context, WallState state, WallDevice device) async {
   final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: Text('重启「$name」这台设备?'),
+      title: Text('重启「$name」的播放 App?'),
       content: const Text(
-        '将重启整台盒子。当前播放会中断,开机后播放端会通过开机自启回到媒体墙,'
-        '并按 last_task 尝试恢复上一个任务。',
+        '只重启播放软件(不整机重启),Wi-Fi 与开机时长保持不变。当前播放会短暂中断,'
+        '随后按 last_task 恢复上一个任务。',
       ),
       actions: [
         TextButton(
@@ -918,7 +930,7 @@ Future<void> _confirmRestartDevice(
         FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.orange),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('重启设备')),
+            child: const Text('重启 App')),
       ],
     ),
   );
@@ -928,7 +940,50 @@ Future<void> _confirmRestartDevice(
     if (context.mounted) {
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text('已下发设备重启指令给「$name」')));
+        ..showSnackBar(SnackBar(content: Text('已下发 App 重启指令给「$name」')));
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text('重启失败: $e')));
+    }
+  }
+}
+
+/// §10 整机重启二次确认——高危。QZX_C1 warm reboot 会导致 SDIO Wi-Fi 卡初始化超时
+/// (-110)、wlan0 消失且只有冷启动能恢复,故与 app-only 的「重启播放 App」严格区分,
+/// 并明确警示网络中断风险。日常重启请优先用「重启播放 App」。
+Future<void> _confirmRebootDevice(
+    BuildContext context, WallState state, WallDevice device) async {
+  final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('重启整台「$name」?(高危)'),
+      content: const Text(
+        '将重启整台盒子。⚠️ 部分 QZX_C1 盒子 warm reboot 后 Wi-Fi 无法自动恢复,'
+        '可能需要现场断电冷启动才能重新联网。日常重启请改用「重启播放 App」。'
+        '确认要整机重启吗?',
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消')),
+        FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确认整机重启')),
+      ],
+    ),
+  );
+  if (ok != true) return;
+  try {
+    state.reboot(deviceId: device.deviceId);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text('已下发整机重启指令给「$name」')));
     }
   } catch (e) {
     if (context.mounted) {

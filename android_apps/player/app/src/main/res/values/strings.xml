@@ -19,6 +19,12 @@
     <string name="label_psk">Preshared key (PSK)</string>
     <string name="hint_psk">Leave empty for open mode (no key)</string>
     <string name="label_always_thumbs">Always send thumbnails</string>
+    <!-- §backend-ab: video playback kernel selection. -->
+    <string name="label_video_backend">Video backend (A/B)</string>
+    <string name="hint_video_backend">Which player kernel decodes video. Auto keeps the stable default (ExoPlayer). Try MediaPlayer if this box drops frames or black-screens. Takes effect after Save.</string>
+    <string name="backend_auto">Auto (recommended — ExoPlayer)</string>
+    <string name="backend_exoplayer">ExoPlayer (Media3, hardware-only)</string>
+    <string name="backend_mediaplayer">Native MediaPlayer (system decoder)</string>
     <string name="action_save">Save and start</string>
     <string name="action_settings">Settings</string>
     <string name="err_broker_port">Broker port must be 1–65535</string>

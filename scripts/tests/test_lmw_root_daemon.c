@@ -44,6 +44,14 @@ static void test_parse_reboot(void) {
     CHECK(lmw_parse_request("REBOOT now", &r) == CMD_INVALID, "REBOOT rejects extra args");
 }
 
+static void test_parse_restart_app(void) {
+    lmw_request r;
+    CHECK(lmw_parse_request("RESTART_APP", &r) == CMD_RESTART_APP, "RESTART_APP parses");
+    CHECK(lmw_parse_request("RESTART_APP\n", &r) == CMD_RESTART_APP, "RESTART_APP newline parses");
+    CHECK(lmw_parse_request("RESTART_APP now", &r) == CMD_INVALID, "RESTART_APP rejects extra args");
+    CHECK(lmw_parse_request("restart_app", &r) == CMD_INVALID, "lowercase restart_app rejected");
+}
+
 static void test_parse_install(void) {
     lmw_request r;
     CHECK(lmw_parse_request("INSTALL " LMW_CANONICAL_APK, &r) == CMD_INSTALL, "INSTALL canonical parses");
@@ -86,6 +94,7 @@ static void test_command_requires_auth(void) {
     // player uid. REBOOT/INSTALL perform privileged actions and MUST require the
     // authenticated player uid.
     CHECK(lmw_command_requires_auth(CMD_PROBE) == 0, "PROBE does not require peer auth");
+    CHECK(lmw_command_requires_auth(CMD_RESTART_APP) == 1, "RESTART_APP requires peer auth");
     CHECK(lmw_command_requires_auth(CMD_REBOOT) == 1, "REBOOT requires peer auth");
     CHECK(lmw_command_requires_auth(CMD_INSTALL) == 1, "INSTALL requires peer auth");
     CHECK(lmw_command_requires_auth(CMD_INVALID) == 1, "invalid command requires auth (fail closed)");
@@ -105,6 +114,7 @@ static void test_read_allowed_uid(void) {
 int main(void) {
     test_parse_probe();
     test_parse_reboot();
+    test_parse_restart_app();
     test_parse_install();
     test_install_path_policy();
     test_peer_authorized();

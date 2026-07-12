@@ -495,6 +495,10 @@ class PlayerService : Service() {
             put("cpu", 0)
             putMemory(this)
             readTempC()?.let { put("temp_c", it) }
+            // §backend-ab: which video kernel is live (+ why), so an operator/remote
+            // dashboard can see old-vs-native at a glance. Additive field (§5.1
+            // forward-compat: controllers ignore unknown fields).
+            MainActivity.backendDecisionLabel?.let { put("video_backend", it) }
             put("errors", jsonStrArr(errors.toList().takeLast(5)))
         }
         link?.send("status", payload)
@@ -568,6 +572,7 @@ class PlayerService : Service() {
             "debug_snapshot" -> hDebugSnapshot(payload)
             "download_logs" -> hDownloadLogs(payload)
             "restart" -> { hRestart(payload, env); return }
+            "reboot" -> { hReboot(payload, env); return }
             "set_volume" -> hSetVolume(payload)
             "set_mute" -> hSetMute(payload)
             "set_audio_master" -> hSetAudioMaster(payload)
@@ -866,24 +871,43 @@ class PlayerService : Service() {
         advance(delta)
     }
 
-    /** §9.4 restart：重启整台盒子，不再尝试“只重启播放软件”。
+    /** §9.4 restart：只重启播放 App，绝不整机 reboot（§restart-semantics）。
      *
-     * 旧的软件重启依赖 AlarmManager 再拉起进程；QZX/YunOS 真机上会出现进程退出后
-     * alarm/自启不可靠，结果播放端彻底没起来。整机 reboot 才会走已经验证过的
-     * BootReceiver + HOME/kiosk provision 链路。若 helper/su 都失败，只记录错误，绝不
-     * 杀掉当前播放端进程。
+     * QZX_C1 上 warm reboot 会丢 Wi-Fi(8822CS SDIO -110,冷启动才恢复),所以普通
+     * restart 必须只重启 App。改由 root 守护进程的 RESTART_APP 执行:守护进程是独立
+     * root 进程(不在 App 的 uid/进程组),force-stop 掉调用方 App 后仍能把它重新拉起
+     * ——这正是旧的 AlarmManager 自拉起不可靠(进程退出杀掉待发 alarm)而改走守护进程的
+     * 原因。守护进程不可达/失败时只记录错误并回 ack ok=false,**绝不回退到整机 reboot**。
+     * 整机重启是单独的高危 `reboot` 命令(见 [hReboot])。
      */
     private fun hRestart(payload: Json.Obj, env: Envelope.Parsed) {
         if (!targetsMe(payload)) return
         scope.launch {
-            val ok = RootInstaller.rebootDevice()
-            if (!ok) {
-                errors.add("restart:reboot-failed")
-            }
+            val ok = RootInstaller.restartApp()
+            if (!ok) errors.add("restart:app-restart-failed")
             link?.send("ack", jsonObj {
                 put("ack_of", env.msgId)
                 put("ok", ok)
-                put("err", if (ok) "" else "reboot failed: helper and su unavailable")
+                // Never claims a reboot; a failed app-restart does NOT reboot.
+                put("err", if (ok) "" else "app restart failed: root daemon unavailable")
+            })
+        }
+    }
+
+    /** §10 reboot：整机重启——单独的高危动作(不是普通 restart)。
+     *
+     * QZX_C1 warm reboot 会导致 SDIO Wi-Fi 卡初始化超时(-110)、wlan0 消失且只有冷启动
+     * 能恢复,所以这条命令由控制端二次确认后才下发,与 app-only 的 `restart` 严格区分。
+     */
+    private fun hReboot(payload: Json.Obj, env: Envelope.Parsed) {
+        if (!targetsMe(payload)) return
+        scope.launch {
+            val ok = RootInstaller.rebootDevice()
+            if (!ok) errors.add("reboot:failed")
+            link?.send("ack", jsonObj {
+                put("ack_of", env.msgId)
+                put("ok", ok)
+                put("err", if (ok) "" else "reboot failed: root daemon unavailable")
             })
         }
     }
@@ -939,6 +963,7 @@ class PlayerService : Service() {
             append("; play="); append(debugPlayState())
             append("; idx="); append(debugIndex())
             append("; item="); append(item ?: "none")
+            append("; backend="); append(debugBackend())
             append("; vdec="); append(debugVideoDecoder())
             append("; ctrl="); append(debugControllerPresent())
             append("; audio_master="); append(debugAudioMaster())
@@ -974,6 +999,8 @@ class PlayerService : Service() {
             line("ip=$deviceIp")
             line("transport=${link?.javaClass?.simpleName ?: "none"} connected=${link?.isConnected ?: false}")
             line("play_state=${debugPlayState()} index=${debugIndex()} controller_present=${debugControllerPresent()}")
+            line("video_backend=${debugBackend()}")
+            line("backend_metrics=${debugBackendMetrics()}")
             line("video_decoder=${debugVideoDecoder()}")
             line("current_item=${currentItemForDebug() ?: "none"}")
             line("cache=${debugCacheSummary()}")
@@ -1164,9 +1191,9 @@ class PlayerService : Service() {
      * `open`/unsigned box refuses; (2) target versionCode MUST be strictly
      * newer (no downgrade/replay); (3) url + 64-hex sha256 required and the
      * downloaded bytes are re-verified before install; (4) the Android platform
-     * enforces same-signer at boot-scan time. Only after all pass do we root-
-     * install via /data/app + reboot (the only path that works on these boxes).
-     * Runs off-thread; reports the outcome back over the link.
+     * enforces same-signer at PackageManager install time. Only after all pass do
+     * we root-install via the daemon (`pm install -r` + app restart — NO
+     * whole-device reboot; §restart-semantics). Runs off-thread; reports back.
      */
     private fun hUpdateApp(payload: Json.Obj, env: Envelope.Parsed) {
         if (!targetsMe(payload)) return
@@ -1193,7 +1220,8 @@ class PlayerService : Service() {
             val updater = com.jieoz.lanmediawall.player.update.AppUpdater(cacheDir)
             when (val r = updater.downloadVerifyInstall(packageName, url!!, sha!!)) {
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Installing ->
-                    reportUpdate("installing", "reboot") // box reboots now
+                    // pm-activated; app restarts (no whole-device reboot).
+                    reportUpdate("installing", "app-restart")
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Failed -> {
                     reportUpdate("failed", r.reason)
                     pushError("update:${r.reason}")
@@ -1310,6 +1338,12 @@ class PlayerService : Service() {
     fun debugIndex(): Int = index
     fun debugControllerPresent(): Boolean = controllerPresent
     fun debugAudioMaster(): Boolean = audioMaster
+    /** §backend-ab: the active video kernel + selection source (e.g.
+     *  `mediaplayer(override)`), for the settings screen + diagnostic exports. */
+    fun debugBackend(): String = MainActivity.backendDecisionLabel ?: "none"
+    /** §backend-ab: the active kernel's A/B metrics line, or a placeholder when
+     *  no controller is foregrounded. */
+    fun debugBackendMetrics(): String = controllerRef?.metrics?.summary() ?: "no-controller"
     /** §hardware-decode: selected video decoder + hw/sw classification for export. */
     fun debugVideoDecoder(): String {
         val name = controllerRef?.lastVideoDecoderName ?: return "none-initialized"
@@ -1430,7 +1464,7 @@ class PlayerService : Service() {
         /** §6 孤儿回收:保留最近 N 条 playlist 的媒体(+ last_task),其余视为孤儿。 */
         private const val KEEP_RECENT_PLAYLISTS = 3
         private val ACKABLE = setOf(
-            "prepare", "pause", "resume", "stop", "next", "prev", "restart",
+            "prepare", "pause", "resume", "stop", "next", "prev", "restart", "reboot",
             "set_volume", "set_mute", "set_audio_master", "assign_group",
             "configure_device", "cache_prefetch", "playlist", "update_app",
             "debug_snapshot", "download_logs",

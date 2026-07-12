@@ -184,11 +184,15 @@ jobs:
           cp scripts/lmw_setup.bat scripts/lmw_setup.sh \
              scripts/lmw_restore.bat scripts/lmw_restore.sh \
              scripts/lmw_audit.bat scripts/lmw_audit.sh \
+             scripts/qzx_ab_backend.bat scripts/qzx_ab_backend.sh \
+             scripts/qzx_verify_update.bat scripts/qzx_verify_update.sh \
              scripts/QZX-KIOSK-TOOLS.md scripts/lmw_root_daemon dist_tools/
           (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
             lmw_setup.bat lmw_setup.sh \
             lmw_restore.bat lmw_restore.sh \
             lmw_audit.bat lmw_audit.sh \
+            qzx_ab_backend.bat qzx_ab_backend.sh \
+            qzx_verify_update.bat qzx_verify_update.sh \
             QZX-KIOSK-TOOLS.md lmw_root_daemon)
           ls -la LANMediaWall-QZX-Update-Tools.zip
 

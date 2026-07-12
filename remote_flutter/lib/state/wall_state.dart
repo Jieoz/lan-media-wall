@@ -841,9 +841,14 @@ class WallState extends ChangeNotifier {
       'prev', Commands.prev(groupId: groupId, deviceId: deviceId),
       groupId: groupId, deviceId: deviceId);
 
-  /// restart(§9.4)：重启被控端整台设备。单台或整组。
+  /// restart(§9.4)：只重启被控端播放 App(保住 Wi-Fi,不整机重启)。单台或整组。
   void restart({String? groupId, String? deviceId}) => _send(
       'restart', Commands.restart(groupId: groupId, deviceId: deviceId),
+      groupId: groupId, deviceId: deviceId);
+
+  /// reboot(§10)：整机重启——高危,会中断 Wi-Fi(QZX_C1 需冷启动恢复)。单台或整组。
+  void reboot({String? groupId, String? deviceId}) => _send(
+      'reboot', Commands.reboot(groupId: groupId, deviceId: deviceId),
       groupId: groupId, deviceId: deviceId);
 
   void setVolume(int volume, {String? groupId, String? deviceId}) => _send(

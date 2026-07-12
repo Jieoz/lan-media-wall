@@ -27,7 +27,8 @@ class AppUpdater(
         .build()
 
     sealed class Result {
-        /** APK downloaded + sha256-verified + reboot dispatched. */
+        /** APK downloaded + sha256-verified + activated by the daemon via
+         *  `pm install -r` + app restart (no whole-device reboot). */
         object Installing : Result()
         data class Failed(val reason: String) : Result()
     }

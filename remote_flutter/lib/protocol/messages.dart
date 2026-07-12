@@ -489,8 +489,14 @@ class Commands {
   static Map<String, dynamic> debugSnapshot({String? groupId, String? deviceId}) =>
       _target(groupId: groupId, deviceId: deviceId);
 
-  /// restart（§9.4）：重启被控端整台设备。仿 pause/resume 走 [_target] 单播/组播。
+  /// restart（§9.4）：只重启被控端播放 App（不整机重启，保住 Wi-Fi）。
+  /// 走 root 守护进程 RESTART_APP。仿 pause/resume 走 [_target] 单播/组播。
   static Map<String, dynamic> restart({String? groupId, String? deviceId}) =>
+      _target(groupId: groupId, deviceId: deviceId);
+
+  /// reboot（§10）：整机重启——单独的高危动作（不是普通 restart）。QZX_C1 warm
+  /// reboot 会丢 Wi-Fi（SDIO -110，冷启动才恢复），故 UI 必须二次确认后才下发。
+  static Map<String, dynamic> reboot({String? groupId, String? deviceId}) =>
       _target(groupId: groupId, deviceId: deviceId);
 
   static Map<String, dynamic> setVolume({

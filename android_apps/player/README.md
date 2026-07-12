@@ -1,5 +1,7 @@
 # LAN Media Wall — Android Player (被控端)
 
+**双视频内核 A/B(v1.14.2,§backend-ab)**:视频播放现有**两个一等公民内核**,同一份 `VideoBackend` 合同、可在同一台盒子 + 同一素材上 A/B 对比:① `ExoPlayer`(Media3,仅硬解,v1.14.0 路径);② **原生 `android.media.MediaPlayer`**(走盒子 OEM 自己的 Stagefright/OMX 管线——厂商固件真正调优的那条,在这批 HiSilicon 上可能优于 ExoPlayer 通用编解码链)。`PlayerController` 收敛为**门面**:只持一个内核 + 与解码器无关的图片/缩略图路径,故 service/协议层完全与内核无关,`load/play_at/pause/resume/stop/seek/volume/playlist/status/heartbeat` 在两内核上行为一致。内核选择走**设置页单选(自动/ExoPlayer/原生 MediaPlayer)**,`自动`=旧稳定默认(ExoPlayer,经纯逻辑 `BackendSelector` 决策,**无 evidence 不擅自切全网、无 `Build.MODEL` 机型分支**);`/data/local/tmp/lmw_video_backend` 覆盖文件(测试用)优先于设置。当前内核 + 原因(如 `mediaplayer(override)`)写进 `status.video_backend`、设置页与诊断包。A/B 指标**只记两内核都能诚实提供的值**(prepare/首帧延迟、buffering/stall、completion、error、分辨率;dropped-frame 仅 ExoPlayer 有,原生记 `n/a` 而非假 0)。一键真机对比见根 `scripts/qzx_ab_backend.sh` / `.bat`。
+
 **视频硬解 + root 守护进程(v1.14.0)**:视频输出用 `SurfaceView` 让 API 19/HiSilicon 硬解走 HWC/overlay;ExoPlayer 经 `MediaCodecSelector` **只选硬件视频解码器**(排除 `OMX.google.*`/`c2.android.*`/API 报告的 softwareOnly),无硬件解码器时显式失败并记日志,绝不静默软解(音频照常)。导出日志含所选解码器名 + 硬/软分类 + 初始化耗时。控制端缩略图改为一次性缓存帧复用——**视频正在播放时绝不再开第二个解码器抽帧**。远程重启/推送升级改由 root 守护进程 `lmw_root_daemon`(见下),弃用 setuid helper(目标机 `no_new_privs` 下失效)。
 
 Native Android (Kotlin + Media3/ExoPlayer) player for the LAN Media Wall. It is
@@ -10,7 +12,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.1 / versionCode 49`** — derived from
+> **Current build: `versionName 1.14.2 / versionCode 50`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -237,12 +239,64 @@ adb shell dpm set-device-owner com.jieoz.lanmediawall.player/.admin.DeviceAdminR
 > launcher, immersive fullscreen re-asserted by the watchdog, back suppressed,
 > screen kept on, autostart on boot. See "Residual risks" below.
 
+## Video backend A/B (§backend-ab, v1.14.2)
+
+Two interchangeable video kernels sit behind one `media/VideoBackend` contract:
+
+- **`ExoVideoBackend`** — Media3/ExoPlayer 2.19 with the hardware-only
+  `MediaCodecSelector` (the v1.14.0 path). Rich diagnostics (decoder name,
+  hardware/software class, init/first-frame timing, dropped frames).
+- **`MediaPlayerVideoBackend`** — the platform `android.media.MediaPlayer`, i.e.
+  the OEM's own Stagefright/OMX pipeline on 4.4. It runs a defensive state machine
+  (`prepareAsync`, latched synced-start, illegal-state guards, `SurfaceHolder`
+  (re)bind) and reports every metric BOTH kernels can honestly give.
+  `dropped_frames` and the decoder name are `n/a` (the platform exposes neither) —
+  never faked.
+
+`PlayerController` is now a thin facade owning exactly one kernel plus the
+decoder-independent image (`BitmapFactory`) and thumbnail (`MediaMetadataRetriever`)
+paths, so the entire service/protocol layer is kernel-agnostic.
+
+**Selecting a kernel (explicit + observable):**
+
+- **Settings radio** — `视频内核 (A/B)`: `自动` (default → ExoPlayer, the
+  legacy-stable path) / `ExoPlayer` / `原生 MediaPlayer`. Persisted; takes effect
+  when the kiosk Activity rebuilds the player (the Save flow does this).
+- **Pure policy** — `media/BackendSelector.decide(override, configured)` resolves
+  the kernel + a greppable source (`override` > `config` > `auto-default`). The
+  fleet default (`BackendSelector.AUTO_DEFAULT`) stays ExoPlayer **until real-QZX
+  A/B evidence justifies flipping it** — one constant, no device-name branching.
+  Unit-tested off-device (`BackendSelectorTest`, `BackendMetricsTest`).
+- **Override file** — `/data/local/tmp/lmw_video_backend` (contents `exoplayer` /
+  `mediaplayer`) beats the saved choice. A **test affordance** the A/B tool uses to
+  flip kernels + restart without settings surgery; delete it to return to config.
+
+The live kernel + why is visible in `status.video_backend` (e.g.
+`mediaplayer(override)`), the settings-screen playback line (with the A/B metrics
+line), and the `download_logs` / `debug_snapshot` bundle.
+
+**One-action real-device A/B** (`scripts/qzx_ab_backend.sh`, Windows
+`scripts/qzx_ab_backend.bat`): for each kernel it writes the override file,
+restarts the kiosk (the box replays its last pushed item via `resume_last`), lets
+it play, and pulls `player.log` (+ rotated), a logcat tail, and meminfo into one
+folder; then removes the override and relaunches so the box returns to its
+configured kernel. **Read-only except the single override file + restarting our own
+app, both reverted at the end** — it never installs, reboots, or touches media /
+config. Compare `first_frame`, `buffering`/`stall`, `dropped_frames`, and `error`
+lines between the two kernel folders.
+
 ## Residual risks (real-device only)
 
 These can't be exercised in a headless CI/container and need a device:
 
-- Media3 actual decode/render + frame-accurate synced start (±50–100ms target).
-- Thumbnail capture from the live `TextureView` (returns null with no surface).
+- Media3 **and** native-MediaPlayer actual decode/render + frame-accurate synced
+  start (±50–100ms target) — the A/B tool above exists precisely to measure this
+  on the real QZX_C1; host tests only cover the pure selection + metrics logic.
+- Native MediaPlayer cannot report a decoder name or dropped-frame count on 4.4
+  (reported `n/a`), and offers no hardware-only guarantee the way ExoPlayer's
+  selector does — the OEM pipeline picks the codec. This is a deliberate,
+  documented semantic difference, not a regression.
+- Thumbnail capture from the live surface (returns null with no surface).
 - Lock Task Mode behavior depends on Device Owner provisioning.
 - OEM background-activity-start / autostart restrictions vary by vendor.
 - `EncryptedSharedPreferences` needs a working Keystore (falls back to plain

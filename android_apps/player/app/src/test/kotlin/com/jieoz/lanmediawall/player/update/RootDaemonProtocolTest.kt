@@ -2,6 +2,7 @@ package com.jieoz.lanmediawall.player.update
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,6 +42,20 @@ class RootDaemonProtocolTest {
     }
 
     @Test
+    fun restart_app_request_is_bare_verb() {
+        // §restart-semantics: normal restart is app-only, a distinct verb from the
+        // whole-device REBOOT. Must match CMD_RESTART_APP in lmw_root_daemon.c.
+        assertEquals("RESTART_APP", RootDaemonProtocol.restartAppRequest())
+    }
+
+    @Test
+    fun restart_app_and_reboot_are_distinct_verbs() {
+        // Guards against ever collapsing the two (a warm reboot bricks Wi-Fi on
+        // QZX_C1; normal restart must never reboot).
+        assertNotEquals(RootDaemonProtocol.restartAppRequest(), RootDaemonProtocol.rebootRequest())
+    }
+
+    @Test
     fun install_request_is_verb_space_path() {
         assertEquals(
             "INSTALL ${RootDaemonProtocol.CANONICAL_APK_PATH}",
@@ -77,8 +92,10 @@ class RootDaemonProtocolTest {
 
     @Test
     fun install_response_ok_detected() {
-        assertTrue(RootDaemonProtocol.isOk("ok install staged dst=/data/app/x-1.apk rebooting"))
+        assertTrue(RootDaemonProtocol.isOk("ok install activated via=pm_install restarting_app"))
+        assertTrue(RootDaemonProtocol.isOk("ok restart_app restarting_app"))
         assertTrue(RootDaemonProtocol.isOk("ok reboot rebooting"))
+        assertFalse(RootDaemonProtocol.isOk("error install pm_failed detail=Failure [INSTALL_FAILED]"))
         assertFalse(RootDaemonProtocol.isOk("error install path rejected code=6"))
         assertFalse(RootDaemonProtocol.isOk(""))
     }

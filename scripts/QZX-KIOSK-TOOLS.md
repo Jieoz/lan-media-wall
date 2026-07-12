@@ -13,9 +13,40 @@ HiSilicon / root adb），包集几乎一样，**一份脚本两批通用**。
 |---|---|
 | **`lmw_setup.bat`** | ⭐ 主入口。一条命令全干完（自动桥接中途那次重启） |
 | `lmw_setup.sh` | 盒子内执行体（两段状态机；bat 会自动跑两遍） |
-| `lmw_root_daemon` | 远程重启/推送升级用的 **root 守护进程**（armv7）。以 root 启动并常驻，监听抽象套接字 `@lmw_root_daemon`，`SO_PEERCRED` 校验 App uid。**不是 setuid**（目标机 `no_new_privs` 下 setuid 无效） |
+| `lmw_root_daemon` | 远程重启/推送升级用的 **root 守护进程**（armv7）。以 root 启动并常驻，监听抽象套接字 `@lmw_root_daemon`，`SO_PEERCRED` 校验 App uid。**不是 setuid**（目标机 `no_new_privs` 下 setuid 无效）。v1.14.2：普通 `restart`=只重启播放 App（`RESTART_APP`，保住 Wi-Fi）；升级走 `pm install -r`（不整机 reboot）；整机 `REBOOT` 为单独高危动作 |
 | `lmw_restore.bat` / `.sh` | 一键还原：把禁掉的程序全部重新启用 |
 | `lmw_audit.bat` / `.sh` | 只读盘点（想先看盒子里有啥再动手时用） |
+| `qzx_ab_backend.bat` / `.sh` | **一键 A/B 对比两个视频内核**（ExoPlayer vs 原生 MediaPlayer，v1.14.2）。逐内核：写 `/data/local/tmp/lmw_video_backend` → 重启播放墙(盒子自动 `resume_last` 重放上次素材) → 放一会 → 拉 `player.log`+logcat+meminfo 到一个文件夹；最后删覆盖文件并重启,盒子恢复原内核。**只写那一个覆盖文件 + 重启本 App,结束即还原**——不装/不重启系统/不动素材配置 |
+| `qzx_verify_update.bat` / `.sh` | **真机验收：升级免整机重启**（v1.14.2）。用你给的 APK 复现守护进程的 `pm install -r <暂存>` 流程,核验两件事:①包 `versionCode` 变了(新代码已激活、PM 上报新版本)②整机 uptime 没归零(没重启)。只装你指定的 APK,不重启/不卸载/不动素材配置,结束删暂存文件 |
+
+### 视频内核 A/B(v1.14.2）——盒子掉帧/黑屏时用
+
+盒子若在 ExoPlayer 下掉帧或黑屏,用它对比原生 MediaPlayer(走盒子厂商自己的
+Stagefright/OMX,常更稳)。插好**一台**盒子(须已装好并在播放),双击:
+
+```
+qzx_ab_backend.bat
+```
+
+它对 `exoplayer`、`mediaplayer` 各跑一轮,把证据存到 bat 旁边的
+`qzx_ab_<serial>_<时间>\` 里(每个内核一个子目录)。把整个文件夹发回即可。对比要点:
+`first_frame rendered`(有没有真出画面)、`state BUFFERING`/`buffering_start`(卡顿)、
+`dropped_frames`(仅 ExoPlayer 有;原生记 `n/a`)、任何 `error` 行。
+可选:运行前设 `PLAY_SECONDS`(每内核播放秒数,默认 40)。
+
+### 升级免整机重启 · 真机验收(v1.14.2)——远程升级到底会不会重启盒子
+
+v1.14.2 起远程升级(`update_app`)改用 `pm install -r` 原子激活新版本,**不再整机 reboot**
+(QZX_C1 warm reboot 会丢 Wi-Fi)。要在真机上确认这条路真能走通,插好**一台**盒子,跑:
+
+```
+qzx_verify_update.bat  C:\path\to\新版或同签名.apk
+```
+
+它复现守护进程执行的那条 `pm install -r <暂存>`(经 root),然后核验:
+**①包 `versionCode` 变了**(装的是更高 versionCode 的包才看得出——证明新代码真被激活、
+PackageManager 上报的是新版本)、**②整机 uptime 没往回走**(证明没重启)。两项都过即打印
+`RESULT: OK`。它只装你指定的 APK,不重启/不卸载/不动素材配置,结束删掉暂存文件。
 
 ## 用法（插好 adb，每台盒子跑一次）
 

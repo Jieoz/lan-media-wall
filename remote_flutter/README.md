@@ -5,7 +5,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.1+49`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.2+50`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+>
+> **v1.14.2**:Android 被控端新增原生 `android.media.MediaPlayer` 视频内核,与 ExoPlayer 可 A/B 切换(`status.video_backend` 上报当前内核);控制端本身无功能改动,版本随全端 pubspec 同步递增。
 >
 > **v1.13.11 出站投递可观测**:`P2pCoordinator._sendTo` 成功写入活连接时记一条 `msgId` + payload 摘要(`playlist_id`/`items` 数/`start_index`/`prepare_id`/`group_id` 等对账锚点),`send()` 记扇出结果 `delivered/targets`。过去只在「未连接/无目标」失败分支记日志,推送成功但播放端黑屏时控制端日志一片空白,无法比对「控制端以为发了什么」vs「播放端 player.log 实际收到/播了什么」。日志汇入既有 `logLines`,设置页可一键复制。此改动仅加日志,不改协议与投递语义。
 >

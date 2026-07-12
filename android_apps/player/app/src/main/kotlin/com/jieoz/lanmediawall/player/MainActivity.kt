@@ -19,6 +19,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.jieoz.lanmediawall.player.admin.PlayerDeviceAdminReceiver
 import com.jieoz.lanmediawall.player.databinding.ActivityMainBinding
+import com.jieoz.lanmediawall.player.media.PlayerBackends
 import com.jieoz.lanmediawall.player.media.PlayerController
 
 /**
@@ -64,8 +65,13 @@ class MainActivity : AppCompatActivity() {
 
         keepScreenOnAndVisible()
 
-        // Create the shared player controller and attach the video surface.
-        val ctl = PlayerController(applicationContext).also { it.init() }
+        // §backend-ab: build the shared player controller with the SELECTED video
+        // kernel (ExoPlayer or native MediaPlayer). A /data/local/tmp override file
+        // (A/B script) beats the Settings choice; "auto"/blank → legacy-stable
+        // default. The decision is logged so the running kernel is observable.
+        val (ctl, decision) = PlayerBackends.createController(applicationContext, settings.videoBackend)
+        ctl.init()
+        backendDecisionLabel = decision.label()
         ctl.currentVolumePercent = settings.volume
         ctl.attachSurface(binding.videoSurface)
         // §6.1: the image layer for type=="image" playlist items. Without this
@@ -312,10 +318,17 @@ class MainActivity : AppCompatActivity() {
         var instance: MainActivity? = null
             private set
 
-        /** Shared ExoPlayer wrapper. Created by the Activity (UI thread), driven
+        /** Shared playback facade. Created by the Activity (UI thread), driven
          *  by [PlayerService]. Null when no kiosk Activity is foregrounded. */
         @Volatile
         var playerController: PlayerController? = null
+            private set
+
+        /** §backend-ab: the resolved kernel + source (e.g. `mediaplayer(override)`)
+         *  for the currently-built controller. Surfaced in diagnostics so the
+         *  running kernel + WHY is observable remotely. Null until first build. */
+        @Volatile
+        var backendDecisionLabel: String? = null
             private set
     }
 }

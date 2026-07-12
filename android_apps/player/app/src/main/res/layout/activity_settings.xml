@@ -190,6 +190,44 @@
             android:textColor="@color/white"
             android:text="@string/label_always_thumbs" />
 
+        <!-- §backend-ab: pick the video playback kernel. `auto` keeps the
+             legacy-stable default (ExoPlayer); `mediaplayer` is the native
+             android.media.MediaPlayer path for the HiSilicon boxes. Explicit
+             + observable so an operator can A/B on the real box. -->
+        <TextView style="@style/SettingLabel" android:text="@string/label_video_backend" />
+        <TextView
+            android:id="@+id/text_video_backend_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/hint_video_backend"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingBottom="4dp" />
+        <RadioGroup
+            android:id="@+id/group_video_backend"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <RadioButton
+                android:id="@+id/backend_auto"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:text="@string/backend_auto" />
+            <RadioButton
+                android:id="@+id/backend_exoplayer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:text="@string/backend_exoplayer" />
+            <RadioButton
+                android:id="@+id/backend_mediaplayer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:text="@string/backend_mediaplayer" />
+        </RadioGroup>
+
         <!-- §1 configuration reversal: this camera-less TV box no longer scans.
              It DISPLAYS its own enrollment QR (built by QrEncoder) so the phone
              controller scans it. Shown with the LAN connection info below it. -->

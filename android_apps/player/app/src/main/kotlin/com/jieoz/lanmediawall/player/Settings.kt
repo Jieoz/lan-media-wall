@@ -128,6 +128,18 @@ class Settings(context: Context) {
         set(value) { prefs.edit().putBoolean(KEY_ALWAYS_THUMBS, value).apply() }
 
     /**
+     * §backend-ab: which video kernel drives playback — `auto` (default →
+     * ExoPlayer, the legacy-stable path), `exoplayer`, or `mediaplayer` (native
+     * android.media.MediaPlayer, for the QZX_C1 / HiSilicon boxes). A concrete id
+     * is the operator's explicit A/B choice; `auto`/blank defers to
+     * [com.jieoz.lanmediawall.player.media.BackendSelector]. A `/data/local/tmp`
+     * override file (test affordance) still beats this. Stored as the wire id.
+     */
+    var videoBackend: String
+        get() = prefs.getString(KEY_VIDEO_BACKEND, VIDEO_BACKEND_AUTO) ?: VIDEO_BACKEND_AUTO
+        set(value) { prefs.edit().putString(KEY_VIDEO_BACKEND, value).apply() }
+
+    /**
      * §6 cache quota (bytes). Hard cap on the media cache so a small 4–8GB box
      * never hits `Storage Full` when媒体 churn. The effective quota is the
      * smaller of this and a % of free disk (see [com.jieoz.lanmediawall.player
@@ -224,6 +236,10 @@ class Settings(context: Context) {
         private const val KEY_MUTED = "muted"
         private const val KEY_ALWAYS_THUMBS = "always_thumbs"
         private const val KEY_CACHE_MAX_BYTES = "cache_max_bytes"
+        private const val KEY_VIDEO_BACKEND = "video_backend"
+
+        /** §backend-ab: "auto" → BackendSelector picks the legacy-stable default. */
+        const val VIDEO_BACKEND_AUTO = "auto"
 
         const val DEFAULT_PSK = "CHANGE_ME_32_BYTE_RANDOM_PRESHARED_KEY"
 
