@@ -5,9 +5,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.3+51`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.4+52`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
-> **v1.14.3**:发布后稳健性修复，收紧 Android 播放端双后端快照线程安全、原生 MediaPlayer 异步 seek/start 时序，以及 root daemon 的 `pm install` 成功判定和 App 重启派发 ACK；控制端功能无改动，版本随全端 pubspec 同步递增。
+> **v1.14.4**:root daemon 的 `RESTART_APP` 改为确定性「验证-重试」状态机,区分 PROCESS_UP 与 ACTIVITY_RESUMED(仅进程回来但活动没到前台=部分失败,不算恢复),重启证据日志给出显式 `restart_verified`/`restart_failed` 终态;新增一键真机 `scripts/qzx_field_check.*`(重启双信号验证 + ExoPlayer/MediaPlayer A/B)。控制端功能无改动,版本随全端 pubspec 同步递增。
 >
 > **v1.14.2**:Android 被控端新增原生 `android.media.MediaPlayer` 视频内核,与 ExoPlayer 可 A/B 切换(`status.video_backend` 上报当前内核);控制端本身无功能改动,版本随全端 pubspec 同步递增。
 >

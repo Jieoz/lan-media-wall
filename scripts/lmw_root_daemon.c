@@ -120,6 +120,17 @@
 // LocalSocketAddress(LMW_SOCKET_NAME, Namespace.ABSTRACT).
 #define LMW_SOCKET_NAME   "lmw_root_daemon"
 
+// Persistent restart-execution evidence log (see §restart-state-machine). Bounded:
+// rotated to .1 at LMW_RESTART_LOG_MAX so a long-lived box can't fill the tmpfs.
+// Records only package name / pids / am-output tokens — never any secret.
+#define LMW_RESTART_LOG      "/data/local/tmp/lmw_restart.log"
+#define LMW_RESTART_LOG_MAX  65536L
+// Deterministic restart budget: how many explicit relaunch attempts, how long to
+// wait for the process to appear before verifying, and the pre-force-stop settle.
+#define LMW_RESTART_MAX_ATTEMPTS  3
+#define LMW_RESTART_VERIFY_WAIT_S 3
+#define LMW_RESTART_SETTLE_MS     300
+
 #define LMW_MAX_PATH      512
 #define LMW_MAX_LINE      1024
 
@@ -244,13 +255,223 @@ static int lmw_pm_has_success_line(const char *out) {
     return 0;
 }
 
+// ---- §restart-state-machine: pure decision helpers ------------------------
+// The v1.14.3 restart was a BLIND one-shot shell chain (force-stop; sleep; am
+// start) whose only proof of success was "the fork happened" — on the real
+// QZX_C1 the app force-stopped but the relaunch did not reliably take, leaving a
+// black kiosk (see field log 16:10). These pure helpers turn the worker into a
+// deterministic verify-and-retry state machine, and are host-tested so the
+// decision logic can never silently regress to "dispatch == done".
+
+// Did an `am start` invocation FAIL? Toolbox `am` prints "Starting: Intent {..}"
+// on success and is otherwise noisy; the reliable failure signals on 4.4 are an
+// "Error:" / "Error type" line or a thrown exception. The benign
+// "Warning: Activity not started, its current task has been brought to the front"
+// means the activity is ALREADY frontmost — success, not failure. No output at
+// all (sh/am missing) is treated as failure so we never count a silent no-op as a
+// launch. NULL/empty => failed.
+static int lmw_am_start_failed(const char *am_output) {
+    if (am_output == NULL || am_output[0] == '\0') return 1;
+    if (strstr(am_output, "Error:") != NULL) return 1;
+    if (strstr(am_output, "Error type") != NULL) return 1;
+    if (strstr(am_output, "Exception") != NULL) return 1;
+    return 0;
+}
+
+// Extract the pid of the MAIN process whose `ps` NAME column is EXACTLY pkg (not a
+// ":subprocess", not a substring). Toolbox `ps` lines are whitespace-columned with
+// PID in column 2 and the process NAME as the last token. Returns the pid or -1 if
+// pkg is not running. Pure: operates only on the captured text.
+static int lmw_extract_pid(const char *ps_output, const char *pkg) {
+    if (ps_output == NULL || pkg == NULL || pkg[0] == '\0') return -1;
+    size_t pkglen = strlen(pkg);
+    const char *p = ps_output;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        const char *end = nl ? nl : p + strlen(p);
+        // Find the last whitespace-delimited token on the line (the process NAME),
+        // trimming a trailing CR from adb line endings.
+        const char *lineend = end;
+        while (lineend > p && (lineend[-1] == '\r' || lineend[-1] == ' ' ||
+                               lineend[-1] == '\t')) lineend--;
+        const char *namestart = lineend;
+        while (namestart > p && namestart[-1] != ' ' && namestart[-1] != '\t')
+            namestart--;
+        size_t namelen = (size_t)(lineend - namestart);
+        if (namelen == pkglen && memcmp(namestart, pkg, pkglen) == 0) {
+            // Matched the main process name exactly — read column 2 (the pid).
+            const char *q = p;
+            while (q < lineend && (*q == ' ' || *q == '\t')) q++; // col1 (USER) start
+            while (q < lineend && *q != ' ' && *q != '\t') q++;   // skip USER
+            while (q < lineend && (*q == ' ' || *q == '\t')) q++; // pid start
+            int pid = 0, any = 0;
+            while (q < lineend && *q >= '0' && *q <= '9') { pid = pid * 10 + (*q - '0'); q++; any = 1; }
+            if (any) return pid;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return -1;
+}
+
+// Should the worker attempt another restart? Retry ONLY when the app is not yet
+// verified running AND we have not exhausted the bounded attempt budget. Once the
+// process is verified up we never restart again (idempotent), and we never loop
+// past max_attempts (deterministic termination — no reboot fallback).
+static int lmw_should_retry_restart(int verified_running, int attempts_made, int max_attempts) {
+    if (verified_running) return 0;
+    return attempts_made < max_attempts;
+}
+
+// Bound the persistent evidence log: rotate (to .1) once it reaches the cap so a
+// long-lived box cannot fill /data/local/tmp. Pure size comparison.
+static int lmw_restart_log_should_rotate(long size, long max_size) {
+    return size >= max_size;
+}
+
+// ---- §restart-state-machine: ACTIVITY_RESUMED vs PROCESS_UP (E0001) ----------
+// PID/process return alone is NOT full recovery (E0001): the box can have the
+// Player PROCESS up while a DIFFERENT activity (e.g. the launcher) is frontmost —
+// the kiosk is still black. So the worker also asks whether OUR component is the
+// resumed/focused activity, using API19-available `dumpsys activity activities`
+// (mResumedActivity / mFocusedActivity) with a `dumpsys window windows`
+// mCurrentFocus fallback. This tri-state keeps the daemon HONEST on old ROMs:
+// UNSUPPORTED means "device didn't report a resumed/focus line", never a fake pass.
+typedef enum {
+    ACT_UNSUPPORTED = -1, // no resumed/focus indicator in the output (can't prove)
+    ACT_OTHER       = 0,  // an indicator exists but frontmost is NOT our component
+    ACT_RESUMED     = 1,  // our component is the resumed/focused (frontmost) activity
+} lmw_activity_state;
+
+// Is char c a package-name character ([A-Za-z0-9_.])? Used to enforce a token
+// boundary so a look-alike package (…playerx/…) can't match "…player/…".
+static int lmw_is_pkgchar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_' || c == '.';
+}
+
+// Is our component named on an activity/window line? dumpsys prints the launched
+// component as "<pkg>/<class>" where <class> is either short (".Class") or fully
+// qualified ("pkg.Class"). Both forms share the "<pkg>/" prefix, so we match that
+// prefix with a clean LEFT boundary (start-of-line or a non-package char) — that
+// way a look-alike package ("…playerx/…") cannot match "…player/…". Matching on
+// "<pkg>/" (not the full component) is deliberate: the exact class spelling varies
+// by ROM (short vs fully-qualified) and any activity of OUR package being frontmost
+// is the recovery signal we want. Pure string scan; `component` is a constant.
+static int lmw_line_names_component(const char *line, const char *component) {
+    const char *slash = strchr(component, '/');
+    if (slash == NULL) return 0;
+    size_t pfxlen = (size_t)(slash - component) + 1; // "<pkg>/" including the slash
+    char pfx[256];
+    if (pfxlen >= sizeof(pfx)) return 0;
+    memcpy(pfx, component, pfxlen);
+    pfx[pfxlen] = '\0';
+    const char *q = line;
+    while ((q = strstr(q, pfx)) != NULL) {
+        char before = (q == line) ? ' ' : q[-1];
+        if (!lmw_is_pkgchar(before)) return 1; // clean left boundary => real match
+        q += 1;
+    }
+    return 0;
+}
+
+// Classify whether OUR component is frontmost from a captured dumpsys blob. Scans
+// only the resumed/focus indicator lines; if none is present the box can't prove
+// activity state and we return ACT_UNSUPPORTED (never a fake pass). Pure.
+static lmw_activity_state lmw_activity_resumed(const char *dumpsys_out,
+                                               const char *component) {
+    if (dumpsys_out == NULL || dumpsys_out[0] == '\0') return ACT_UNSUPPORTED;
+    static const char *const indicators[] = {
+        "mResumedActivity", "mFocusedActivity", "ResumedActivity", "mCurrentFocus",
+    };
+    int saw_indicator = 0;
+    const char *p = dumpsys_out;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        const char *end = nl ? nl : p + strlen(p);
+        size_t linelen = (size_t)(end - p);
+        char line[1024];
+        if (linelen >= sizeof(line)) linelen = sizeof(line) - 1;
+        memcpy(line, p, linelen);
+        line[linelen] = '\0';
+        int is_indicator = 0;
+        for (size_t i = 0; i < sizeof(indicators) / sizeof(indicators[0]); i++) {
+            if (strstr(line, indicators[i]) != NULL) { is_indicator = 1; break; }
+        }
+        if (is_indicator) {
+            saw_indicator = 1;
+            if (lmw_line_names_component(line, component)) return ACT_RESUMED;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return saw_indicator ? ACT_OTHER : ACT_UNSUPPORTED;
+}
+
+// Human token for the evidence log / ACK (never a secret).
+static const char *lmw_activity_str(lmw_activity_state s) {
+    switch (s) {
+        case ACT_RESUMED:     return "yes";
+        case ACT_OTHER:       return "no";
+        case ACT_UNSUPPORTED: return "unsupported";
+    }
+    return "unsupported";
+}
+
+// The two-signal full-recovery verdict (E0001). Full recovery requires the process
+// up AND our activity frontmost. An unreportable activity state is evidence we
+// could not complete verification, never permission to turn process-only into a
+// pass. This fail-closed rule prevents the original black-kiosk failure from being
+// mislabeled as recovered when dumpsys is unavailable or truncated.
+static int lmw_restart_fully_recovered(int process_up, lmw_activity_state act) {
+    if (!process_up) return 0;
+    return act == ACT_RESUMED;
+}
+
+// ---- CLI dispatch policy (pure): -restart auth + no-REBOOT-reach proof --------
+// Extracted so the security guarantees E0001 demands are HOST-TESTED, not just
+// asserted in comments: root-only `-restart`, shared worker with socket
+// RESTART_APP, and NO cli entrypoint that can reach the whole-device reboot.
+typedef enum {
+    CLI_SERVE = 0,   // no/unknown arg: bind socket + daemonize
+    CLI_SERVE_FG,    // -f: bind socket, stay foreground
+    CLI_PROBE,       // -probe: connect to running daemon, print identity (no root)
+    CLI_RESTART,     // -restart: run the SAME restart worker inline (root-only)
+} lmw_cli_mode_t;
+
+// Map argv[1] to a CLI mode. Unknown/NULL => CLI_SERVE (there is deliberately NO
+// reboot flag: the ONLY reboot path is the authenticated socket REBOOT verb).
+static lmw_cli_mode_t lmw_cli_mode(const char *arg) {
+    if (arg == NULL) return CLI_SERVE;
+    if (lmw_str_eq(arg, "-probe")) return CLI_PROBE;
+    if (lmw_str_eq(arg, "-restart")) return CLI_RESTART;
+    if (lmw_str_eq(arg, "-f")) return CLI_SERVE_FG;
+    return CLI_SERVE;
+}
+
+// Does a CLI mode require euid==0? Everything privileged does; -probe is the only
+// read-only mode (it just talks to the socket and needs no root).
+static int lmw_mode_requires_root(lmw_cli_mode_t m) {
+    return m != CLI_PROBE;
+}
+
+// Can a CLI mode reach the whole-device REBOOT? NEVER — reboot is reachable ONLY as
+// an authenticated socket verb (CMD_REBOOT), so every CLI mode returns 0. This is
+// the static proof the harness/CLI can't strand a box off Wi-Fi with a warm reboot.
+static int lmw_mode_can_reboot(lmw_cli_mode_t m) {
+    (void)m;
+    return 0;
+}
+
 #ifndef LMW_DAEMON_TEST
 
 // ---- device-only side-effecting daemon ------------------------------------
 
 #include <signal.h>
+#include <stdarg.h>
 #include <sys/reboot.h>
 #include <sys/wait.h>
+#include <time.h>
 
 static int lmw_copy_regular(const char *src, const char *dst) {
     // O_NOFOLLOW: refuse if src is a symlink (defense against a swapped path).
@@ -290,41 +511,154 @@ static void lmw_do_reboot(void) {
     reboot(RB_AUTOBOOT);
 }
 
-// Force-stop + relaunch ONLY the Player app (the normal controller restart).
+// ---- §restart-state-machine: side-effecting worker ------------------------
 //
-// Runs in a DETACHED root grandchild so it survives the very force-stop it issues
-// against the caller: the caller (the Player app, uid 10020) is what triggers the
-// restart, and `am force-stop LMW_PKG` kills that app's process — but this worker
-// is a root process in its own session, NOT in the app's uid/process-group, so it
-// keeps running and completes the relaunch. This is the whole reason the restart
-// lives in the daemon rather than the app (the app cannot reliably relaunch after
-// killing itself; AlarmManager self-relaunch was the unreliable old path).
-//
-// The command string is a COMPILE-TIME CONSTANT (LMW_PKG / LMW_COMPONENT) — no
-// byte of it comes from the request (RESTART_APP takes no arg), so `sh -c` here is
-// not an arbitrary-shell surface: the daemon can only ever force-stop + relaunch
-// this one allowlisted component. `am` is invoked via sh so it inherits the
-// framework env (BOOTCLASSPATH etc.) the toolbox `am` wrapper needs.
-static void lmw_restart_app_worker(void) {
-    // small settle so the daemon's "ok ... restarting_app" reply flushes to the
-    // caller BEFORE we force-stop it (the reply socket is the caller's process).
-    usleep(300 * 1000);
-    sync();
-    // force-stop then relaunch. `am start` on a force-stopped package still works
-    // with an explicit component; the MainActivity re-starts PlayerService.
-    execl("/system/bin/sh", "sh", "-c",
-          "am force-stop " LMW_PKG " ; sleep 1 ; "
-          "am start -n " LMW_COMPONENT
-          " -a android.intent.action.MAIN -c android.intent.category.HOME"
-          " -f 0x10200000",  // NEW_TASK | RESET_TASK_IF_NEEDED: clean relaunch
-          (char *)NULL);
-    // If sh is missing the app just stays stopped; the caller already got its ack
-    // and this worker exits. (No reboot fallback — normal restart must not reboot.)
-    _exit(0);
+// The v1.14.3 restart was a single blind `sh -c "am force-stop; sleep 1; am start
+// -n COMPONENT -a MAIN -c HOME -f 0x10200000"`, exec'd once with NO check that the
+// process actually came back. On the real QZX_C1 the force-stop landed but the
+// relaunch did not reliably take, leaving a black kiosk until a manual explicit
+// `am start` (field log 16:10). This worker replaces that with a deterministic
+// state machine: force-stop once, then explicit-launch → wait → verify the process
+// via `ps` → retry up to LMW_RESTART_MAX_ATTEMPTS ONLY while unverified. Every step
+// is appended to a bounded evidence log so the eventual outcome is durable even
+// though the socket caller (the force-stopped app) never sees it. No reboot path.
+
+// Append one line to the bounded restart evidence log (rotates to .1 at the cap).
+// Best-effort: a logging failure never changes restart behavior.
+static void lmw_restart_log(const char *fmt, ...) {
+    struct stat st;
+    if (stat(LMW_RESTART_LOG, &st) == 0 &&
+        lmw_restart_log_should_rotate((long)st.st_size, LMW_RESTART_LOG_MAX)) {
+        rename(LMW_RESTART_LOG, LMW_RESTART_LOG ".1"); // keep exactly one old file
+    }
+    FILE *f = fopen(LMW_RESTART_LOG, "a");
+    if (!f) return;
+    fprintf(f, "%ld ", (long)time(NULL)); // epoch seconds — no locale/secret dep
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
 }
 
-// Fork a detached grandchild to run the restart worker, so the daemon neither
-// blocks nor accumulates a zombie (double-fork → grandchild reparents to init).
+// Run a fixed shell command and capture up to outsz-1 bytes of combined output.
+// The command string is a COMPILE-TIME CONSTANT (never request-derived), so this
+// popen carries no external bytes — same guarantee as lmw_pm_install. `am`/`ps` are
+// run via sh so they inherit init's framework env (BOOTCLASSPATH) the toolbox
+// wrappers need. Returns 1 iff the shell/child exited cleanly.
+static int lmw_capture_cmd(const char *cmd, char *out, size_t outsz) {
+    out[0] = '\0';
+    FILE *p = popen(cmd, "r");
+    if (!p) return 0;
+    size_t used = 0;
+    char buf[256];
+    while (fgets(buf, sizeof(buf), p) != NULL) {
+        size_t len = strlen(buf);
+        if (used + len < outsz - 1) { memcpy(out + used, buf, len); used += len; }
+    }
+    out[used] = '\0';
+    int status = pclose(p);
+    return status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+// Is the Player process running right now? Verified by parsing `ps` for the exact
+// package process NAME (lmw_extract_pid), not by "am didn't error". Returns pid or
+// -1. On 4.4 toolbox `ps` with no filter lists everything; we scan for our name.
+static int lmw_player_pid(void) {
+    char ps_out[8192];
+    if (!lmw_capture_cmd("ps", ps_out, sizeof(ps_out))) return -1;
+    return lmw_extract_pid(ps_out, LMW_PKG);
+}
+
+// Is OUR component the resumed/focused (frontmost) activity right now? Reads
+// API19-available `dumpsys activity activities` (mResumedActivity/mFocusedActivity),
+// falling back to `dumpsys window windows` mCurrentFocus, and classifies via the
+// pure lmw_activity_resumed. Returns ACT_RESUMED/ACT_OTHER/ACT_UNSUPPORTED — the
+// UNSUPPORTED branch is what keeps process-only honest on ROMs that don't report it.
+static lmw_activity_state lmw_player_activity_state(void) {
+    char out[16384];
+    if (lmw_capture_cmd("dumpsys activity activities 2>/dev/null", out, sizeof(out))) {
+        lmw_activity_state s = lmw_activity_resumed(out, LMW_COMPONENT);
+        if (s != ACT_UNSUPPORTED) return s;
+    }
+    // Fallback: the window manager's current focus (present on more 4.4 builds).
+    if (lmw_capture_cmd("dumpsys window windows 2>/dev/null", out, sizeof(out)))
+        return lmw_activity_resumed(out, LMW_COMPONENT);
+    return ACT_UNSUPPORTED;
+}
+
+// Perform the full deterministic restart and return 1 iff the Player process is
+// verified running afterward. Runs SYNCHRONOUSLY in the caller — the socket path
+// wraps it in a detached grandchild (so it survives force-stopping the app), while
+// the root-only `-restart` CLI runs it inline and maps the result to its exit code.
+//
+// `am start` uses the EXPLICIT allowlisted component first (LMW_COMPONENT) — the
+// simplest API19-compatible launch — and does NOT rely on HOME implicit resolution
+// (the old chain's `-a MAIN -c HOME` is dropped: the field failure showed implicit
+// resolution to a force-stopped package was the unreliable part; an explicit
+// component start is what the manual recovery used).
+static int lmw_restart_app_run(void) {
+    lmw_restart_log("restart begin pkg=%s component=%s max_attempts=%d",
+                    LMW_PKG, LMW_COMPONENT, LMW_RESTART_MAX_ATTEMPTS);
+    // Settle so the daemon's ACK flushes to the caller BEFORE we force-stop it.
+    usleep(LMW_RESTART_SETTLE_MS * 1000);
+    sync();
+
+    char amout[1024];
+    int fs_ok = lmw_capture_cmd("am force-stop " LMW_PKG, amout, sizeof(amout));
+    lmw_restart_log("force_stop clean_exit=%d", fs_ok);
+
+    int process_up = 0, pid = -1, attempts = 0;
+    lmw_activity_state act = ACT_UNSUPPORTED;
+    // Retry while NOT fully recovered (process up AND our activity frontmost) and
+    // the attempt budget remains. Retrying on unsupported activity evidence or
+    // ACT_OTHER (process up, wrong activity frontmost) is deliberate: another
+    // explicit `am start` is exactly the manual recovery that worked in the field.
+    while (lmw_should_retry_restart(lmw_restart_fully_recovered(process_up, act),
+                                    attempts, LMW_RESTART_MAX_ATTEMPTS)) {
+        attempts++;
+        // Explicit component launch (simplest API19 form). NEW_TASK|RESET keeps a
+        // clean relaunch of the kiosk task.
+        int launch_ok = lmw_capture_cmd(
+            "am start -n " LMW_COMPONENT " -f 0x10200000 2>&1",
+            amout, sizeof(amout));
+        // Copy the first output line into a short token for the evidence log.
+        char tok[128];
+        size_t tj = 0;
+        for (size_t ti = 0; amout[ti] && amout[ti] != '\n' && amout[ti] != '\r' &&
+                            tj < sizeof(tok) - 1; ti++) tok[tj++] = amout[ti];
+        tok[tj] = '\0';
+        int am_failed = lmw_am_start_failed(amout);
+        lmw_restart_log("launch attempt=%d clean_exit=%d am_failed=%d out=%s",
+                        attempts, launch_ok, am_failed, tok);
+        // Give the framework a moment to fork the app process, then VERIFY BOTH
+        // signals: PROCESS_UP (ps) and ACTIVITY_RESUMED (dumpsys), per E0001.
+        sleep(LMW_RESTART_VERIFY_WAIT_S);
+        pid = lmw_player_pid();
+        process_up = (pid > 0);
+        act = process_up ? lmw_player_activity_state() : ACT_UNSUPPORTED;
+        lmw_restart_log("verify attempt=%d process_up=%d player_pid=%d activity_resumed=%s",
+                        attempts, process_up, pid, lmw_activity_str(act));
+    }
+    // Terminal outcome: explicit tokens so a log reader (and the field harnesses)
+    // never has to infer success. `restart_verified` == full recovery per E0001
+    // (process up AND activity resumed); unsupported activity evidence is failure;
+    // otherwise `restart_failed`. Both PROCESS_UP and ACTIVITY_RESUMED are recorded.
+    int recovered = lmw_restart_fully_recovered(process_up, act);
+    lmw_restart_log("%s attempts=%d process_up=%d activity_resumed=%s player_pid=%d",
+                    recovered ? "restart_verified" : "restart_failed",
+                    attempts, process_up, lmw_activity_str(act), pid);
+    return recovered;
+}
+
+// Fork a detached grandchild to run the restart state machine, so the daemon
+// neither blocks nor accumulates a zombie (double-fork → grandchild reparents to
+// init) and the worker outlives force-stopping the calling app. Returns 1 iff the
+// worker was successfully DISPATCHED (the fork chain started) — NOT that the app is
+// verified up: the caller is about to be force-stopped and cannot observe the
+// eventual result, which is instead recorded in LMW_RESTART_LOG. This keeps the
+// socket ACK semantically honest (accepted/dispatched), per §restart-semantics.
 static int lmw_restart_app(void) {
     pid_t pid = fork();
     if (pid < 0) return 0;
@@ -333,7 +667,7 @@ static int lmw_restart_app(void) {
         pid_t g = fork();
         if (g < 0) _exit(1);
         if (g > 0) _exit(0);    // intermediate child exits → grandchild to init
-        lmw_restart_app_worker();
+        lmw_restart_app_run();  // verify-and-retry; result durably logged, not acked
         _exit(0);
     }
     int status = 0;
@@ -483,10 +817,16 @@ static void lmw_serve(int listen_fd) {
                 break;
             case CMD_RESTART_APP:
                 // Normal controller restart: app-only, preserves Wi-Fi + uptime.
-                // Reply first, then fork the detached worker that force-stops +
-                // relaunches ONLY the allowlisted component (never reboots).
+                // Dispatches the detached verify-and-retry worker (lmw_restart_app →
+                // lmw_restart_app_run) — the EXACT SAME worker the root-only `-restart`
+                // CLI runs inline, so both paths share one implementation. Then ACK.
+                // The ACK is honest: it reports the worker was ACCEPTED/DISPATCHED, NOT
+                // that the app is verified up — the caller (this very app) is about to
+                // be force-stopped and cannot observe the eventual result, which is
+                // recorded in the durable restart log instead (§restart-semantics).
                 if (lmw_restart_app())
-                    dprintf(fd, "ok restart_app accepted restart_dispatched\n");
+                    dprintf(fd, "ok restart_app accepted dispatched log=%s\n",
+                            LMW_RESTART_LOG);
                 else
                     dprintf(fd, "error restart_app dispatch_failed\n");
                 fsync(fd);
@@ -559,27 +899,56 @@ static void lmw_ignore_sigpipe(void) {
 int main(int argc, char **argv) {
     lmw_ignore_sigpipe();
 
-    // Client mode: verify a running daemon over the protocol. Runs as any uid
-    // (PROBE needs no auth), so ADB/setup can call it directly.
-    if (argc > 1 && lmw_str_eq(argv[1], "-probe")) {
-        return lmw_probe_client();
-    }
+    // Dispatch on the pure CLI-mode policy (host-tested): this is the SINGLE place
+    // that decides root requirement and proves — by construction — that NO cli mode
+    // can reach the whole-device REBOOT (lmw_mode_can_reboot is always 0; reboot is
+    // reachable only as the authenticated socket verb inside lmw_serve).
+    lmw_cli_mode_t mode = lmw_cli_mode(argc > 1 ? argv[1] : NULL);
 
-    // Server mode must run as root; refuse otherwise so a mis-provisioned start
-    // fails loudly instead of pretending to serve.
-    if (geteuid() != 0) {
-        fprintf(stderr, "lmw_root_daemon: not root (euid=%d); cannot serve.\n", (int)geteuid());
+    // Defense-in-depth invariant (also host-tested): NO cli mode may reach the
+    // whole-device reboot. If this ever became true it would be a code bug that
+    // could strand a box off Wi-Fi, so we refuse to run rather than proceed.
+    if (lmw_mode_can_reboot(mode)) {
+        fprintf(stderr, "lmw_root_daemon: refusing — cli mode must never reboot\n");
         return 1;
     }
 
-    int foreground = (argc > 1 && lmw_str_eq(argv[1], "-f"));
+    // -probe: verify a running daemon over the protocol. Read-only, needs no root
+    // (lmw_mode_requires_root(CLI_PROBE)==0), so ADB/setup can call it directly.
+    if (mode == CLI_PROBE) {
+        return lmw_probe_client();
+    }
+
+    // Every remaining mode is privileged and requires euid==0 — refuse otherwise so
+    // a mis-provisioned start (or a non-root `-restart` attempt) fails loudly rather
+    // than pretending to serve/restart. This is the runtime enforcement of E0001's
+    // "root-only -restart rejects non-root".
+    if (lmw_mode_requires_root(mode) && geteuid() != 0) {
+        fprintf(stderr, "lmw_root_daemon: not root (euid=%d); mode %d refused.\n",
+                (int)geteuid(), (int)mode);
+        return 1;
+    }
+
+    // -restart: run the SAME deterministic worker (lmw_restart_app_run) the socket
+    // RESTART_APP path forks, but INLINE (synchronously) so a real-device harness can
+    // read a truthful full-recovery pass/fail from the exit code. It is reachable
+    // only by a caller already root (checked above) — like -probe over `su 0` — so
+    // the socket's SO_PEERCRED player-uid authorization is NOT weakened, and this
+    // path never touches REBOOT (lmw_mode_can_reboot(CLI_RESTART)==0).
+    if (mode == CLI_RESTART) {
+        int ok = lmw_restart_app_run();
+        fprintf(stderr, "lmw_root_daemon: -restart fully_recovered=%d (see %s)\n",
+                ok, LMW_RESTART_LOG);
+        return ok ? 0 : 1;
+    }
+
     int listen_fd = lmw_bind_abstract(LMW_SOCKET_NAME);
     if (listen_fd < 0) {
         fprintf(stderr, "lmw_root_daemon: bind @%s failed errno=%d\n", LMW_SOCKET_NAME, errno);
         return 1;
     }
 
-    if (!foreground) {
+    if (mode != CLI_SERVE_FG) {
         // Detach: double-fork so the daemon survives its starting shell exiting.
         pid_t pid = fork();
         if (pid < 0) { fprintf(stderr, "lmw_root_daemon: fork failed\n"); return 1; }
