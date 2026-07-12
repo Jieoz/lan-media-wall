@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.14.6] — 2026-07-12
+
+- Restart verification now proves that the real daemon worker ran exactly once and actually transitioned the app: `force-stop` must succeed, the post-restart PID must differ from the captured pre-restart PID, and both process-up and activity-resumed signals must pass. Missing daemon, a nonzero worker verdict, unsupported activity evidence, or an unchanged PID all fail closed; manual controller action can no longer be mislabeled as automatic recovery.
+
 ## [v1.14.5] — 2026-07-12
 
 - Fixed the immutable QZX Update Tools package manifest to include the new one-click real-device acceptance harness, `qzx_field_check.bat` and `qzx_field_check.sh`. The previous v1.14.4 source and builds passed, but its promoted ZIP omitted these two files; v1.14.5 republishes the same fail-closed app-restart implementation with the complete acceptance bundle.

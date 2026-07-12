@@ -253,6 +253,17 @@ static void test_restart_fully_recovered(void) {
           "process NOT up + unsupported -> never recovered");
 }
 
+static void test_restart_transition_proven(void) {
+    CHECK(lmw_restart_transition_proven(1, 100, 200) == 1,
+          "clean force-stop plus changed pid proves a restart transition");
+    CHECK(lmw_restart_transition_proven(0, 100, 200) == 0,
+          "failed force-stop can never be reported as a restart");
+    CHECK(lmw_restart_transition_proven(1, 100, 100) == 0,
+          "unchanged old pid means no restart occurred");
+    CHECK(lmw_restart_transition_proven(1, -1, 200) == 0,
+          "missing pre-restart pid cannot prove a restart transition");
+}
+
 // ---- CLI mode policy: -restart auth + shared worker + no REBOOT reach ---------
 // E0001 gate 1: root-only `-restart` must reject non-root, run the SAME worker as
 // socket RESTART_APP, and NO CLI mode may reach the whole-device REBOOT path.
@@ -300,6 +311,7 @@ int main(void) {
     test_activity_resumed();
     test_activity_str();
     test_restart_fully_recovered();
+    test_restart_transition_proven();
     test_cli_mode();
     test_cli_mode_requires_root();
     test_cli_mode_no_reboot_reach();

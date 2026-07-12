@@ -53,7 +53,7 @@ qzx_field_check.bat
 adb/root 无法在 socket 上冒充 App。要验**真实**的重启 worker,守护进程另开一个 root-only
 `-restart` CLI,内联跑同一状态机、按完全恢复退 0/1——只有已是 root 的调用者可达(与 `-probe`
 一致),生产鉴权毫不削弱,且该路径永不触及整机 `REBOOT`。守护进程不在盒上时,脚本退回一个
-**明确标注的人肉「在控制器点 restart」检查点**,采集器继续跑。
+脚本直接把重启证明标为 **FAIL/INCONCLUSIVE**；人肉操作不能替代真实 worker 的自动恢复证据。
 
 保守边界:**不** reboot / 不卸载 / 不 remount / 不清数据 / 不清 logcat / 不广删。唯一写盘=
 A/B 覆盖文件 + 重启本 App,结束(含 Ctrl-C)一律还原覆盖文件并重启回配置内核。
@@ -121,7 +121,7 @@ lmw_setup.bat "C:\path\to\LANMediaWall-v1.13.5-Player-Android.apk"
   阿里 ASR、HiSilicon DLNA/Miracast/视频/音乐/图库、系统 Music、咪咕/腾讯TV/gitv/xhm、
   QZX 商店/翻译/asr、悟空助手、小白/系统文件管理器 等。
 
-> 优酷桌面被禁后，媒体墙的 HomeAlias 成为唯一 HOME，盒子开机直接进媒体墙。
+> 优酷桌面被禁后，媒体墙的 MainActivity 是唯一 HOME 目标，盒子开机直接进媒体墙。
 > 全程 `pm disable-user` 可逆，`/data` 垃圾才真卸；不刷机、不动 /system 文件。
 
 ## 关于远程重启 / 推送升级的架构（v1.14.0 起改用 root 守护进程）
@@ -132,7 +132,7 @@ lmw_setup.bat "C:\path\to\LANMediaWall-v1.13.5-Player-Android.apk"
 监听抽象命名空间套接字 `@lmw_root_daemon`。App(`RootInstaller`)作为本地套接字客户端
 连上去发 `PROBE` / `REBOOT` / `INSTALL <canonical-path>`;守护进程用 `SO_PEERCRED` 内核
 对端凭证反查 App uid(取自 root-only 的 `/data/local/tmp/lmw_root_daemon.uid`),只接受
-唯一 canonical 更新路径,原子安装后 reboot,**不执行任何 shell**。
+唯一 canonical 更新路径；通过固定参数的 `pm install -r` 原子安装且**不整机 reboot**。守护进程会执行代码内固定的 `pm`/`am`/`ps`/`dumpsys` 命令，不拼接网络输入为任意 shell 命令。
 
 `lmw_setup.bat` 每次会重新推送守护进程二进制 + 重装 + 立即启动 + 用守护进程自带的
 `-probe` 协议探测(必须回 `ready ... daemon_euid=0`)后才写完成标记。冷启动持久化通过

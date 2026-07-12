@@ -428,6 +428,12 @@ static int lmw_restart_fully_recovered(int process_up, lmw_activity_state act) {
     return act == ACT_RESUMED;
 }
 
+// A successful post-state is not enough: prove that this invocation actually
+// transitioned the app. Force-stop must succeed and the observed PID must change.
+static int lmw_restart_transition_proven(int force_stop_ok, int before_pid, int after_pid) {
+    return force_stop_ok && before_pid > 0 && after_pid > 0 && before_pid != after_pid;
+}
+
 // ---- CLI dispatch policy (pure): -restart auth + no-REBOOT-reach proof --------
 // Extracted so the security guarantees E0001 demands are HOST-TESTED, not just
 // asserted in comments: root-only `-restart`, shared worker with socket
@@ -605,6 +611,7 @@ static int lmw_restart_app_run(void) {
     usleep(LMW_RESTART_SETTLE_MS * 1000);
     sync();
 
+    int before_pid = lmw_player_pid();
     char amout[1024];
     int fs_ok = lmw_capture_cmd("am force-stop " LMW_PKG, amout, sizeof(amout));
     lmw_restart_log("force_stop clean_exit=%d", fs_ok);
@@ -645,10 +652,11 @@ static int lmw_restart_app_run(void) {
     // never has to infer success. `restart_verified` == full recovery per E0001
     // (process up AND activity resumed); unsupported activity evidence is failure;
     // otherwise `restart_failed`. Both PROCESS_UP and ACTIVITY_RESUMED are recorded.
-    int recovered = lmw_restart_fully_recovered(process_up, act);
-    lmw_restart_log("%s attempts=%d process_up=%d activity_resumed=%s player_pid=%d",
+    int transitioned = lmw_restart_transition_proven(fs_ok, before_pid, pid);
+    int recovered = transitioned && lmw_restart_fully_recovered(process_up, act);
+    lmw_restart_log("%s attempts=%d force_stop_ok=%d before_pid=%d process_up=%d activity_resumed=%s player_pid=%d",
                     recovered ? "restart_verified" : "restart_failed",
-                    attempts, process_up, lmw_activity_str(act), pid);
+                    attempts, fs_ok, before_pid, process_up, lmw_activity_str(act), pid);
     return recovered;
 }
 

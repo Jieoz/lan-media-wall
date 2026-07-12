@@ -138,7 +138,7 @@ restart_proof() {
   } > "$dir/before.txt" 2>&1
 
   local before_pid; before_pid="$(player_pid)"
-  local trigger daemon_rc=""
+  local trigger="unavailable" daemon_rc=""
   if daemon_present; then
     info "triggering RESTART via authorized daemon worker ($DAEMON -restart)"
     trigger="daemon"
@@ -148,10 +148,9 @@ restart_proof() {
     asroot "$DAEMON -restart" > "$dir/restart_trigger.txt" 2>&1; daemon_rc=$?
     echo "daemon_exit=$daemon_rc" >> "$dir/restart_trigger.txt"
   else
-    trigger="manual"
     warn "daemon binary not found at $DAEMON — cannot drive the real worker over ADB."
-    warn "MANUAL CHECKPOINT: on the controller, tap 'restart' for this box NOW."
-    echo "MANUAL: daemon absent; operator asked to tap controller restart" > "$dir/restart_trigger.txt"
+    warn "Restart proof is FAIL/INCONCLUSIVE; no manual action can substitute for worker evidence."
+    echo "FAIL: daemon absent; real RESTART_APP worker was not executed" > "$dir/restart_trigger.txt"
   fi
 
   # Poll for the Player PROCESS to return within the bounded timeout (a NEW pid).
@@ -176,7 +175,8 @@ restart_proof() {
   # The daemon's own exit code is authoritative when it drove the restart; the
   # harness signals are an independent cross-check recorded alongside.
   local recovered=0
-  if [ "$process_up" = "1" ] && [ "$act" = "yes" ]; then
+  if [ "$trigger" = "daemon" ] && [ "$daemon_rc" = "0" ] &&
+     [ "$process_up" = "1" ] && [ "$act" = "yes" ]; then
     recovered=1
   fi
 
@@ -199,7 +199,13 @@ restart_proof() {
 
   # PASS requires BOTH signals — a process that came back behind the launcher is a
   # PARTIAL failure (the field bug), never a PASS. Process-only is never full recovery.
-  if [ "$recovered" = "1" ]; then
+  if [ "$trigger" = "unavailable" ]; then
+    RESTART_RESULT="FAIL/INCONCLUSIVE: daemon absent; real RESTART_APP worker was not executed."
+    err "$RESTART_RESULT"
+  elif [ "$daemon_rc" != "0" ]; then
+    RESTART_RESULT="FAIL: daemon restart worker exited $daemon_rc; later process/activity state cannot overwrite that failure."
+    err "$RESTART_RESULT"
+  elif [ "$recovered" = "1" ]; then
     RESTART_RESULT="PASS: Player fully recovered in ${t}s — process up (pid $before_pid -> $back_pid) AND our activity resumed, no manual start."
     info "$RESTART_RESULT"
   elif [ "$process_up" = "1" ]; then

@@ -103,12 +103,14 @@ if "%DAEMON_PRESENT%"=="yes" (
   REM -restart runs the SAME verify-and-retry worker socket RESTART_APP forks; its
   REM EXIT CODE is the two-signal full-recovery verdict (0 = process up AND activity
   REM resumed). Unreportable activity fails closed, so PASS is never pid-only.
-  %ADB% shell "su 0 %DAEMON% -restart 2>&1 || %DAEMON% -restart 2>&1; echo daemon_exit=$?" > "%OUT%\restart\restart_trigger.txt" 2>&1
+  REM adbd is root on the target fleet; invoke the worker exactly once. A nonzero
+  REM verification result is authoritative and must never trigger a second restart.
+  %ADB% shell "%DAEMON% -restart 2>&1; echo daemon_exit=$?" > "%OUT%\restart\restart_trigger.txt" 2>&1
   for /f "tokens=2 delims==" %%R in ('findstr /b "daemon_exit=" "%OUT%\restart\restart_trigger.txt"') do set "DAEMON_RC=%%R"
 ) else (
   echo   *** daemon not found at %DAEMON% ***
-  echo   *** MANUAL CHECKPOINT: on the controller, tap 'restart' for this box NOW. ***
-  echo MANUAL: daemon absent; operator asked to tap controller restart > "%OUT%\restart\restart_trigger.txt"
+  echo   *** restart proof FAIL/INCONCLUSIVE: real worker cannot be executed. ***
+  echo FAIL: daemon absent; real RESTART_APP worker was not executed > "%OUT%\restart\restart_trigger.txt"
 )
 
 REM SIGNAL 1: poll for the Player process to return (new pid) within the timeout.
@@ -139,7 +141,7 @@ if defined RESUMED_LINE (
 
 REM full recovery = process up AND activity resumed. Unsupported is inconclusive.
 set "RECOVERED=0"
-if "%PROCESS_UP%"=="1" if "%ACT%"=="yes" set "RECOVERED=1"
+if "%DAEMON_PRESENT%"=="yes" if "%DAEMON_RC%"=="0" if "%PROCESS_UP%"=="1" if "%ACT%"=="yes" set "RECOVERED=1"
 
 ( echo trigger_daemon_present=%DAEMON_PRESENT% daemon_exit=%DAEMON_RC%
   echo before_player_pid=%BEFORE_PID%
@@ -162,7 +164,11 @@ REM pull the daemon's persistent restart evidence log + a logcat tail
 
 REM PASS requires BOTH signals. Process up behind the launcher = PARTIAL (the field
 REM bug), never PASS. Unsupported activity evidence is inconclusive/failure.
-if "%RECOVERED%"=="1" (
+if "%DAEMON_PRESENT%"=="no" (
+  set "RESTART_RESULT=FAIL/INCONCLUSIVE: daemon absent; real RESTART_APP worker was not executed."
+) else if not "%DAEMON_RC%"=="0" (
+  set "RESTART_RESULT=FAIL: daemon restart worker exited %DAEMON_RC%; later process/activity state cannot overwrite that failure."
+) else if "%RECOVERED%"=="1" (
   set "RESTART_RESULT=PASS: Player fully recovered in %ELAPSED%s - process up (pid %BEFORE_PID% -^> %AFTER_PID%) AND our activity resumed."
 ) else if "%PROCESS_UP%"=="1" (
   set "RESTART_RESULT=PARTIAL/FAIL: process returned (pid %BEFORE_PID% -^> %AFTER_PID%) but our activity is NOT frontmost (activity_resumed=%ACT%) - kiosk likely black. See restart\lmw_restart.log."
