@@ -63,8 +63,12 @@ def load_cfg(repo, cfgpath):
     if not os.path.exists(path):
         return {}
     try:
+        if path.endswith(".json"):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f) or {}
         import yaml
-        return yaml.safe_load(open(path)) or {}
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
     except Exception as e:
         return {"_cfg_error": str(e)}
 
@@ -87,9 +91,10 @@ def gate_python(repo, cfg):
         rc, out, err = sh([sys.executable, "-m", "py_compile", *pyfiles], cwd=repo)
         if rc != 0: g.fail("py_compile: " + (err or out)[:400])
         else: g.note(f"py_compile OK ({len(pyfiles)} files)")
+    suites = cfg.get("pytest_suites") or []
     pytest_cmd = [sys.executable, "-m", "pytest"]
     test_imports = "import pytest, websockets, yaml, PIL, requests, psutil"
-    if sh([sys.executable, "-c", test_imports], cwd=repo)[0] != 0:
+    if suites and sh([sys.executable, "-c", test_imports], cwd=repo)[0] != 0:
         if sh(["which", "uv"])[0] != 0:
             g.fail("Python test dependencies are incomplete and uv is not installed")
             return g
@@ -103,7 +108,7 @@ def gate_python(repo, cfg):
             "--with", "psutil",
             "python", "-m", "pytest",
         ]
-    for suite in cfg.get("pytest_suites") or []:
+    for suite in suites:
         rc, out, err = sh([*pytest_cmd, *suite, "-q"], cwd=repo)
         tail = (out + err).strip().splitlines()[-1:] or [""]
         if rc != 0: g.fail(f"pytest {' '.join(suite)}: {tail[0]}")
