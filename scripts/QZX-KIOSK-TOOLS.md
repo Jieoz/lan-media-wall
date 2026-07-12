@@ -19,6 +19,7 @@ HiSilicon / root adb），包集几乎一样，**一份脚本两批通用**。
 | `qzx_field_check.bat` / `.sh` | ⭐ **一键真机体检**（v1.14.4）。插一台盒子、双击一次:(A) **重启证据**——驱动真实守护进程 worker(`lmw_root_daemon -restart`,与 socket `RESTART_APP` 同一状态机),双信号判定:PASS 需**进程回来(新 PID)且我们的活动在前台**;仅进程回来、前台是别的活动、或盒子无法上报活动均记 FAIL。抓前后 uptime/Wi-Fi/版本号/守护进程 probe/`lmw_restart.log`/logcat。(B) **内核 A/B**——同盒同素材各跑 `PLAY_SECONDS` 秒,汇总掉帧诚实值(Exo 真实数 vs MediaPlayer `n/a`)与「从未起播」标记。保守:不 reboot/不卸载/不 remount/不清数据/不清 logcat,唯一写入=A/B 覆盖文件+重启本 App,Ctrl-C 也还原。产出一个 ZIP + `report.txt` |
 | `qzx_ab_backend.bat` / `.sh` | **一键 A/B 对比两个视频内核**（ExoPlayer vs 原生 MediaPlayer，v1.14.2）。逐内核：写 `/data/local/tmp/lmw_video_backend` → 重启播放墙(盒子自动 `resume_last` 重放上次素材) → 放一会 → 拉 `player.log`+logcat+meminfo 到一个文件夹；最后删覆盖文件并重启,盒子恢复原内核。**只写那一个覆盖文件 + 重启本 App,结束即还原**——不装/不重启系统/不动素材配置。(注:`qzx_field_check` 把重启证据 + A/B 合成一键,新体检优先用它) |
 | `qzx_verify_update.bat` / `.sh` | **真机验收：升级免整机重启**（v1.14.2）。用你给的 APK 复现守护进程的 `pm install -r <暂存>` 流程,核验两件事:①包 `versionCode` 变了(新代码已激活、PM 上报新版本)②整机 uptime 没归零(没重启)。只装你指定的 APK,不重启/不卸载/不动素材配置,结束删暂存文件 |
+| `qzx_control_plane_diag.sh` | ⭐ **只读控制面诊断**（v1.14.8）。回答 v1.14.8 根因问题:P2P/broker 控制面是否真在路由并**消费** `status/time_sync/ready`,还是设备墙停在 `online=null`、汇总与日志对拓扑各执一词?拉本机 `player.log`+过滤后的 logcat,把 E0001 要求的信号蒸馏进一个 `report.txt`:路由决策+对端/拓扑身份、收到/被忽略的控制消息、更新下发/安装结果、播放列表 index 迁移、同步时序,并给启发式 verdict(如「无 `update_app` 行 = 控制端从未给本盒下发更新」)。**极保守只读**:不 reboot/不重启 App/不装/不卸载/不清数据/不清 logcat,只广播本 App 自有的日志导出、拉文件、读 logcat。产出 `report.txt` + ZIP。 |
 
 ### 一键真机体检 · 重启证据 + A/B(v1.14.4)——最先跑这个
 

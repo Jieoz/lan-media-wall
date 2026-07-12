@@ -129,6 +129,10 @@ class DeviceStatus {
   final CurrentItem? current;
   final String? playlistId;
   final ActivePlaylist? activePlaylist;
+  /// §6.3 被控端在有序 active_playlist 中的当前位置与长度（播放器 additive 上报）。
+  /// 老端不上报时为 null，UI 防御式处理。
+  final int? currentIndex;
+  final int? playlistCount;
   final int volume;
   final bool muted;
   final bool audioMaster;
@@ -154,6 +158,8 @@ class DeviceStatus {
     this.current,
     this.playlistId,
     this.activePlaylist,
+    this.currentIndex,
+    this.playlistCount,
     this.volume = 0,
     this.muted = false,
     this.audioMaster = false,
@@ -181,6 +187,8 @@ class DeviceStatus {
       playlistId: m['playlist_id'] as String?,
       activePlaylist: ActivePlaylist.fromMap(
           (m['active_playlist'] as Map?)?.cast<String, dynamic>()),
+      currentIndex: m['current_index'] == null ? null : _asInt(m['current_index']),
+      playlistCount: m['playlist_count'] == null ? null : _asInt(m['playlist_count']),
       volume: _asInt(m['volume']),
       muted: _asBool(m['muted']),
       audioMaster: _asBool(m['audio_master']),
@@ -221,6 +229,8 @@ class DeviceStatus {
         current: current,
         playlistId: playlistId,
         activePlaylist: activePlaylist,
+        currentIndex: currentIndex,
+        playlistCount: playlistCount,
         volume: volume ?? this.volume,
         muted: muted ?? this.muted,
         audioMaster: audioMaster ?? this.audioMaster,
@@ -397,19 +407,23 @@ class Commands {
         'items': items.map((e) => e.toMap()).toList(),
       };
 
-  /// playlist 下发（§6.3）。
+  /// playlist 下发（§6.3）。[mode] 显式区分 replace（默认，整列替换并从头播）
+  /// 与 append（按 item_id 去重合并到当前有序列表尾部，保留当前播放位置）。
+  /// 老遥控端不带 mode，播放器默认 replace（向后兼容）。
   static Map<String, dynamic> playlist({
     required String playlistId,
     required String groupId,
     required bool sync,
     required bool loop,
     required List<MediaItem> items,
+    String mode = 'replace',
   }) =>
       {
         'playlist_id': playlistId,
         'group_id': groupId,
         'sync': sync,
         'loop': loop,
+        'mode': mode,
         'items': items.map((e) => e.toMap()).toList(),
       };
 

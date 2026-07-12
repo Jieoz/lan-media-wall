@@ -75,6 +75,11 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     @Volatile private var preparedSeekInProgress = false
     /** current item should loop (single-item playlist). */
     @Volatile private var looping = false
+    /** §8.2 synced-start target (local wall ms) + base seek, armed by the service.
+     *  0/false when disarmed — the backend then starts with no late compensation. */
+    @Volatile private var syncArmed = false
+    @Volatile private var syncTargetWallMs = 0L
+    @Volatile private var syncBaseSeekMs = 0L
     /** last volume set by the facade (0..1), re-applied after (re)prepare. */
     @Volatile private var volume: Float = 1f
     /** known media duration (cached; getDuration is illegal in some states). */
@@ -310,6 +315,31 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
         val mp = player ?: return
         try {
             if (state == State.COMPLETED) mp.seekTo(0)
+            // §8.2 late-start compensation: prepareAsync/seek can push the real
+            // start past the scheduled play_at. If we're late beyond the jitter
+            // threshold, seek forward by the lateness so this box lands on the
+            // same frame as peers that started on time. Authoritative timing log
+            // records target vs actual + the compensation applied.
+            if (syncArmed) {
+                val nowWall = System.currentTimeMillis()
+                val lateMs = nowWall - syncTargetWallMs
+                val comp = com.jieoz.lanmediawall.player.sync.ContentClock.lateStartSeekMs(
+                    playAtMs = syncTargetWallMs,
+                    baseSeekMs = syncBaseSeekMs,
+                    actualStartMs = nowWall,
+                    durationMs = knownDurationMs,
+                    loop = looping,
+                )
+                syncArmed = false
+                if (comp != null) {
+                    log("sync_start target_wall_ms=$syncTargetWallMs actual_wall_ms=$nowWall " +
+                        "late_ms=$lateMs compensate_seek_ms=$comp base_seek_ms=$syncBaseSeekMs")
+                    try { mp.seekTo(comp.toInt()) } catch (t: Throwable) { log("sync_seek_fail ${t.javaClass.simpleName}") }
+                } else {
+                    log("sync_start target_wall_ms=$syncTargetWallMs actual_wall_ms=$nowWall " +
+                        "late_ms=$lateMs compensate_seek_ms=none base_seek_ms=$syncBaseSeekMs")
+                }
+            }
             mp.start()
             state = State.STARTED
             log("started position_ms=${safePosition()}")
@@ -320,6 +350,7 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
 
     override fun pause() = runOnMain {
         startWhenPrepared = false // a pause before prepared cancels the auto-start
+        syncArmed = false         // …and cancels any pending late-start compensation
         val mp = player ?: return@runOnMain
         if (state == State.STARTED) {
             try { mp.pause(); state = State.PAUSED; log("paused position_ms=${safePosition()}") }
@@ -332,6 +363,13 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
         releasePlayer()
         state = State.IDLE
         log("stopped")
+    }
+
+    override fun armSyncStart(localTargetWallMs: Long, baseSeekMs: Long, loop: Boolean) = runOnMain {
+        syncArmed = true
+        syncTargetWallMs = localTargetWallMs
+        syncBaseSeekMs = baseSeekMs.coerceAtLeast(0)
+        log("sync_armed target_wall_ms=$localTargetWallMs base_seek_ms=$syncBaseSeekMs loop=$loop")
     }
 
     override fun seekTo(ms: Long) = runOnMain {
@@ -398,6 +436,7 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     private fun releasePlayer() {
         preparedSeekInProgress = false
         startWhenPrepared = false
+        syncArmed = false
         val mp = player ?: return
         player = null
         try { mp.setOnPreparedListener(null) } catch (_: Throwable) {}

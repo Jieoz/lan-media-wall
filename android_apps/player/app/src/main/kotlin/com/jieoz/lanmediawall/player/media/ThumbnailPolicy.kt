@@ -35,21 +35,29 @@ object ThumbnailPolicy {
     }
 
     /**
-     * Root-performance rule (verified addendum): while a video is *actively playing*
-     * on these HiSilicon boxes, the loop must NEVER open a MediaMetadataRetriever —
-     * that spins up a second VDEC context alongside ExoPlayer's live decoder and
-     * black-screens/overloads the box. So:
-     *   - a cached thumbnail is always just re-sent ([REUSE_CACHED]);
-     *   - live [EXTRACT] is permitted ONLY when the video is not actively playing
-     *     (paused / buffering / idle / not-yet-started), i.e. no live decoder to
-     *     collide with, and only when nothing is cached yet;
-     *   - during active playback with no cache we [SUPPRESS] rather than extract.
-     * Non-video items never extract here (image stills are drawn by the controller).
+     * Root-performance rule (v1.14.8 restoration). The v1.14.7 regression was that
+     * this used to return [SUPPRESS] for ANY actively-playing video, so a video
+     * that just plays normally (the common case) NEVER produced a thumbnail — the
+     * controller preview went permanently blank under MediaPlayer.
+     *
+     * The real constraint on the HiSilicon boxes is not "never while playing" but
+     * "never open a SECOND long-lived / repeated decoder alongside the live one".
+     * A [MediaMetadataRetriever] extraction is file-based, decode-independent, and
+     * here it is bounded to exactly ONE brief open per item_id by:
+     *   - the permanent per-item thumbnail cache ([hasCachedThumbnail] → REUSE), and
+     *   - [alreadyAttempted] — we mark an item once we've opened the retriever for
+     *     it (whether or not bytes came back), so a still-playing video is probed
+     *     at most once, not every tick.
+     * That one-shot-per-item bound is what upstream approved as safe. So:
+     *   - cached thumbnail → always just re-sent ([REUSE_CACHED]);
+     *   - video, no cache, not yet attempted → [EXTRACT] once;
+     *   - video, no cache, already attempted this session → [SUPPRESS] (no repeat open);
+     *   - non-video items never extract here (image stills are drawn by the controller).
      */
-    fun decide(isVideo: Boolean, videoActivePlayback: Boolean, hasCachedThumbnail: Boolean): ThumbAction {
+    fun decide(isVideo: Boolean, hasCachedThumbnail: Boolean, alreadyAttempted: Boolean): ThumbAction {
         if (hasCachedThumbnail) return ThumbAction.REUSE_CACHED
         if (!isVideo) return ThumbAction.SUPPRESS
-        if (videoActivePlayback) return ThumbAction.SUPPRESS
+        if (alreadyAttempted) return ThumbAction.SUPPRESS
         return ThumbAction.EXTRACT
     }
 }

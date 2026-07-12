@@ -36,6 +36,15 @@ object RootInstaller {
 
     data class Probe(val ready: Boolean, val detail: String)
 
+    /**
+     * Outcome of an [install] attempt. [detail] is the *truthful* reason string —
+     * on failure it carries the daemon's own error line (e.g.
+     * `daemon:error install pm_failed detail=...`) or the pre-daemon guard reason,
+     * so the controller/log sees the real breakpoint instead of a flat
+     * "install-failed". On success it carries the daemon's `ok ...` line.
+     */
+    data class InstallResult(val ok: Boolean, val detail: String)
+
     @Synchronized
     fun probe(force: Boolean = false): Probe {
         val now = android.os.SystemClock.elapsedRealtime()
@@ -107,30 +116,39 @@ object RootInstaller {
      * at the canonical path — [AppUpdater] downloads it there. Returns false (no
      * partial state) if the daemon is unreachable/not-root or rejects the request.
      */
-    fun install(pkg: String, apk: File): Boolean {
+    fun install(pkg: String, apk: File, log: (String) -> Unit = {}): InstallResult {
         if (pkg != "com.jieoz.lanmediawall.player") {
             Log.e(TAG, "refusing unknown package: $pkg")
-            return false
+            log("install_reject reason=unknown-package pkg=$pkg")
+            return InstallResult(false, "unknown-package")
         }
         if (!apk.exists() || apk.length() <= 0) {
             Log.e(TAG, "apk missing/empty: ${apk.absolutePath}")
-            return false
+            log("install_reject reason=apk-missing path=${apk.absolutePath} len=${apk.length()}")
+            return InstallResult(false, "apk-missing")
         }
         if (apk.absolutePath != canonicalApkPath) {
             Log.e(TAG, "apk not at canonical path: ${apk.absolutePath}")
-            return false
+            log("install_reject reason=non-canonical-path path=${apk.absolutePath} expected=$canonicalApkPath")
+            return InstallResult(false, "non-canonical-path")
         }
         val probe = probe(force = true)
         if (!probe.ready) {
             Log.e(TAG, "root daemon unavailable: ${probe.detail}")
-            return false
+            log("install_reject reason=daemon-not-ready detail=${probe.detail}")
+            return InstallResult(false, "daemon-not-ready:${probe.detail}")
         }
+        log("install_daemon_send path=${apk.absolutePath} daemon_probe=${probe.detail}")
         val resp = request(RootDaemonProtocol.installRequest(apk.absolutePath))
         if (resp == null || !RootDaemonProtocol.isOk(resp)) {
             Log.e(TAG, "daemon install failed: ${resp ?: "unreachable"}")
-            return false
+            log("install_daemon_fail resp=${resp ?: "unreachable"}")
+            // Surface the daemon's own error line so the real pm/pathology is visible.
+            return InstallResult(false, "daemon:${resp ?: "unreachable"}")
         }
-        return true // pm-install + app-restart dispatched by the daemon (no reboot)
+        log("install_daemon_ok resp=$resp")
+        // pm-install + app-restart dispatched by the daemon (no reboot)
+        return InstallResult(true, resp)
     }
 
     /** Whole-device reboot — the separate HIGH-RISK action, only for the explicit

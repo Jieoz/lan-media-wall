@@ -97,7 +97,14 @@ class WallState extends ChangeNotifier {
   bool _inited = false;
 
   /// 当前拓扑（§14）。默认 p2p，发现到 broker 后切 dedicated。
+  /// 这是本端 **实际运行** 的连接方式(operating topology)。
   Topology _topology = Topology.p2p;
+
+  /// 协调端在 welcome 里 **声明** 的拓扑(declared topology)。与 [_topology] 分开记：
+  /// 一个走 broker(dedicated)连接却声明 topology=p2p 的对端会让「日志说 p2p、汇总说
+  /// dedicated」自相矛盾(E0001)。分开存后,诊断汇总同时打印 operating + declared,冲突
+  /// 变成可解释的事实而非矛盾。null = welcome 未声明。
+  String? _declaredTopology;
 
   /// 当前鉴权模式（§13）。默认 open。
   AuthMode _authMode = AuthMode.open;
@@ -559,13 +566,20 @@ class WallState extends ChangeNotifier {
   }
 
   void _onTopologyHint(String topo) {
+    // Record what the coordinator DECLARED, verbatim, before any coercion. This
+    // is the value the connection log shows; keeping it lets the diagnostic
+    // summary explain a declared≠operating split instead of contradicting itself.
+    _declaredTopology = topo;
     final t = switch (topo) {
       'cohosted' => Topology.cohosted,
       'p2p' => Topology.p2p,
       _ => Topology.dedicated,
     };
+    // A broker-declared p2p is not adoptable as an OPERATING topology: we reached
+    // it over a broker (dedicated) transport and opened no direct peer links, so
+    // p2p_peers stays 0. We keep operating=dedicated (honest) and surface the
+    // declared value separately rather than silently overwriting the log.
     if (t != _topology && !isP2p) {
-      // broker 声明 cohosted/dedicated：仅更新展示（连接方式无差别）。
       _topology = t == Topology.p2p ? Topology.dedicated : t;
       notifyListeners();
     }
@@ -628,7 +642,12 @@ class WallState extends ChangeNotifier {
     b.writeln('===== controller_summary =====');
     b.writeln('time_ms=${DateTime.now().millisecondsSinceEpoch}');
     b.writeln('target_device_id=$deviceId');
-    b.writeln('topology=$_topology conn=$_conn p2p_peers=$_p2pPeers auth_mode=$_authMode key_mode=$_keyMode');
+    // operating = how this controller is actually connected; declared = what the
+    // coordinator announced in welcome. When they differ (e.g. a broker that
+    // declares topology=p2p) BOTH are printed so the split is explicit, not the
+    // self-contradiction E0001 flagged (log said p2p, summary said dedicated).
+    b.writeln('topology_operating=$_topology topology_declared=${_declaredTopology ?? 'none'} '
+        'conn=$_conn p2p_peers=$_p2pPeers auth_mode=$_authMode key_mode=$_keyMode');
     b.writeln('broker=${brokerSecure ? 'wss' : 'ws'}://$brokerHost:$brokerPort');
     b.writeln('wall_devices=${wallDevices.length} groups=${groups.length}');
     for (final d in wallDevices) {
@@ -775,6 +794,7 @@ class WallState extends ChangeNotifier {
     required bool sync,
     required bool loop,
     required List<MediaItem> items,
+    String mode = 'replace',
     String? deviceId,
   }) {
     _send(
@@ -785,6 +805,7 @@ class WallState extends ChangeNotifier {
         sync: sync,
         loop: loop,
         items: items,
+        mode: mode,
       ),
       groupId: groupId,
       deviceId: deviceId,

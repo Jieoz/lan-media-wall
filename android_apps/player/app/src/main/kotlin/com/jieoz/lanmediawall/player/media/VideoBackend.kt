@@ -58,6 +58,19 @@ interface VideoBackend {
     fun stop()
     fun seekTo(ms: Long)
 
+    /**
+     * §8.2 late-start compensation. Arm the backend with the LOCAL wall-clock
+     * instant ([localTargetWallMs], already folded master→local by the service)
+     * this synced start is scheduled for, plus the base seek. When the real
+     * start actually fires — which on MediaPlayer can slip past the target
+     * because prepareAsync is async — the backend measures its own lateness and
+     * seeks forward by it (via [com.jieoz.lanmediawall.player.sync.ContentClock])
+     * so this box lands on the same frame as peers that started on time.
+     * Cleared by the next load/stop/pause. A no-op-safe default lets a kernel
+     * that starts synchronously ignore it.
+     */
+    fun armSyncStart(localTargetWallMs: Long, baseSeekMs: Long, loop: Boolean) {}
+
     /** Set output volume, 0.0–1.0 (facade already folded percent/mute). */
     fun setVolume(volume0to1: Float)
 

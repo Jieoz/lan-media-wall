@@ -106,6 +106,10 @@ class PlayerController(
     fun play() = videoBackend.play()
     fun pause() = videoBackend.pause()
 
+    /** §8.2: arm late-start compensation for the next synced [play] (see VideoBackend). */
+    fun armSyncStart(localTargetWallMs: Long, baseSeekMs: Long, loop: Boolean) =
+        videoBackend.armSyncStart(localTargetWallMs, baseSeekMs, loop)
+
     /**
      * §6.1 image item: decode a local file and show it on the ImageView above the
      * video surface, pausing + hiding the video so a still actually appears (the

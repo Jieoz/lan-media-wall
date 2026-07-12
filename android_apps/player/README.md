@@ -12,10 +12,35 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.7 / versionCode 55`** — derived from
+> **Current build: `versionName 1.14.8 / versionCode 56`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
+>
+> **v1.14.8** — control-plane + composition fixes. **(1) Ordered playlist
+> replace/append**: the `playlist` frame now carries an explicit `mode`
+> (`replace` default = swap-and-restart, byte-for-byte legacy; `append` = merge
+> onto the current ordered sequence de-duped by `item_id`, keeping the current
+> position). This separates the ordered `active_playlist` (sequence + current
+> index) from the cache inventory (files on disk), fixing "cache 2/2 ready but
+> prev/next both play the last pushed item". The merged sequence persists under
+> the retained `playlist_id` so restart restores order + index; `status` reports
+> additive `current_index`/`playlist_count`. Pure rules in `PlaylistOps`.
+> **(2) Multi-device content clock** (`ContentClock`): late-start compensation —
+> when `prepareAsync` pushes the real start past `play_at` beyond the 40ms jitter
+> threshold, seek forward by the lateness so this box lands on the same frame as
+> on-time peers; authoritative `sync_start target_wall_ms=… actual_wall_ms=…
+> late_ms=… compensate_seek_ms=…` log. **(3) Loop/transition** (`TransitionPolicy`):
+> single-item loop uses OEM continuous `setLooping(true)` (no teardown seam);
+> playlist transitions hold-last-frame only on API≥21 multi-VDEC, else
+> immediate-swap on the API≤19 single-VDEC QZX box (a brief documented black gap,
+> never a second decoder). **(4) Thumbnail restoration**: v1.14.7 returned
+> `SUPPRESS` for any actively-playing video so previews went permanently blank;
+> now one-shot-per-item extraction bounded by the permanent cache +
+> `alreadyAttempted` (at most one MMR open per item, ever). **(5) Update
+> diagnostics**: every `update_app` decision/failure is logged to `player.log`
+> and the daemon's real `detail` propagates through `reportUpdate` instead of
+> flattening to `install-failed`.
 > The **Settings screen shows this version** at the top of the device-info line
 > (`版本: v<name> (build <code>)`), read from `BuildConfig` — single source of truth,
 > so what you see on-screen always matches the installed build.

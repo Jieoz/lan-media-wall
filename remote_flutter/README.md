@@ -5,7 +5,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.7+55`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.8+56`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+>
+> **v1.14.8**:控制端配合有序播放列表 `replace`/`append`——`sendPlaylist` 新增 `mode` 参数,编排面板新增「③追加到当前列表」按钮(`_doAppend`,复用被控端保留的 `playlist_id`,按 `item_id` 去重合并到当前序列尾部、不打断在播内容;老播放器不认 `mode` 自动回退 `replace`);`DeviceStatus` 解析 additive 的 `current_index`/`playlist_count`。**拓扑诊断诚实化**:诊断汇总区分 **operating**(本端实际连接方式)与 **declared**(协调端 welcome 声明)两个拓扑并同时打印,修「汇总说 `topology=dedicated,p2p_peers=0` 而日志说 `topology=p2p`」的自相矛盾;broker 路径收到本应由 broker 聚合的 `status/time_sync/ready` 时显式记「落到 broker 路径被丢弃」而非静默,`online=null` 变可归因。
 >
 > **v1.14.7**:QZX 真机默认视频内核改为原生 MediaPlayer(同素材 A/B 已确认 ExoPlayer 可见掉帧、原生更稳),`auto` 不再回落 ExoPlayer,仍可显式选 ExoPlayer;修复设置页保存内核后旧 `MainActivity`/旧 controller 未销毁、界面显示 MediaPlayer 但实际继续跑 ExoPlayer 的问题——保存现用 `NEW_TASK|CLEAR_TASK` 确定重建播放任务并按新配置重建。另据 QZX_C1 真实现场包修复诊断误判:daemon 的 `ps` 捕获不再被 8 KiB 截断,BAT 保存完整 `ps` 后解析 PID;双击窗口即使中途命令失败也保持打开;A/B 每轮清空独立日志窗口并校验实际启动 backend,daemon 非零结果不再触发第二次 fallback 重启。控制端功能无改动。
 >

@@ -52,6 +52,20 @@ data class Playlist(
     val items: List<MediaItem>,
     val raw: Json,
 ) {
+    /**
+     * Return a copy whose [items] are [newItems], with [raw] rebuilt so the
+     * merged sequence persists verbatim (§6.3 append). Reuses each item's own
+     * `raw` node for the `items` array and copies every other top-level field
+     * from the original message, so storing + reloading round-trips the merged
+     * order (not just the last pushed frame).
+     */
+    fun withItems(newItems: List<MediaItem>): Playlist {
+        val base = (raw as? Json.Obj)?.entries ?: emptyMap()
+        val rebuilt = LinkedHashMap<String, Json>(base)
+        rebuilt["items"] = Json.Arr(newItems.map { it.raw })
+        return copy(items = newItems, raw = Json.Obj(rebuilt))
+    }
+
     companion object {
         fun fromJson(node: Json): Playlist? {
             val pid = node["playlist_id"].asString() ?: return null

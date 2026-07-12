@@ -258,6 +258,19 @@ class BrokerClient {
       case 'error':
         _log('error: ${env.payload}');
         break;
+      case 'status':
+      case 'time_sync':
+      case 'ready':
+        // On the broker (dedicated) path these are consumed SERVER-SIDE: the
+        // broker folds status/ready into the aggregate `wall` frame and answers
+        // time_sync itself, so a controller here should never see them raw.
+        // Seeing one means the peer is behaving p2p over a broker transport —
+        // logged explicitly (not silently dropped) so `online=null` on the wall
+        // is attributable to "no wall frame arrived", per E0001. The p2p path
+        // (P2pCoordinator) is where these are actually merged into device state.
+        _log('入站 ${env.type} 落到 broker 路径被丢弃(应由 broker 聚合为 wall / 由 p2p 协调端消费)'
+            ' — device=${env.payload['device_id'] ?? '?'}');
+        break;
       default:
         _log('忽略入站类型: ${env.type}');
     }

@@ -188,9 +188,25 @@ device; removing a playlist item does not delete its cached media file.
   "group_id":"lobby",
   "sync":true,                 // true=组内同步同一内容; false=各自独立(每台一组时即“各播各的”)
   "loop":true,
+  "mode":"replace",            // §6.3a replace(默认)=整列替换并从头播; append=按 item_id 去重合并到当前有序列表尾部,保留当前播放位置。缺省/未知一律按 replace(向后兼容:老遥控端不带 mode)
   "items":[ {/*media item*/}, … ]   // 长度 1 即“单文件”;>1 即“轮播”
 }}
 ```
+
+#### 6.3a replace vs append(有序 active_playlist 与 cache inventory 的分离)
+
+被控端把**有序 active_playlist**(实际播放的序列 + 当前位置 `current_index`)与
+**cache inventory**(磁盘上已下载的文件集,`status.cache` 的按 item_id map)视为两个
+独立概念。历史缺陷:每帧 `playlist` 都整列替换且 index 归零,单条推送会把序列坍缩到最后
+一条,prev/next 都停在同一项。修正:
+
+- `mode:"replace"`(默认,字节级等价旧行为):替换整列,从头(index 0)播。
+- `mode:"append"`:按 `item_id` 去重合并到当前序列尾部(同 id 原地更新、不新增行),
+  保留 `current_index` 指向的同一 item;被控端保留其现有 `playlist_id` 身份,合并后的序列
+  按该身份持久化,重启后恢复顺序与索引(§11)。
+
+`status` 额外上报(additive,老遥控端忽略未知字段):`current_index`(在有序
+active_playlist 中的当前位置)、`playlist_count`(序列长度)。
 
 ### 6.4 缩略图 (player→broker→controller，设备墙预览)
 - player 每 ~5s 截当前帧，缩放为 ≤320px 宽的 JPEG。

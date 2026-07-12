@@ -39,7 +39,12 @@ class AppUpdater(
      * [pkg]. Blocking — call off the main thread. Never partially installs: a
      * hash mismatch deletes the file and returns [Result.Failed] before any su.
      */
-    fun downloadVerifyInstall(pkg: String, url: String, expectedSha256: String): Result {
+    fun downloadVerifyInstall(
+        pkg: String,
+        url: String,
+        expectedSha256: String,
+        log: (String) -> Unit = {},
+    ): Result {
         val dir = File(cacheDir, "update").apply { mkdirs() }
         // ONE fixed canonical filename — the daemon only ever installs this exact
         // path (RootDaemonProtocol.CANONICAL_APK_PATH / LMW_CANONICAL_APK). Using
@@ -50,12 +55,19 @@ class AppUpdater(
             var existing = if (part.exists()) part.length() else 0L
             val builder = Request.Builder().url(url).get()
             if (existing > 0) builder.header("Range", "bytes=$existing-")
+            log("update_download_start url=$url resume_from=$existing")
 
             client.newCall(builder.build()).execute().use { resp ->
                 val code = resp.code()
-                if (code != 200 && code != 206) return Result.Failed("http-$code")
+                if (code != 200 && code != 206) {
+                    log("update_download_fail http=$code")
+                    return Result.Failed("http-$code")
+                }
                 if (code == 200 && existing > 0) { existing = 0; part.delete() }
-                val body = resp.body() ?: return Result.Failed("no-body")
+                val body = resp.body() ?: run {
+                    log("update_download_fail reason=no-body http=$code")
+                    return Result.Failed("no-body")
+                }
                 val append = existing > 0
                 java.io.FileOutputStream(part, append).use { fos ->
                     val src = body.byteStream()
@@ -66,24 +78,32 @@ class AppUpdater(
                         if (n > 0) fos.write(buf, 0, n)
                     }
                 }
+                log("update_download_done http=$code bytes=${part.length()}")
             }
 
             val actual = sha256File(part)
             if (!actual.equals(expectedSha256, ignoreCase = true)) {
                 part.delete()
+                log("update_verify_fail reason=sha256-mismatch expected=$expectedSha256 actual=$actual")
                 return Result.Failed("sha256-mismatch")
             }
+            log("update_verify_ok sha256=$actual")
             if (!part.renameTo(apk)) {
                 part.copyTo(apk, overwrite = true); part.delete()
             }
+            log("update_staged path=${apk.absolutePath}")
 
             // Hand off to the root daemon over its local socket. There is NO su
             // fallback — on the target su denies the app UID and setuid is a
             // no-op under no_new_privs, so the daemon is the only path that works.
-            return if (RootInstaller.install(pkg, apk)) Result.Installing
-                   else Result.Failed("install-failed")
+            val installed = RootInstaller.install(pkg, apk, log)
+            return if (installed.ok) Result.Installing
+                   // Propagate the daemon's real reason (pm failure / path / probe)
+                   // instead of a flat "install-failed" so the breakpoint is visible.
+                   else Result.Failed(installed.detail)
         } catch (e: Exception) {
             Log.e(TAG, "update failed: ${e.javaClass.simpleName}")
+            log("update_exception ${e.javaClass.simpleName}: ${e.message ?: ""}")
             return Result.Failed(e.javaClass.simpleName)
         }
     }

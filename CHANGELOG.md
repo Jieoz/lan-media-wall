@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.14.8] — 2026-07-12
+
+- Added ordered playlist `replace`/`append` semantics across the Flutter controller, protocol, and Android player. Append de-duplicates by `item_id`, preserves the current item and persisted index, and reports `current_index`/`playlist_count` without conflating the active sequence with cached files.
+- Added content-clock late-start compensation for synchronized MediaPlayer playback, continuous OEM looping for a single item, and an explicit API19 single-decoder transition policy with deterministic unit coverage.
+- Restored one-shot per-item thumbnail extraction, hardened the verified APK update/install path, and added a read-only QZX control-plane diagnostic bundle for topology, update, playlist, and sync evidence.
+- Made topology diagnostics truthful by reporting actual operating transport separately from coordinator-declared topology and explicitly logging broker-path frame mismatches.
+
 ## [v1.14.7] — 2026-07-12
 
 - **QZX 真机默认改为原生 MediaPlayer。** 同素材 A/B 已确认 ExoPlayer 可见掉帧，而脚本强制重建后实际运行的 MediaPlayer 顺畅；因此 `auto` 不再回落到 ExoPlayer。仍可显式选择 ExoPlayer 作为运维覆盖。

@@ -18,6 +18,7 @@ import com.jieoz.lanmediawall.player.cache.LastTask
 import com.jieoz.lanmediawall.player.cache.MediaItem
 import com.jieoz.lanmediawall.player.cache.MediaStore
 import com.jieoz.lanmediawall.player.cache.Playlist
+import com.jieoz.lanmediawall.player.cache.PlaylistOps
 import com.jieoz.lanmediawall.player.media.PlayerController
 import com.jieoz.lanmediawall.player.media.ThumbnailPolicy
 import com.jieoz.lanmediawall.player.net.BrokerClient
@@ -86,6 +87,11 @@ class PlayerService : Service() {
     @Volatile private var index = 0
     @Volatile private var audioMaster = true
     @Volatile private var controllerPresent = false
+    /** §6.4: item_ids for which we have already OPENED the retriever this session
+     *  (whether or not bytes came back). With the permanent per-item thumbnail
+     *  cache this bounds MMR to one brief open per item — the one-shot contract. */
+    private val thumbAttempted = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>())
     private val errors = java.util.concurrent.ConcurrentLinkedDeque<String>()
     private val logBuffer = java.util.concurrent.ConcurrentLinkedDeque<String>()
     private val logLock = Any()
@@ -480,6 +486,11 @@ class PlayerService : Service() {
             put("current", currentJson)
             put("playlist_id", playlist?.playlistId)
             put("active_playlist", playlist?.raw ?: Json.Null)
+            // §6.3: the current position WITHIN the ordered active playlist, so a
+            // controller shows/scrubs the real item instead of guessing. Additive
+            // (forward-compat: old controllers ignore unknown fields).
+            put("current_index", index)
+            playlist?.let { put("playlist_count", it.items.size) }
             put("volume", settings.volume)
             put("muted", settings.muted)
             put("audio_master", audioMaster)
@@ -634,11 +645,45 @@ class PlayerService : Service() {
     }
 
     // --- §6.3 playlist -----------------------------------------------
+    /**
+     * §6.3 replace-vs-append. The inbound frame carries an explicit `mode`
+     * (default "replace" = legacy swap-and-restart; "append" = merge onto the
+     * current ordered sequence, de-duped by item_id — see [PlaylistOps]). This
+     * separates the ORDERED ACTIVE PLAYLIST (what plays, with a current index)
+     * from the CACHE INVENTORY (what's on disk) so single-item pushes no longer
+     * collapse prev/next to the last item. The merged sequence is persisted
+     * verbatim under the frame's playlist_id so restart restores order+index.
+     */
     private fun hPlaylist(payload: Json.Obj) {
-        val pl = Playlist.fromJson(payload) ?: return
+        val incoming = Playlist.fromJson(payload) ?: return
+        val mode = PlaylistOps.Mode.parse(payload["mode"].asString())
+        val prev = playlist
+        // APPEND merges onto the current sequence but keeps the current playlist's
+        // identity so navigation/persistence stay coherent; REPLACE adopts the
+        // incoming playlist wholesale (its id becomes the active session).
+        val pl: Playlist
+        val newIndex: Int
+        if (mode == PlaylistOps.Mode.APPEND && prev != null) {
+            val merged = PlaylistOps.merge(prev.items, index, incoming.items, mode)
+            pl = prev.withItems(merged.items)
+            newIndex = merged.index
+        } else {
+            val merged = PlaylistOps.merge(
+                current = emptyList(), currentIndex = 0,
+                incoming = incoming.items, mode = PlaylistOps.Mode.REPLACE,
+            )
+            pl = incoming.withItems(merged.items)
+            newIndex = merged.index
+        }
         playlist = pl
-        index = 0
+        index = newIndex
+        logEvent("playlist mode=${mode.wire} id=${pl.playlistId} items=${pl.items.size} " +
+            "index=$index ids=${pl.items.joinToString(",") { it.itemId }}")
         mediaStore.storePlaylist(pl)
+        // Persist the ordered playlist's identity + current index so a restart
+        // restores the SAME item within the merged sequence (§6.3/§11). Without
+        // this an append would round-trip the order but resume at a stale index.
+        persistLastTask(pl.playlistId, newIndex, 0)
         updateCacheProtection(pl)
         // §6 假闪存:投送新内容后、拉新媒体之前,先回收不再被任何近期 playlist 引用的
         // 旧媒体,给真实颗粒腾余量(prefetch 内部还会做配额 LRU + 写前探针)。
@@ -680,8 +725,12 @@ class PlayerService : Service() {
         // (黑屏根因)。纯读操作,幂等,已 ready 的不重复登记。
         pl?.items?.let { if (it.isNotEmpty()) downloader.restoreReadyFromDisk(it) }
         // §6.4: drop cached thumbnails for items the active playlist no longer
-        // references, so the per-item thumbnail cache can't grow unbounded.
-        pl?.items?.map { it.itemId }?.toSet()?.let { controllerRef?.retainThumbnails(it) }
+        // references, so the per-item thumbnail cache can't grow unbounded. Prune
+        // the one-shot attempt set in lockstep so a re-added item may re-extract.
+        pl?.items?.map { it.itemId }?.toSet()?.let {
+            controllerRef?.retainThumbnails(it)
+            thumbAttempted.retainAll(it)
+        }
     }
 
     // --- §9.1 prepare -------------------------------------------------
@@ -809,8 +858,20 @@ class PlayerService : Service() {
         // video: prime paused at seek (idempotent if prepare already did it),
         // arm end-of-video auto-advance, then unpause at the sync instant.
         ctl.onVideoEnded = { onCurrentEnded() }
-        ctl.loadPaused(uri, seekMs, singleLoop(pl))
-        awaitLocal(clock.toLocal(playAt)) // §8.2 fold master → local
+        val loop = singleLoop(pl)
+        ctl.loadPaused(uri, seekMs, loop)
+        // §6.4: primary thumbnail trigger — one-shot per item, fired on load so a
+        // normally-playing video still yields a controller preview (the v1.14.7
+        // regression left it blank). Non-blocking: never delays the synced start.
+        scope.launch { captureAndSendThumbnail(item) }
+        val localTarget = clock.toLocal(playAt) // §8.2 fold master → local (once)
+        // §8.2: arm late-start compensation BEFORE the wait, so if prepareAsync
+        // finishes after play_at the backend seeks forward by its own lateness
+        // and this box lands on the same frame as peers that started on time.
+        ctl.armSyncStart(localTarget, seekMs, loop)
+        logEvent("sync_schedule item=${item.itemId} play_at=$playAt local_target=$localTarget " +
+            "offset_ms=${clock.offsetMs} seek_ms=$seekMs loop=$loop")
+        awaitLocal(localTarget)
         ctl.play()
         playState = "playing"
         MainActivity.instance?.hideIdle()
@@ -1106,6 +1167,14 @@ class PlayerService : Service() {
             armDwell(item)
         } else {
             ctl?.onVideoEnded = { onCurrentEnded() }
+            // §6.3 transition: on the single-VDEC API19 target we IMMEDIATE_SWAP
+            // (release A, prepare B) — a brief black gap is an honest platform
+            // limit; a 2nd concurrent decoder to hold A's frame would risk the
+            // verified-smooth playback. Logged for field evidence.
+            val strat = TransitionPolicy.transitionStrategy(
+                androidSdk = Build.VERSION.SDK_INT, concurrentDecoders = 1)
+            logEvent("transition to=${item.itemId} idx=$newIndex strategy=$strat " +
+                "loop_strategy=${TransitionPolicy.loopStrategy(pl.items.size, pl.loop)}")
             ctl?.loadAndPlay(source, 0, singleLoop(pl))
         }
         playState = "playing"
@@ -1130,10 +1199,13 @@ class PlayerService : Service() {
         scope.launch { advance(+1) }
     }
 
-    /** §6.3 loop semantics: only a *single-item* looping playlist maps to
-     *  ExoPlayer's REPEAT_MODE_ONE. A multi-item loop must reach STATE_ENDED so
-     *  we can advance + wrap; REPEAT_MODE_ONE would freeze it on item 0. */
-    private fun singleLoop(pl: Playlist): Boolean = pl.loop && pl.items.size == 1
+    /** §6.3 loop semantics: only a *single-item* looping playlist maps to OEM
+     *  continuous looping (setLooping/REPEAT_MODE_ONE) — no completion/reprepare,
+     *  so no black seam. A multi-item loop must reach end-of-stream so we can
+     *  advance + wrap. Single source of truth: [TransitionPolicy.loopStrategy]. */
+    private fun singleLoop(pl: Playlist): Boolean =
+        TransitionPolicy.loopStrategy(pl.items.size, pl.loop) ==
+            TransitionPolicy.LoopStrategy.OEM_CONTINUOUS
 
     private fun hSetVolume(payload: Json.Obj) {
         if (!targetsMe(payload)) return
@@ -1196,33 +1268,50 @@ class PlayerService : Service() {
      * whole-device reboot; §restart-semantics). Runs off-thread; reports back.
      */
     private fun hUpdateApp(payload: Json.Obj, env: Envelope.Parsed) {
-        if (!targetsMe(payload)) return
+        if (!targetsMe(payload)) {
+            // Previously a fully silent drop — now truthfully recorded so a
+            // mis-addressed push doesn't look like "the update never arrived".
+            logEvent("update_app ignored reason=not-addressed-to-me " +
+                "dev=${payload["device_id"].asString()} grp=${payload["group_id"].asString()}")
+            return
+        }
         val targetCode = payload["version_code"].asIntOrNull()
         val url = payload["url"].asString()
         val sha = payload["sha256"].asString()
+        val p2pLocal = link is com.jieoz.lanmediawall.player.net.P2pServer
+        logEvent("update_app recv authed=${env.authed} p2pLocal=$p2pLocal " +
+            "target=$targetCode current=${BuildConfig.VERSION_CODE} " +
+            "url=${url ?: "null"} sha_len=${sha?.length ?: 0}")
         val decision = com.jieoz.lanmediawall.player.update.UpdateGuard.decide(
             authed = env.authed,
-            p2pLocal = link is com.jieoz.lanmediawall.player.net.P2pServer,
+            p2pLocal = p2pLocal,
             currentVersionCode = BuildConfig.VERSION_CODE,
             targetVersionCode = targetCode,
             url = url,
             sha256 = sha,
         )
         if (decision is com.jieoz.lanmediawall.player.update.UpdateGuard.Decision.Reject) {
+            logEvent("update_app rejected reason=${decision.reason}")
             reportUpdate("rejected", decision.reason)
             pushError("update:${decision.reason}")
             return
         }
         // Proceed on a background thread — download can be large; must not block
         // the link. url/sha are non-null here (guard passed).
+        logEvent("update_app proceed → download+verify+install")
         reportUpdate("downloading", "")
         scope.launch(Dispatchers.IO) {
             val updater = com.jieoz.lanmediawall.player.update.AppUpdater(cacheDir)
-            when (val r = updater.downloadVerifyInstall(packageName, url!!, sha!!)) {
-                is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Installing ->
+            when (val r = updater.downloadVerifyInstall(
+                packageName, url!!, sha!!, log = { logEvent(it) },
+            )) {
+                is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Installing -> {
                     // pm-activated; app restarts (no whole-device reboot).
+                    logEvent("update_app installing (daemon activated pm install -r)")
                     reportUpdate("installing", "app-restart")
+                }
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Failed -> {
+                    logEvent("update_app failed reason=${r.reason}")
                     reportUpdate("failed", r.reason)
                     pushError("update:${r.reason}")
                 }
@@ -1249,47 +1338,59 @@ class PlayerService : Service() {
                 androidSdk = Build.VERSION.SDK_INT,
                 playingVideo = playState == "playing" && item?.type == "video",
             ))
-            val coordinator = link ?: continue
-            if (!coordinator.isConnected) continue
-            if (!(settings.alwaysCollectThumbnails || controllerPresent)) continue
-            if (!ThumbnailPolicy.canCapture(
-                    expectedItemId,
-                    currentItem()?.itemId,
-                )) continue
-            val ctl = controllerRef ?: continue
-            if (item == null || item.type != "video") continue
-            // Root-performance addendum: active video playback must never open a
-            // second decoder. Reuse a once-captured thumbnail; only extract while
-            // the video is NOT actively playing; suppress otherwise.
-            val itemId = item.itemId
-            val action = ThumbnailPolicy.decide(
-                isVideo = true,
-                videoActivePlayback = playState == "playing",
-                hasCachedThumbnail = ctl.cachedThumbnail(itemId) != null,
-            )
-            val res = when (action) {
-                ThumbnailPolicy.ThumbAction.REUSE_CACHED -> ctl.cachedThumbnail(itemId)
-                ThumbnailPolicy.ThumbAction.EXTRACT -> {
-                    val localVideo = downloader.readyPath(itemId) ?: continue
-                    ctl.captureThumbnail(
-                        itemId = itemId,
-                        sourcePath = localVideo.absolutePath,
-                        positionMs = ctl.snapshot().positionMs,
-                        maxWidth = 320,
-                        quality = 70,
-                    )
-                }
-                ThumbnailPolicy.ThumbAction.SUPPRESS -> null
-            } ?: continue
-            val (seq, jpeg) = res
-            coordinator.send("thumb_meta", jsonObj {
-                put("device_id", settings.deviceId)
-                put("seq", seq)
-                put("bytes", jpeg.size)
-                put("mime", "image/jpeg")
-            })
-            coordinator.sendBinary(jpeg)
+            if (!ThumbnailPolicy.canCapture(expectedItemId, currentItem()?.itemId)) continue
+            // The loop is now a FALLBACK/refresh path: the primary capture is
+            // one-shot on load (captureThumbnailOnLoad). It re-sends the cached
+            // thumb (so a controller that connects mid-item still gets a preview)
+            // and, if the on-load capture was skipped because the file wasn't
+            // ready yet, gets one more chance to extract once.
+            captureAndSendThumbnail(item)
         }
+    }
+
+    /**
+     * §6.4 one-shot-per-item thumbnail. Decides via [ThumbnailPolicy.decide]:
+     * re-send a cached thumb, extract exactly once (bounded by [thumbAttempted] +
+     * the permanent per-item cache), or suppress. Safe to call on load AND from
+     * the refresh loop — the attempt guard prevents a second decoder open.
+     */
+    private suspend fun captureAndSendThumbnail(item: MediaItem?) {
+        val coordinator = link ?: return
+        if (!coordinator.isConnected) return
+        if (!(settings.alwaysCollectThumbnails || controllerPresent)) return
+        val ctl = controllerRef ?: return
+        if (item == null || item.type != "video") return
+        val itemId = item.itemId
+        val action = ThumbnailPolicy.decide(
+            isVideo = true,
+            hasCachedThumbnail = ctl.cachedThumbnail(itemId) != null,
+            alreadyAttempted = thumbAttempted.contains(itemId),
+        )
+        val res = when (action) {
+            ThumbnailPolicy.ThumbAction.REUSE_CACHED -> ctl.cachedThumbnail(itemId)
+            ThumbnailPolicy.ThumbAction.EXTRACT -> {
+                // Don't burn the one-shot until the bytes are actually on disk.
+                val localVideo = downloader.readyPath(itemId) ?: return
+                thumbAttempted.add(itemId) // one brief MMR open per item, ever
+                logEvent("thumb_extract item=$itemId trigger=oneshot")
+                ctl.captureThumbnail(
+                    itemId = itemId,
+                    sourcePath = localVideo.absolutePath,
+                    positionMs = ctl.snapshot().positionMs,
+                    maxWidth = 320,
+                    quality = 70,
+                )
+            }
+            ThumbnailPolicy.ThumbAction.SUPPRESS -> null
+        } ?: return
+        val (seq, jpeg) = res
+        coordinator.send("thumb_meta", jsonObj {
+            put("device_id", settings.deviceId)
+            put("seq", seq)
+            put("bytes", jpeg.size)
+            put("mime", "image/jpeg")
+        })
+        coordinator.sendBinary(jpeg)
     }
 
     // --- watchdog (§11) ----------------------------------------------

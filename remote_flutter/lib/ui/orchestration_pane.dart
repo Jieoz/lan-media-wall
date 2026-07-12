@@ -287,6 +287,11 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 label: const Text('②推送并播放'),
                 onPressed: _canSend ? () => _doBarrierPlay(state) : null,
               ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.playlist_add),
+                label: const Text('③追加到当前列表'),
+                onPressed: _canSend ? () => _doAppend(state) : null,
+              ),
             ],
           ),
         ],
@@ -448,6 +453,27 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
       _toast(_sync ? '已发起同步起播(等全员就绪)' : '已发起播放');
     } catch (e) {
       _toast('起播失败: $e');
+    }
+  }
+
+  /// §6.3 append:把当前编辑列表按 item_id 去重合并到被控端「当前有序 active_playlist」
+  /// 尾部(播放器保留其现有 playlist 身份与当前播放位置),不打断正在播的内容,只补拉新增
+  /// 媒体。复用被控端已加载的 playlist_id;老播放器不认 append → 回退 replace(向后兼容)。
+  void _doAppend(WallState state) {
+    try {
+      state.sendPlaylist(
+        playlistId: _loadedPlaylistId ?? _newPlaylistId(),
+        groupId: _groupId!,
+        sync: _sync,
+        loop: _loop,
+        items: _items,
+        mode: 'append',
+        deviceId: _deviceId,
+      );
+      state.cachePrefetch(_items, groupId: _groupId, deviceId: _deviceId);
+      _toast('已追加 ${_items.length} 项到${_deviceId == null ? "整组" : "该设备"}当前列表(按 item_id 去重)');
+    } catch (e) {
+      _toast('追加失败: $e');
     }
   }
 
