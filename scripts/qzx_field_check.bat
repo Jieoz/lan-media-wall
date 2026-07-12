@@ -255,25 +255,24 @@ if not exist "%OUT%\ab_summary.txt" echo   (summarizer skipped: PowerShell unava
 
 echo.
 echo === writing report.txt ===
-( echo ==================== QZX FIELD CHECK REPORT ====================
-  echo serial=%SERIAL%  stamp=%TS%  pkg=%PKG%
-  echo.
-  echo (A) RESTART PROOF
-  echo   !RESTART_RESULT!
-  echo   evidence: restart\before.txt restart\after.txt restart\lmw_restart.log restart\logcat_tail.txt
-  echo   NOTE: after uptime must be ^>= before uptime - a reset would mean a REBOOT (Wi-Fi risk).
-  echo.
-  echo (B) BACKEND A/B (same box + same resume_last media; %PLAY_SECONDS%s each^)
-  echo   --- per-kernel summary (dropped-frame honesty; playback-never-started) ---
-  type "%OUT%\ab_summary.txt"
-  echo.
-  echo   Compare between kernels: first_frame latency, stalls, dropped_frames
-  echo   (Exo real number vs MediaPlayer n/a), errors, GC pressure.
-  echo   resume_last ASSUMPTION: both kernels replay the SAME last-pushed item.
-  echo   A PLAYBACK-NEVER-STARTED flag = inconclusive for that kernel.
-  echo   Raw evidence per kernel in exoplayer\ and mediaplayer\.
-  echo ===============================================================
-) > "%OUT%\report.txt" 2>&1
+>"%OUT%\report.txt" echo ==================== QZX FIELD CHECK REPORT ====================
+>>"%OUT%\report.txt" echo serial=%SERIAL%  stamp=%TS%  pkg=%PKG%
+>>"%OUT%\report.txt" echo.
+>>"%OUT%\report.txt" echo [A] RESTART PROOF
+>>"%OUT%\report.txt" echo   !RESTART_RESULT!
+>>"%OUT%\report.txt" echo   evidence: restart\before.txt restart\after.txt restart\lmw_restart.log restart\logcat_tail.txt
+>>"%OUT%\report.txt" echo   NOTE: after uptime must be ^>= before uptime - a reset would mean a REBOOT [Wi-Fi risk].
+>>"%OUT%\report.txt" echo.
+>>"%OUT%\report.txt" echo [B] BACKEND A/B - same box, same resume_last media, %PLAY_SECONDS%s each
+>>"%OUT%\report.txt" echo   --- per-kernel summary ---
+type "%OUT%\ab_summary.txt" >> "%OUT%\report.txt"
+>>"%OUT%\report.txt" echo.
+>>"%OUT%\report.txt" echo   Compare: first_frame latency, stalls, dropped_frames, errors, GC pressure.
+>>"%OUT%\report.txt" echo   Exo reports a real dropped-frame number; MediaPlayer may report n/a.
+>>"%OUT%\report.txt" echo   resume_last ASSUMPTION: both kernels replay the SAME last-pushed item.
+>>"%OUT%\report.txt" echo   PLAYBACK-NEVER-STARTED means that kernel result is inconclusive.
+>>"%OUT%\report.txt" echo   Raw evidence is under exoplayer\ and mediaplayer\.
+>>"%OUT%\report.txt" echo ===============================================================
 type "%OUT%\report.txt"
 
 REM one zip (PowerShell Compress-Archive is always present on Win10+)

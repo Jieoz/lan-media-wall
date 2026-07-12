@@ -2,6 +2,8 @@
 
 ## [v1.14.7] — 2026-07-12
 
+- **QZX 真机默认改为原生 MediaPlayer。** 同素材 A/B 已确认 ExoPlayer 可见掉帧，而脚本强制重建后实际运行的 MediaPlayer 顺畅；因此 `auto` 不再回落到 ExoPlayer。仍可显式选择 ExoPlayer 作为运维覆盖。
+- **修复设置页解码器“保存但未实际切换”。** 保存后用 `NEW_TASK|CLEAR_TASK` 重建 kiosk 任务：销毁旧 `MainActivity`、释放旧 controller，并按刚持久化的选择重建播放器,消除“设置显示 MediaPlayer、实际仍跑 ExoPlayer”。当前内核与来源进入 `status.video_backend` 与 player.log,不再静默漂移。
 - Fix QZX_C1 restart false negatives caused by truncating busy-ROM `ps` output before the Player row; the Windows harness now preserves raw `ps` evidence and parses the PID locally.
 - Keep double-clicked field-check windows open even when an inner command aborts before the normal footer.
 - Make A/B evidence per-run and fail closed on backend mismatch; never execute a second fallback restart after an authoritative daemon verdict.

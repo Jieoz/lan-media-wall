@@ -11,16 +11,12 @@ package com.jieoz.lanmediawall.player.media
  *      surgery. Source = `override`.
  *   2. [configured] — the operator's Settings choice (a concrete backend id).
  *      Source = `config`.
- *   3. AUTO fallback — neither above is a concrete backend. We deliberately keep
- *      the **legacy-stable default = ExoPlayer** (the shipped v1.14.x path) rather
- *      than silently switching the whole fleet to MediaPlayer on a hunch: the
- *      native path is offered for A/B and opt-in, and only becomes the default
- *      once real-QZX evidence justifies it (see README §backend-ab). Source =
- *      `auto-default`.
+ *   3. AUTO fallback — neither above is a concrete backend. Real QZX_C1 A/B
+ *      evidence showed ExoPlayer visibly dropping frames while the OEM native
+ *      MediaPlayer path was smooth, so AUTO resolves to MediaPlayer.
  *
- * Keeping AUTO = ExoPlayer honors the run's red line ("safe legacy default only
- * when evidence justifies it") and the "no ad-hoc device-name branch" rule: there
- * is exactly one knob, no `Build.MODEL == "QZX_C1"` special-casing.
+ * The default lives in exactly one place; there is no device-name branch. Explicit
+ * operator configuration and the temporary diagnostic override still take priority.
  */
 object BackendSelector {
 
@@ -32,7 +28,7 @@ object BackendSelector {
 
     /** Backend used when nothing explicit is set. Single place to flip the fleet
      *  default once real-device A/B evidence lands. */
-    val AUTO_DEFAULT: PlayerBackend = PlayerBackend.EXOPLAYER
+    val AUTO_DEFAULT: PlayerBackend = PlayerBackend.MEDIAPLAYER
 
     /**
      * @param override raw contents of the test-override file (null if absent).

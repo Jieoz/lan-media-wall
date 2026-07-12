@@ -21,8 +21,8 @@
     <string name="label_always_thumbs">Always send thumbnails</string>
     <!-- §backend-ab: video playback kernel selection. -->
     <string name="label_video_backend">Video backend (A/B)</string>
-    <string name="hint_video_backend">Which player kernel decodes video. Auto keeps the stable default (ExoPlayer). Try MediaPlayer if this box drops frames or black-screens. Takes effect after Save.</string>
-    <string name="backend_auto">Auto (recommended — ExoPlayer)</string>
+    <string name="hint_video_backend">Which player kernel decodes video. Auto uses native MediaPlayer, validated on QZX hardware. Saving immediately rebuilds the player.</string>
+    <string name="backend_auto">Auto (recommended — MediaPlayer)</string>
     <string name="backend_exoplayer">ExoPlayer (Media3, hardware-only)</string>
     <string name="backend_mediaplayer">Native MediaPlayer (system decoder)</string>
     <string name="action_save">Save and start</string>

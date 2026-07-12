@@ -21,8 +21,8 @@
     <string name="label_always_thumbs">始终发送缩略图</string>
     <!-- §backend-ab: 视频播放内核选择。 -->
     <string name="label_video_backend">视频内核(A/B 对比)</string>
-    <string name="hint_video_backend">用哪个播放内核解码视频。自动=保持稳定默认(ExoPlayer)。若本盒掉帧/黑屏,试试原生 MediaPlayer。保存后生效。</string>
-    <string name="backend_auto">自动(推荐 — ExoPlayer)</string>
+    <string name="hint_video_backend">用哪个播放内核解码视频。自动=原生 MediaPlayer(QZX 真机推荐)。保存后立即重建播放器并生效。</string>
+    <string name="backend_auto">自动(推荐 — MediaPlayer)</string>
     <string name="backend_exoplayer">ExoPlayer(Media3,仅硬解)</string>
     <string name="backend_mediaplayer">原生 MediaPlayer(系统解码器)</string>
     <string name="action_save">保存并启动</string>

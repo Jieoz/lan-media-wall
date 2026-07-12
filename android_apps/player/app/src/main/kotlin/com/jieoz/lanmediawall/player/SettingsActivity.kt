@@ -348,7 +348,12 @@ class SettingsActivity : AppCompatActivity() {
         }
         ContextCompat.startForegroundService(this, svc)
 
-        startActivity(Intent(this, MainActivity::class.java))
+        // Rebuild the kiosk task so the Activity-owned playback backend is released
+        // and recreated from the just-persisted selection. A plain startActivity()
+        // can reuse the existing MainActivity and leave the old backend running.
+        startActivity(Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        })
         finish()
     }
 
