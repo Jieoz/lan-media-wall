@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.14.7] — 2026-07-12
+
+- Fix QZX_C1 restart false negatives caused by truncating busy-ROM `ps` output before the Player row; the Windows harness now preserves raw `ps` evidence and parses the PID locally.
+- Keep double-clicked field-check windows open even when an inner command aborts before the normal footer.
+- Make A/B evidence per-run and fail closed on backend mismatch; never execute a second fallback restart after an authoritative daemon verdict.
+
 ## [v1.14.6] — 2026-07-12
 
 - Restart verification now proves that the real daemon worker ran exactly once and actually transitioned the app: `force-stop` must succeed, the post-restart PID must differ from the captured pre-restart PID, and both process-up and activity-resumed signals must pass. Missing daemon, a nonzero worker verdict, unsupported activity evidence, or an unchanged PID all fail closed; manual controller action can no longer be mislabeled as automatic recovery.

@@ -1,4 +1,11 @@
 @echo off
+REM Keep the final screen visible even if an inner parser/command aborts before the
+REM normal footer. Set QZX_NO_PAUSE=1 only for CI/automation.
+if not defined QZX_NO_PAUSE if not defined QZX_KEEP_OPEN (
+  set "QZX_KEEP_OPEN=1"
+  cmd /k call "%~f0" %*
+  exit /b
+)
 setlocal enabledelayedexpansion
 REM ==========================================================================
 REM  qzx_field_check.bat - ONE DOUBLE-CLICK real-device field check for QZX_C1.
@@ -96,7 +103,8 @@ REM capture BEFORE state
 
 REM record BEFORE pid to detect the relaunch (new pid = process came back)
 set "BEFORE_PID="
-for /f "tokens=2" %%P in ('%ADB% shell "ps ^| grep -w %PKG% ^| grep -v grep" 2^>nul') do if not defined BEFORE_PID set "BEFORE_PID=%%P"
+%ADB% shell ps > "%OUT%\restart\ps_before.txt" 2>nul
+for /f "tokens=2" %%P in ('findstr /e /c:" %PKG%" "%OUT%\restart\ps_before.txt"') do if not defined BEFORE_PID set "BEFORE_PID=%%P"
 
 set "DAEMON_RC=n/a"
 if "%DAEMON_PRESENT%"=="yes" (
@@ -120,7 +128,8 @@ set "AFTER_PID="
 set /a ELAPSED=0
 :poll
 set "AFTER_PID="
-for /f "tokens=2" %%P in ('%ADB% shell "ps ^| grep -w %PKG% ^| grep -v grep" 2^>nul') do if not defined AFTER_PID set "AFTER_PID=%%P"
+%ADB% shell ps > "%OUT%\restart\ps_after.txt" 2>nul
+for /f "tokens=2" %%P in ('findstr /e /c:" %PKG%" "%OUT%\restart\ps_after.txt"') do if not defined AFTER_PID set "AFTER_PID=%%P"
 if defined AFTER_PID if not "%AFTER_PID%"=="%BEFORE_PID%" ( set "PROCESS_UP=1" & goto polled )
 if %ELAPSED% GEQ %RESTART_TIMEOUT% goto polled
 ping -n 3 127.0.0.1 >nul
@@ -186,8 +195,11 @@ for %%K in (exoplayer mediaplayer) do (
   mkdir "%OUT%\%%K" 2>nul
   %ADB% shell "echo %%K > %OVERRIDE%" 1>nul 2>nul
   %ADB% shell "cat %OVERRIDE%" > "%OUT%\%%K\override_readback.txt" 2>nul
-  REM restart via the real daemon worker; fall back to explicit am start
-  %ADB% shell "su 0 %DAEMON% -restart 2>/dev/null || (am force-stop %PKG%; sleep 1; am start -n %COMPONENT% -f 0x10200000)" 1>nul 2>nul
+  REM Isolate this kernel's evidence window. A daemon verification error is
+  REM authoritative and must never trigger a second restart.
+  set "MARKER_%%K=qzx_ab_%%K_!RANDOM!!RANDOM!"
+  %ADB% shell ": > /data/data/%PKG%/%LOG_REL%; rm -f /data/data/%PKG%/%LOG_REL%.1" 1>nul 2>nul
+  %ADB% shell "su 0 %DAEMON% -restart" > "%OUT%\%%K\restart_trigger.txt" 2>&1
   echo     playing %PLAY_SECONDS%s on %%K ...
   ping -n %PLAY_SECONDS% 127.0.0.1 >nul
   %ADB% shell "cat /data/data/%PKG%/%LOG_REL%"   > "%OUT%\%%K\player.log"   2>nul
@@ -196,13 +208,19 @@ for %%K in (exoplayer mediaplayer) do (
   %ADB% shell "dumpsys meminfo %PKG%"            > "%OUT%\%%K\meminfo.txt"  2>nul
   %ADB% shell "dumpsys gfxinfo %PKG%"            > "%OUT%\%%K\gfxinfo.txt"  2>nul
   %ADB% shell "ls -l /data/data/%PKG%/files/logs"> "%OUT%\%%K\logs_ls.txt"  2>nul
+  findstr /c:"video_backend=%%K" "%OUT%\%%K\player.log" >nul 2>nul
+  if errorlevel 1 (
+    echo backend_mismatch expected=%%K evidence=absent>"%OUT%\%%K\backend_validation.txt"
+  ) else (
+    echo backend_match expected=%%K>"%OUT%\%%K\backend_validation.txt"
+  )
   echo     collected -^> %OUT%\%%K
 )
 
 echo.
 echo === restoring box (remove A/B override + relaunch configured kernel) ===
 %ADB% shell "rm -f %OVERRIDE%" 1>nul 2>nul
-%ADB% shell "su 0 %DAEMON% -restart 2>/dev/null || am start -n %COMPONENT% -f 0x10200000" 1>nul 2>nul
+%ADB% shell "su 0 %DAEMON% -restart" 1>nul 2>nul
 
 echo.
 echo === summarizing A/B (dropped-frame honesty; playback-never-started detector) ===

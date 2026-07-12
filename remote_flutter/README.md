@@ -5,7 +5,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.6+54`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.7+55`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+>
+> **v1.14.7**:根据 QZX_C1 真实现场包修复诊断误判：daemon 的 `ps` 捕获不再被 8 KiB 截断，BAT 保存完整 `ps` 后解析 PID；双击窗口即使中途命令失败也会保持打开。A/B 每轮清空独立日志窗口并校验实际启动 backend，daemon 非零结果不再触发第二次 fallback 重启，避免旧 Exo 日志冒充 MediaPlayer 对照。控制端功能无改动。
 >
 > **v1.14.6**:收紧 QZX 重启验收：必须由真实 daemon worker 单次执行且返回成功，force-stop 成功并观察到新 PID，随后同时满足 PROCESS_UP 与 ACTIVITY_RESUMED；daemon 缺失、worker 非零、旧 PID 未变化均失败。另包含 v1.14.5 的发布资产清单修正，确保一键真机 `qzx_field_check.bat/.sh` 与守护进程一起进入 Update Tools ZIP；同时包含 v1.14.4 的 root daemon `RESTART_APP` 改为确定性「验证-重试」状态机,区分 PROCESS_UP 与 ACTIVITY_RESUMED(仅进程回来但活动没到前台=部分失败,不算恢复),重启证据日志给出显式 `restart_verified`/`restart_failed` 终态;新增一键真机 `scripts/qzx_field_check.*`(重启双信号验证 + ExoPlayer/MediaPlayer A/B)。控制端功能无改动,版本随全端 pubspec 同步递增。
 >

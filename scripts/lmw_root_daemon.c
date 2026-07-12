@@ -572,7 +572,9 @@ static int lmw_capture_cmd(const char *cmd, char *out, size_t outsz) {
 // package process NAME (lmw_extract_pid), not by "am didn't error". Returns pid or
 // -1. On 4.4 toolbox `ps` with no filter lists everything; we scan for our name.
 static int lmw_player_pid(void) {
-    char ps_out[8192];
+    // Busy vendor ROMs can emit more than 8 KiB from toolbox ps. Truncating the
+    // snapshot before the Player row turns a healthy relaunch into a false timeout.
+    char ps_out[65536];
     if (!lmw_capture_cmd("ps", ps_out, sizeof(ps_out))) return -1;
     return lmw_extract_pid(ps_out, LMW_PKG);
 }
