@@ -1245,6 +1245,7 @@ Future<void> _pushContentToDeviceDialog(
                           sync: false,
                           loop: loop,
                           items: items,
+                          mode: 'replace',
                           deviceId: device.deviceId,
                         );
                         state.cachePrefetch(items, deviceId: device.deviceId);

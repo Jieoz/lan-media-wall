@@ -794,7 +794,7 @@ class WallState extends ChangeNotifier {
     required bool sync,
     required bool loop,
     required List<MediaItem> items,
-    String mode = 'replace',
+    String mode = 'append',
     String? deviceId,
   }) {
     _send(

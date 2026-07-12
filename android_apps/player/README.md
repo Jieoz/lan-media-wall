@@ -1,5 +1,10 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.14.9:** API19 单 VDEC 的视频切换不再直接露出
+> MediaPlayer 重建阶段：切换前复用当前项目已缓存的 JPEG 到既有 ImageView，
+> 新视频真实首帧或失败回调后撤下覆盖层。该路径不用 PixelCopy、不并行开启
+> 第二解码器，单视频循环仍走 `setLooping(true)`。
+
 **双视频内核 A/B(v1.14.2,§backend-ab)**:视频播放现有**两个一等公民内核**,同一份 `VideoBackend` 合同、可在同一台盒子 + 同一素材上 A/B 对比:① `ExoPlayer`(Media3,仅硬解,v1.14.0 路径);② **原生 `android.media.MediaPlayer`**(走盒子 OEM 自己的 Stagefright/OMX 管线——厂商固件真正调优的那条,在这批 HiSilicon 上可能优于 ExoPlayer 通用编解码链)。`PlayerController` 收敛为**门面**:只持一个内核 + 与解码器无关的图片/缩略图路径,故 service/协议层完全与内核无关,`load/play_at/pause/resume/stop/seek/volume/playlist/status/heartbeat` 在两内核上行为一致。内核选择走**设置页单选(自动/ExoPlayer/原生 MediaPlayer)**,`自动`=旧稳定默认(ExoPlayer,经纯逻辑 `BackendSelector` 决策,**无 evidence 不擅自切全网、无 `Build.MODEL` 机型分支**);`/data/local/tmp/lmw_video_backend` 覆盖文件(测试用)优先于设置。当前内核 + 原因(如 `mediaplayer(override)`)写进 `status.video_backend`、设置页与诊断包。A/B 指标**只记两内核都能诚实提供的值**(prepare/首帧延迟、buffering/stall、completion、error、分辨率;dropped-frame 仅 ExoPlayer 有,原生记 `n/a` 而非假 0)。一键真机对比见根 `scripts/qzx_ab_backend.sh` / `.bat`。
 
 **视频硬解 + root 守护进程(v1.14.0)**:视频输出用 `SurfaceView` 让 API 19/HiSilicon 硬解走 HWC/overlay;ExoPlayer 经 `MediaCodecSelector` **只选硬件视频解码器**(排除 `OMX.google.*`/`c2.android.*`/API 报告的 softwareOnly),无硬件解码器时显式失败并记日志,绝不静默软解(音频照常)。导出日志含所选解码器名 + 硬/软分类 + 初始化耗时。控制端缩略图改为一次性缓存帧复用——**视频正在播放时绝不再开第二个解码器抽帧**。远程重启/推送升级改由 root 守护进程 `lmw_root_daemon`(见下),弃用 setuid helper(目标机 `no_new_privs` 下失效)。
@@ -12,7 +17,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.8 / versionCode 56`** — derived from
+> **Current build: `versionName 1.14.9 / versionCode 57`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

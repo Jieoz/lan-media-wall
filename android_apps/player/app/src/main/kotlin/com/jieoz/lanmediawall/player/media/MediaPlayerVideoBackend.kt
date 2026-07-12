@@ -55,6 +55,7 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     override var logSink: ((String) -> Unit)? = null
     override var onError: ((String) -> Unit)? = null
     override var onEnded: (() -> Unit)? = null
+    override var onFirstFrame: (() -> Unit)? = null
 
     private fun log(msg: String) { logSink?.invoke(msg) }
 
@@ -184,7 +185,7 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
         mp.setOnPreparedListener { onPrepared(it) }
         mp.setOnCompletionListener { onCompletion() }
         mp.setOnErrorListener { _, what, extra -> onErrorCb(what, extra) }
-        mp.setOnInfoListener { _, what, extra -> onInfo(what, extra) }
+        mp.setOnInfoListener { owner, what, extra -> onInfo(owner, what, extra) }
         mp.setOnVideoSizeChangedListener { _, w, h ->
             metrics.onVideoSize(w, h)
             log("video_size ${w}x${h}")
@@ -270,13 +271,15 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
         return true // handled: suppress the default error dialog path
     }
 
-    private fun onInfo(what: Int, extra: Int): Boolean {
+    private fun onInfo(owner: MediaPlayer, what: Int, extra: Int): Boolean {
+        if (player !== owner) return false // stale callback from a retired load
         when (what) {
             MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> { // API 17+; first real frame
                 if (!firstFrameSeen) {
                     firstFrameSeen = true
                     metrics.onFirstFrame(SystemClock.elapsedRealtime() - loadStartedMs)
                     log("first_frame rendered position_ms=${safePosition()}")
+                    onFirstFrame?.invoke()
                 }
             }
             MediaPlayer.MEDIA_INFO_BUFFERING_START -> {

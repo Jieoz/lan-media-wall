@@ -1,6 +1,8 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
-The controller orchestration pane can load and edit the active playlist reported by an online device. Applying edits replaces that device's active playlist only; cache inventory and cache files remain separate.
+> **v1.14.9:** controller composition now defaults to adding items to the active ordered playlist; explicit whole-list replacement remains a clearly labelled operation. On QZX API19 single-VDEC devices, MediaPlayer video-to-video switches reuse the existing ImageView and an already cached JPEG as a temporary hold frame, rebuilding only one decoder and removing the overlay on first frame or error. No PixelCopy (unavailable on API19) and no concurrent decoder are used.
+
+The controller orchestration pane can load and edit the active playlist reported by an online device. Ordinary composition adds items by `item_id`; the separately labelled whole-list operation replaces that device's active playlist. Cache inventory and cache files remain separate.
 
 [![ci](https://github.com/Jieoz/lan-media-wall/actions/workflows/ci.yml/badge.svg)](https://github.com/Jieoz/lan-media-wall/actions/workflows/ci.yml)
 [![windows-build](https://github.com/Jieoz/lan-media-wall/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Jieoz/lan-media-wall/actions/workflows/windows-build.yml)

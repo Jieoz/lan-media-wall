@@ -1151,6 +1151,7 @@ class PlayerService : Service() {
     private fun advance(delta: Int) {
         val pl = playlist ?: return
         if (pl.items.isEmpty()) return
+        val oldItemId = pl.items.getOrNull(index)?.itemId
         dwellTimer.getAndSet(null)?.cancel()
         var newIndex = index + delta
         if (newIndex < 0 || newIndex >= pl.items.size) {
@@ -1168,15 +1169,16 @@ class PlayerService : Service() {
             armDwell(item)
         } else {
             ctl?.onVideoEnded = { onCurrentEnded() }
-            // §6.3 transition: on the single-VDEC API19 target we IMMEDIATE_SWAP
-            // (release A, prepare B) — a brief black gap is an honest platform
-            // limit; a 2nd concurrent decoder to hold A's frame would risk the
-            // verified-smooth playback. Logged for field evidence.
+            // API19 SurfaceView has no PixelCopy. Reuse the most recent cached JPEG
+            // in the existing ImageView, then rebuild the ONE MediaPlayer. The
+            // backend's real first-frame callback removes it; any error removes it too.
             val strat = TransitionPolicy.transitionStrategy(
                 androidSdk = Build.VERSION.SDK_INT, concurrentDecoders = 1)
+            val held = oldItemId?.let { ctl?.cachedThumbnail(it)?.second }
+            val overlay = ctl?.showTransitionFrame(held) == true
             logEvent("transition to=${item.itemId} idx=$newIndex strategy=$strat " +
-                "loop_strategy=${TransitionPolicy.loopStrategy(pl.items.size, pl.loop)}")
-            ctl?.loadAndPlay(source, 0, singleLoop(pl))
+                "overlay_cached=$overlay loop_strategy=${TransitionPolicy.loopStrategy(pl.items.size, pl.loop)}")
+            ctl?.loadAndPlay(source, 0, singleLoop(pl), preserveOverlay = overlay)
         }
         playState = "playing"
         persistLastTask(pl.playlistId, newIndex, 0)

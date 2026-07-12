@@ -41,6 +41,7 @@ class PlayerController(
     @Volatile private var lastError: String? = null
     private val thumbSeq = AtomicInteger(0)
     private val thumbnailFlight = ThumbnailSingleFlight()
+    private val transitionState = VideoTransitionStateMachine()
     /** §6.4 root-performance: one cached thumbnail per item (keyed by itemId). */
     private val thumbnailCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, ByteArray>>()
 
@@ -57,7 +58,12 @@ class PlayerController(
     /** Called when the kernel reports an unrecoverable error (watchdog hook). */
     var onPlayerError: ((String) -> Unit)?
         get() = videoBackend.onError
-        set(value) { videoBackend.onError = value }
+        set(value) {
+            videoBackend.onError = { error ->
+                finishTransition(failed = true)
+                value?.invoke(error)
+            }
+        }
 
     /** Called once when a non-looping video reaches its end (§6.3 carousel). */
     var onVideoEnded: (() -> Unit)?
@@ -81,7 +87,34 @@ class PlayerController(
 
     /** Attach the ImageView used to draw `type=="image"` playlist items (§6.1). */
     fun attachImageView(view: ImageView) {
-        runOnMain { imageView = view }
+        runOnMain {
+            imageView = view
+            videoBackend.onFirstFrame = {
+                finishTransition(failed = false)
+            }
+        }
+    }
+
+    /** Existing cached JPEG → existing ImageView while the single decoder rebuilds. */
+    fun showTransitionFrame(jpeg: ByteArray?): Boolean {
+        val bmp = jpeg?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        if (bmp == null || imageView == null) return false
+        runOnMain {
+            if (transitionState.begin(true) == VideoTransitionStateMachine.Action.SHOW_CACHED_FRAME) {
+                imageView?.let { iv ->
+                    iv.setImageBitmap(bmp)
+                    iv.visibility = ImageView.VISIBLE
+                }
+            }
+        }
+        return true
+    }
+
+    private fun finishTransition(failed: Boolean) {
+        runOnMain {
+            val action = if (failed) transitionState.failed() else transitionState.firstFrameRendered()
+            if (action == VideoTransitionStateMachine.Action.HIDE_OVERLAY) hideImage()
+        }
     }
 
     fun detachSurface() {
@@ -97,8 +130,8 @@ class PlayerController(
     }
 
     /** Load and start playing immediately (used for non-synced / advance). */
-    fun loadAndPlay(uri: String, seekMs: Long = 0, loop: Boolean = false) {
-        hideImage()
+    fun loadAndPlay(uri: String, seekMs: Long = 0, loop: Boolean = false, preserveOverlay: Boolean = false) {
+        if (!preserveOverlay) hideImage()
         lastError = null
         videoBackend.loadAndPlay(uri, seekMs, loop)
     }

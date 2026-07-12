@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.14.9] — 2026-07-12
+
+- Fixed controller composition semantics: ordinary “编排/添加项目” now appends by default, while whole-list replacement is explicit in both payload and UI. Sequential A then B composition keeps `[A, B]` so previous/next target distinct content.
+- Fixed API19 single-VDEC MediaPlayer transitions without a second decoder: the existing ImageView holds the previous item's cached JPEG while the same MediaPlayer is released/rebuilt, then clears on the new source's real first-frame callback or on failure. Single-item playback still uses `setLooping(true)`.
+
 ## [v1.14.8] — 2026-07-12
 
 - Added ordered playlist `replace`/`append` semantics across the Flutter controller, protocol, and Android player. Append de-duplicates by `item_id`, preserves the current item and persisted index, and reports `current_index`/`playlist_count` without conflating the active sequence with cached files.

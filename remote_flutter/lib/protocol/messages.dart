@@ -407,16 +407,16 @@ class Commands {
         'items': items.map((e) => e.toMap()).toList(),
       };
 
-  /// playlist 下发（§6.3）。[mode] 显式区分 replace（默认，整列替换并从头播）
-  /// 与 append（按 item_id 去重合并到当前有序列表尾部，保留当前播放位置）。
-  /// 老遥控端不带 mode，播放器默认 replace（向后兼容）。
+  /// playlist 下发（§6.3）。[mode] 显式区分 append（控制端普通编排默认：按 item_id
+  /// 去重合并到当前有序列表尾部，保留当前播放位置）与 replace（显式整列替换并从头播）。
+  /// 老遥控端不带 mode 时播放器仍默认 replace（线协议向后兼容）。
   static Map<String, dynamic> playlist({
     required String playlistId,
     required String groupId,
     required bool sync,
     required bool loop,
     required List<MediaItem> items,
-    String mode = 'replace',
+    String mode = 'append',
   }) =>
       {
         'playlist_id': playlistId,

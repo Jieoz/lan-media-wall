@@ -43,6 +43,7 @@ class ExoVideoBackend(context: Context) : VideoBackend {
     override var logSink: ((String) -> Unit)? = null
     override var onError: ((String) -> Unit)? = null
     override var onEnded: (() -> Unit)? = null
+    override var onFirstFrame: (() -> Unit)? = null
 
     private fun log(msg: String) { logSink?.invoke(msg) }
 
@@ -118,6 +119,7 @@ class ExoVideoBackend(context: Context) : VideoBackend {
                     if (loadStartedMs != 0L) metrics.onFirstFrame(now - loadStartedMs)
                     firstFrameSeen = true
                     log("first_frame rendered position_ms=${p.currentPosition}")
+                    onFirstFrame?.invoke()
                 }
 
                 override fun onMediaItemTransition(mediaItem: ExoMediaItem?, reason: Int) {

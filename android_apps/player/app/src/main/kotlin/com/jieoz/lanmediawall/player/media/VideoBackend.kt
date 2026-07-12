@@ -38,6 +38,9 @@ interface VideoBackend {
      *  advances the playlist (§6.3). Looping playback never fires this. */
     var onEnded: (() -> Unit)?
 
+    /** Fired only after the new source has rendered real pixels. */
+    var onFirstFrame: (() -> Unit)?
+
     /** Build the kernel (idempotent). */
     fun init()
 

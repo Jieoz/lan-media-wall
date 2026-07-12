@@ -1,11 +1,16 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.14.9:** 普通「编排/添加项目到当前列表」默认发送
+> `mode=append`；整列替换改为明确标注的缓存/播放操作并显式发送
+> `mode=replace`。逐项添加 A、B 因而保留为同一有序活动节目单，而不是让 B
+> 静默覆盖 A。
+
 **播放列表编排**：在线设备状态中的 `active_playlist` 是独立于 `cache` 的有序节目单。编排栏可载入单台设备的节目单、上移/下移或删除项目，再单播应用回该设备；删除节目单项目不会删除盒子上的缓存文件。
 
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.8+56`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.9+57`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.14.8**:控制端配合有序播放列表 `replace`/`append`——`sendPlaylist` 新增 `mode` 参数,编排面板新增「③追加到当前列表」按钮(`_doAppend`,复用被控端保留的 `playlist_id`,按 `item_id` 去重合并到当前序列尾部、不打断在播内容;老播放器不认 `mode` 自动回退 `replace`);`DeviceStatus` 解析 additive 的 `current_index`/`playlist_count`。**拓扑诊断诚实化**:诊断汇总区分 **operating**(本端实际连接方式)与 **declared**(协调端 welcome 声明)两个拓扑并同时打印,修「汇总说 `topology=dedicated,p2p_peers=0` 而日志说 `topology=p2p`」的自相矛盾;broker 路径收到本应由 broker 聚合的 `status/time_sync/ready` 时显式记「落到 broker 路径被丢弃」而非静默,`online=null` 变可归因。
 >

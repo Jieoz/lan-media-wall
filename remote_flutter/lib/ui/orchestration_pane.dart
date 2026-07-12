@@ -130,7 +130,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             final group = d?.status?.groupId ?? _groupId ?? '';
             state.sendPlaylist(playlistId: _loadedPlaylistId ?? _newPlaylistId(),
               groupId: group, sync: _sync, loop: _loop,
-              items: _items, deviceId: _deviceId);
+              items: _items, mode: 'replace', deviceId: _deviceId);
             _toast('已更新 ${d?.deviceName ?? _deviceId} 的播放列表；未删除缓存文件');
           },
         ),
@@ -279,17 +279,17 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             children: [
               OutlinedButton.icon(
                 icon: const Icon(Icons.download),
-                label: const Text('①仅下发缓存 (不播)'),
+                label: const Text('显式整列替换并缓存 (不播)'),
                 onPressed: _canSend ? () => _doPrefetch(state) : null,
               ),
-              FilledButton.icon(
+              OutlinedButton.icon(
                 icon: const Icon(Icons.play_circle),
-                label: const Text('②推送并播放'),
+                label: const Text('显式整列替换并播放'),
                 onPressed: _canSend ? () => _doBarrierPlay(state) : null,
               ),
-              OutlinedButton.icon(
+              FilledButton.icon(
                 icon: const Icon(Icons.playlist_add),
-                label: const Text('③追加到当前列表'),
+                label: const Text('编排/添加项目到当前列表'),
                 onPressed: _canSend ? () => _doAppend(state) : null,
               ),
             ],
@@ -429,6 +429,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         sync: _sync,
         loop: _loop,
         items: _items,
+        mode: 'replace',
       );
       state.cachePrefetch(_items, groupId: _groupId);
       _toast('已下发列表 + 预缓存 (${_items.length} 项)');
@@ -446,6 +447,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         sync: _sync,
         loop: _loop,
         items: _items,
+        mode: 'replace',
       );
       state.cachePrefetch(_items, groupId: _groupId);
       // §21 栅栏:等全员 cache=ready 才统一起播。
