@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:lan_media_wall/protocol/messages.dart';
-import 'package:lan_media_wall/protocol/models.dart';
+import 'package:remote_flutter/protocol/messages.dart';
 
 void main() {
   final item = MediaItem(
