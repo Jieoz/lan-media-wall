@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.14.13] — 2026-07-13
+
+- Disabled `FlutterActivity` Android instance/navigation restoration through a repository-owned `MainActivity` template that CI installs after `flutter create`; real process restarts now enter `ResponsiveShell`, while an ordinary pause/resume leaves a live settings dialog alone.
+- Made Android release lanes and tag promotion fail closed: all signing secrets and the configured production certificate fingerprint are mandatory, missing `apksigner` is fatal, and every promoted APK must carry pubspec `versionName=1.14.13` / `versionCode=61` and exactly the expected signer.
+- Normalized duplicate physical `Range` headers to an empty `416 Content-Range: bytes */total` response and added a raw-socket regression test.
+- Made the Android player self-diagnosable at 启动中 without adb: startup is now classified (`WAITING_SETUP` fresh install vs `STARTING` vs `START_FAILED`) by a pure, unit-tested `StartupStatusPolicy`; a stalled foreground-service creation flips to an actionable on-screen cause within 8s; a "restart player service" button retries with `Throwable` capture; and an "export diagnostics to a file" button writes the startup phase + settings + `player.log` tail to a USB/file-manager-readable path that works even when no service is running (no LAN link required).
+- Hoisted the controller's multi-file playlist out of transient Widget state into a tested `PlaylistDraft` model (multi-select import with `item_id` de-dup + order, reorder/remove/clear, load-from-active-playlist, immutable public view) so the orchestration pane's list, sync/loop options, and push/append actions all read one source of truth.
+
 ## [v1.14.12] — 2026-07-13
 
 - Replaced the Android player's fixed FIFO download pool with a bounded two-lane scheduler: 2 active workers, at most 64 pending items, foreground promotion for the current `prepare` item, background FIFO for playlist prefetch, and item-id de-duplication. New prepare generations cancel and invalidate stale cache waiters before they can prime the decoder or report `ready`.

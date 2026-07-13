@@ -95,6 +95,8 @@ class Downloader(
     private val retryMaxDelayMs: Long = 30_000L,
     private val retryJitterMs: Long = 250L,
     private val maxRetryAttempts: Int = 5,
+    /** Injectable real Call factory used by deterministic concurrency fixtures. */
+    private val callFactory: Call.Factory? = null,
     /**
      * Diagnostic sink → PlayerService.logEvent so cache-path decisions land in
      * the **exported** player.log, not logcat. The last black-screen regression
@@ -468,8 +470,15 @@ class Downloader(
                 var existing = if (part.exists()) part.length() else 0L
                 val builder = Request.Builder().url(item.url).get()
                 RangeMath.rangeHeader(existing)?.let { builder.header("Range", it) }
-                val call = client.newCall(builder.build())
-                activeCalls[itemId] = call
+                val call = synchronized(this) {
+                    if (stopped || inFlight[itemId] != token) return
+                    val created = (callFactory ?: client).newCall(builder.build())
+                    // Creation and publication are owned by the same lifecycle lock as stop.
+                    // stop therefore either runs first (no Call is created), or observes and
+                    // cancels this exact Call before it can escape into execute().
+                    activeCalls[itemId] = created
+                    created
+                }
                 val retryDelay = call.execute().use { resp ->
                     activeCalls.remove(itemId, call)
                     val code = resp.code()
@@ -598,12 +607,26 @@ class Downloader(
     }
 
     fun stop() {
-        synchronized(this) { stopped = true }
-        activeCalls.values.forEach { try { it.cancel() } catch (_: Exception) {} }
+        stopAndAwait(STOP_AWAIT_MS)
+    }
+
+    /**
+     * Close the downloader and wait until every bounded worker has exited.
+     * The stopped transition shares [this] with Call creation/publication, so
+     * the captured list is complete: no worker can publish a new Call after it.
+     */
+    fun stopAndAwait(timeoutMs: Long): Boolean {
+        val calls = synchronized(this) {
+            stopped = true
+            activeCalls.values.toList()
+        }
+        calls.forEach { try { it.cancel() } catch (_: Exception) {} }
         client.dispatcher().cancelAll()
         pool.shutdownNow()
+        val terminated = pool.awaitTermination(timeoutMs)
         val leftovers = synchronized(this) { inFlight.toMap() }
         leftovers.forEach { (itemId, token) -> cancelToken(itemId, token, "stopped") }
+        return terminated
     }
 
     companion object {
@@ -612,6 +635,8 @@ class Downloader(
         private const val MAX_CONCURRENT_DOWNLOADS = 2
         /** Bound retained lambdas/items; excess work fails visibly as queue-full. */
         private const val MAX_QUEUED_DOWNLOADS = 64
+        /** Bound service teardown without relying on high-API lifecycle primitives. */
+        private const val STOP_AWAIT_MS = 5_000L
         /** §6 写前探针大小:够小以免自身造成过度写,够大以真触达闪存写路径。4 MiB。 */
         private const val PROBE_BYTES = 4 * 1024 * 1024
     }

@@ -101,6 +101,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts
 
+      - name: Install Android command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y aapt apksigner
+          command -v aapt
+          command -v apksigner
+
       - name: Validate and promote immutable artifacts
         shell: bash
         env:
@@ -110,13 +119,21 @@ jobs:
           ANDROID_RUN_ID: ${{ steps.runs.outputs.android }}
           WINDOWS_RUN_ID: ${{ steps.runs.outputs.windows }}
           BROKER_RUN_ID: ${{ steps.runs.outputs.broker }}
+          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
+          if [ -z "$EXPECTED_ANDROID_CERT_SHA256" ]; then
+            echo "::error::Missing required expected Android signer certificate"
+            exit 1
+          fi
           python3 scripts/promote_release_artifacts.py \
             --source artifacts \
             --output release \
             --tag "${GITHUB_REF_NAME}" \
             --commit-sha "$TARGET_SHA" \
+            --expected-cert-sha256 "$EXPECTED_ANDROID_CERT_SHA256" \
+            --aapt2 "$(command -v aapt)" \
+            --apksigner "$(command -v apksigner)" \
             --run "ci.yml=$CI_RUN_ID" \
             --run "flutter-build.yml=$FLUTTER_RUN_ID" \
             --run "android-build.yml=$ANDROID_RUN_ID" \

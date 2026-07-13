@@ -44,6 +44,7 @@ class SettingsActivity : AppCompatActivity() {
     private val ui = Handler(Looper.getMainLooper())
     private val connTick = object : Runnable {
         override fun run() {
+            detectStalledServiceStart()
             renderConnStatus()
             ui.postDelayed(this, 1000)
         }
@@ -56,6 +57,14 @@ class SettingsActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         prefillFromSettings()
+        val startupPhase = StartupStatusPolicy.phaseFor(
+            configured = settings.isConfigured,
+            servicePresent = PlayerService.instance != null,
+            current = ConnState.phase,
+            startRequestedElapsedMs = serviceStartElapsedMs,
+            nowElapsedMs = android.os.SystemClock.elapsedRealtime(),
+        )
+        if (startupPhase != ConnState.phase) ConnState.set(startupPhase)
         showDeviceInfoAndQr()
         showHardwareSelfCheck()
         showBloatware()
@@ -64,6 +73,8 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnSave.setOnClickListener { save() }
         binding.btnResetConn.setOnClickListener { confirmResetConnection() }
         binding.btnRefreshDiag.setOnClickListener { renderDiagnostics() }
+        binding.btnRestartService.setOnClickListener { startPlayerService() }
+        binding.btnExportDiag.setOnClickListener { exportDiagnostics() }
     }
 
     override fun onResume() {
@@ -161,7 +172,12 @@ class SettingsActivity : AppCompatActivity() {
     private fun renderConnStatus() {
         val d = ConnState.detail
         val text = when (ConnState.phase) {
+            ConnState.Phase.WAITING_SETUP -> getString(R.string.conn_waiting_setup)
             ConnState.Phase.STARTING -> getString(R.string.conn_starting)
+            ConnState.Phase.START_FAILED -> getString(
+                R.string.conn_start_failed_fmt,
+                d.ifBlank { getString(R.string.conn_unknown_failure) },
+            )
             ConnState.Phase.DISCOVERING -> getString(R.string.conn_discovering)
             ConnState.Phase.CONNECTING_BROKER ->
                 getString(R.string.conn_connecting_broker_fmt, d)
@@ -175,6 +191,113 @@ class SettingsActivity : AppCompatActivity() {
                 else getString(R.string.conn_disconnected)
         }
         binding.textConnStatus.text = text
+    }
+
+    /** Turn a forever-STARTING OEM failure into an actionable on-screen state. */
+    private fun detectStalledServiceStart() {
+        if (ConnState.phase != ConnState.Phase.STARTING || PlayerService.instance != null) return
+        val age = android.os.SystemClock.elapsedRealtime() - serviceStartElapsedMs
+        if (serviceStartElapsedMs > 0L && age >= StartupStatusPolicy.SERVICE_START_TIMEOUT_MS) {
+            ConnState.set(ConnState.Phase.START_FAILED, getString(R.string.conn_service_not_created))
+        }
+    }
+
+    /** Start/restart with Throwable capture so TVs without ADB display the cause. */
+    private fun startPlayerService() {
+        ConnState.set(ConnState.Phase.STARTING, getString(R.string.conn_requesting_service))
+        serviceStartElapsedMs = android.os.SystemClock.elapsedRealtime()
+        val svc = Intent(this, PlayerService::class.java).apply {
+            action = PlayerService.ACTION_START
+        }
+        try {
+            ContextCompat.startForegroundService(this, svc)
+            toast(getString(R.string.service_restart_requested))
+        } catch (t: Throwable) {
+            ConnState.set(
+                ConnState.Phase.START_FAILED,
+                "${t.javaClass.simpleName}: ${t.message ?: getString(R.string.conn_unknown_failure)}",
+            )
+            renderConnStatus()
+            renderDiagnostics()
+        }
+    }
+
+    /**
+     * §2 no-ADB export: write the current diagnostics + startup phase + the
+     * persisted player.log tail to an external, file-manager-readable file.
+     *
+     * This deliberately does NOT depend on a running [PlayerService] or a
+     * controller link: the exact failure we must diagnose (stuck at 启动中 /
+     * START_FAILED) is when no service exists, so the LAN export path is dead.
+     * player.log is written under the shared app filesDir, so its tail is
+     * available here even across a failed service start. getExternalFilesDir is
+     * API 8+, so this holds the minSdk-19 line.
+     */
+    private fun exportDiagnostics() {
+        try {
+            val bundle = buildLocalDiagnosticText()
+            val dir = getExternalFilesDir(null) ?: filesDir
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "lmw-player-diag-${settings.deviceId}-${System.currentTimeMillis()}.txt")
+            file.writeText(bundle)
+            binding.textExportPath.text = getString(R.string.diag_export_ok_fmt, file.absolutePath)
+            toast(getString(R.string.diag_export_ok_fmt, file.absolutePath))
+        } catch (t: Throwable) {
+            val msg = "${t.javaClass.simpleName}: ${t.message ?: ""}"
+            binding.textExportPath.text = getString(R.string.diag_export_failed_fmt, msg)
+            toast(getString(R.string.diag_export_failed_fmt, msg))
+        }
+    }
+
+    /** Assemble a self-contained diagnostic text usable with no live service. */
+    private fun buildLocalDiagnosticText(): String {
+        val service = PlayerService.instance
+        return buildString {
+            appendLine("===== lan-media-wall player diagnostics =====")
+            appendLine("time_ms=${System.currentTimeMillis()}")
+            appendLine("app_version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("android_sdk=${Build.VERSION.SDK_INT}")
+            appendLine("device_id=${settings.deviceId}")
+            appendLine("device_name=${settings.deviceName}")
+            appendLine("group_id=${settings.groupId}")
+            appendLine("configured=${settings.isConfigured}")
+            appendLine("service_present=${service != null}")
+            appendLine("conn_phase=${ConnState.phase}")
+            appendLine("conn_detail=${ConnState.detail}")
+            appendLine("start_requested_elapsed_ms=$serviceStartElapsedMs")
+            appendLine("now_elapsed_ms=${android.os.SystemClock.elapsedRealtime()}")
+            appendLine("--- helper ---");   appendLine(describeHelper())
+            appendLine("--- restart ---");  appendLine(describeRestart())
+            appendLine("--- update ---");   appendLine(describeUpdate())
+            appendLine("--- playback ---"); appendLine(describePlayback())
+            appendLine("--- cache ---");    appendLine(describeCache())
+            appendLine("--- errors ---");   appendLine(describeErrors())
+            appendLine("--- probe ---");    appendLine(describeProbe())
+            appendLine("--- player.log tail (persisted, survives failed start) ---")
+            appendLine(readPlayerLogTail())
+        }
+    }
+
+    /** Read the tail of the persisted player.log without needing the service. */
+    private fun readPlayerLogTail(maxBytes: Int = 160 * 1024): String {
+        val logFile = File(filesDir, "logs/player.log")
+        val rotated = File(filesDir, "logs/player.log.1")
+        return buildString {
+            if (rotated.exists()) append(tailOf(rotated, maxBytes / 2))
+            if (logFile.exists()) {
+                append(tailOf(logFile, maxBytes))
+            } else if (!rotated.exists()) {
+                append("no player.log yet (service may have never created it)")
+            }
+        }
+    }
+
+    private fun tailOf(file: File, maxBytes: Int): String = try {
+        val bytes = file.readBytes()
+        val slice = if (bytes.size > maxBytes) bytes.copyOfRange(bytes.size - maxBytes, bytes.size) else bytes
+        String(slice)
+    } catch (e: Exception) {
+        "log:${e.message}"
     }
 
     private fun renderDiagnostics() {
@@ -295,10 +418,7 @@ class SettingsActivity : AppCompatActivity() {
         ConnState.set(ConnState.Phase.STARTING)
         // restart the service so the transport is re-selected under the reset
         // (now broker-less → auto-discover / p2p) state.
-        val svc = Intent(this, PlayerService::class.java).apply {
-            action = PlayerService.ACTION_START
-        }
-        ContextCompat.startForegroundService(this, svc)
+        startPlayerService()
         toast(getString(R.string.reset_conn_done))
     }
 
@@ -343,10 +463,7 @@ class SettingsActivity : AppCompatActivity() {
         settings.markConfigured()
 
         // Restart the service so it picks up the new connection settings.
-        val svc = Intent(this, PlayerService::class.java).apply {
-            action = PlayerService.ACTION_START
-        }
-        ContextCompat.startForegroundService(this, svc)
+        startPlayerService()
 
         // Rebuild the kiosk task so the Activity-owned playback backend is released
         // and recreated from the just-persisted selection. A plain startActivity()
@@ -359,4 +476,8 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun toast(msg: String) =
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+
+    companion object {
+        @Volatile private var serviceStartElapsedMs = 0L
+    }
 }

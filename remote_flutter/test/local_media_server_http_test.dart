@@ -86,6 +86,24 @@ void main() {
     }
   });
 
+  test('duplicate physical Range headers are one empty 416 response', () async {
+    final socket = await Socket.connect(InternetAddress.loopbackIPv4, server.port);
+    socket.write('GET /m/sample.bin HTTP/1.1\r\n'
+        'Host: 127.0.0.1\r\n'
+        'Range: bytes=0-1\r\n'
+        'Range: bytes=2-3\r\n'
+        'Connection: close\r\n\r\n');
+    await socket.flush();
+    final raw = await socket.fold<List<int>>(<int>[], (out, bytes) => out..addAll(bytes));
+    final response = String.fromCharCodes(raw);
+    final split = response.indexOf('\r\n\r\n');
+    expect(split, greaterThanOrEqualTo(0));
+    expect(response.substring(0, split), contains(' 416 '));
+    expect(response.substring(0, split).toLowerCase(), contains('content-length: 0'));
+    expect(response.substring(0, split).toLowerCase(), contains('content-range: bytes */10'));
+    expect(raw.sublist(split + 4), isEmpty);
+  });
+
   test('empty file without Range is a valid empty 200', () async {
     final result = await request('GET', 'empty');
     expect(result.response.statusCode, HttpStatus.ok);

@@ -56,6 +56,13 @@
          the wall is self-diagnosable instead of a bare "connection lost". -->
     <string name="label_conn_status">Connection status</string>
     <string name="conn_starting">Starting…</string>
+    <string name="conn_waiting_setup">Waiting for first-time setup: review the settings below, then choose Save and start</string>
+    <string name="conn_start_failed_fmt">Player service failed to start: %1$s</string>
+    <string name="conn_unknown_failure">unknown cause</string>
+    <string name="conn_service_not_created">Android did not create the player service within 8 seconds; the TV may be blocking background or autostart services</string>
+    <string name="conn_requesting_service">requesting player service start</string>
+    <string name="action_restart_service">Restart player service</string>
+    <string name="service_restart_requested">Restart requested; check the status above</string>
     <string name="conn_discovering">Searching LAN for a coordinator…</string>
     <string name="conn_connecting_broker_fmt">Connecting to broker %1$s…</string>
     <string name="conn_connected_broker_fmt">Connected to broker %1$s</string>
@@ -67,6 +74,9 @@
     <!-- §9 self-recovery: wipe broker config back to zero-config / QR pairing. -->
     <string name="action_reset_conn">Reset connection config</string>
     <string name="action_refresh_diag">Refresh diagnostics</string>
+    <string name="action_export_diag">Export diagnostics to a file</string>
+    <string name="diag_export_ok_fmt">Saved diagnostics to:\n%1$s\n(readable over USB / file manager, no adb needed)</string>
+    <string name="diag_export_failed_fmt">Could not write diagnostics file: %1$s</string>
     <string name="label_diag_status">Local diagnostics</string>
     <string name="diag_hint">Shows the currently readable root-daemon / restart / update / playback state on this device. No export required.</string>
     <string name="diag_unavailable">Unavailable</string>

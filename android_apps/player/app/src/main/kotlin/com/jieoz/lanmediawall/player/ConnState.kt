@@ -17,8 +17,12 @@ object ConnState {
 
     /** Coarse phase of the transport lifecycle. Ordered roughly by progression. */
     enum class Phase {
+        /** Fresh install: setup has not been saved, so no service should run yet. */
+        WAITING_SETUP,
         /** Nothing selected yet (service just started). */
         STARTING,
+        /** Foreground-service creation or bootstrap failed. */
+        START_FAILED,
         /** No broker configured → UDP-probing the LAN for a coordinator (§14.5). */
         DISCOVERING,
         /** A broker was found/configured → dialing it as a WS client (modes A/B). */

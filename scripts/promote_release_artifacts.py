@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -95,6 +96,56 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _tool_path(command: str, label: str) -> str:
+    path = shutil.which(command) if "/" not in command else command
+    if not path or not Path(path).is_file():
+        raise ValueError(f"{label} executable not found: {command}")
+    return path
+
+
+def _normalise_cert(value: str) -> str:
+    return re.sub(r"[^0-9a-f]", "", value.lower())
+
+
+def verify_android_apks(
+    source: Path,
+    *,
+    version: str,
+    build: int,
+    expected_cert_sha256: str,
+    aapt2: str,
+    apksigner: str,
+    runner=subprocess.run,
+) -> None:
+    if not expected_cert_sha256.strip():
+        raise ValueError("expected signer certificate SHA-256 is required")
+    if runner is subprocess.run:
+        aapt2 = _tool_path(aapt2, "aapt2")
+        apksigner = _tool_path(apksigner, "apksigner")
+    expected_cert = _normalise_cert(expected_cert_sha256)
+    if len(expected_cert) != 64:
+        raise ValueError("expected signer certificate SHA-256 must contain 64 hex digits")
+    apks = sorted(source.rglob("*.apk"))
+    if not apks:
+        raise ValueError("no Android APKs found for internal verification")
+    for apk in apks:
+        badging = runner([aapt2, "dump", "badging", str(apk)], check=True,
+                         text=True, capture_output=True).stdout
+        metadata = re.search(
+            r"^package:.*versionCode='(\d+)'.*versionName='([^']+)'", badging,
+            re.MULTILINE,
+        )
+        if not metadata or metadata.group(2) != version or int(metadata.group(1)) != build:
+            raise ValueError(
+                f"{apk}: versionName/versionCode mismatch; expected {version}/{build}"
+            )
+        certs = runner([apksigner, "verify", "--print-certs", str(apk)], check=True,
+                       text=True, capture_output=True).stdout
+        digests = re.findall(r"certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)", certs)
+        if len(digests) != 1 or _normalise_cert(digests[0]) != expected_cert:
+            raise ValueError(f"{apk}: signer certificate SHA-256 mismatch")
 
 
 def promote(source: Path, output: Path, tag: str) -> list[Path]:
@@ -186,9 +237,20 @@ def main() -> None:
     parser.add_argument(
         "--pubspec", type=Path, default=Path("remote_flutter/pubspec.yaml")
     )
+    parser.add_argument("--expected-cert-sha256", required=True)
+    parser.add_argument("--aapt2", required=True)
+    parser.add_argument("--apksigner", required=True)
     args = parser.parse_args()
 
     version, build = validate_tag(args.tag, args.pubspec)
+    verify_android_apks(
+        args.source,
+        version=version,
+        build=build,
+        expected_cert_sha256=args.expected_cert_sha256,
+        aapt2=args.aapt2,
+        apksigner=args.apksigner,
+    )
     promoted = promote(args.source, args.output, args.tag)
     try:
         runs = {name: int(run_id) for name, run_id in (item.split("=", 1) for item in args.run)}

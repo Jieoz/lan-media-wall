@@ -114,6 +114,7 @@ class PlayerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        ConnState.set(ConnState.Phase.STARTING, "service onCreate")
         instance = this
         settings = Settings(applicationContext)
         clock = ClockSync()
@@ -147,7 +148,15 @@ class PlayerService : Service() {
         scope.launch { resumeLast() }
         // §14.5: choose + build the transport off the main thread (the discovery
         // probe blocks), then start the link and the loops that talk to it.
-        scope.launch { selectAndStartTransport() }
+        scope.launch {
+            try {
+                selectAndStartTransport()
+            } catch (t: Throwable) {
+                val detail = "${t.javaClass.simpleName}: ${t.message ?: "transport bootstrap failed"}"
+                ConnState.set(ConnState.Phase.START_FAILED, detail)
+                logEvent("startup_failed $detail")
+            }
+        }
     }
 
     /**
@@ -762,17 +771,21 @@ class PlayerService : Service() {
             updateCacheProtection(pl)
             if (downloader.isReady(item.itemId)) {
                 val readyFile = downloader.readyPath(item.itemId)
-                readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
                 val path = readyFile?.absolutePath
                 if (path != null) {
-                    // §6.1: an image has no decoder to prime — it's shown at the
-                    // sync instant (play_at → scheduledStart). A video primes
-                    // paused so play_at just flips playWhenReady on.
-                    if (item.type != "image") {
-                        controllerRef?.loadPaused(path, seekMs, singleLoop(pl))
+                    prepareGeneration.runIfCurrent(generation) {
+                        readyFile.let { downloader.touch(it) }
+                        // §6.1: an image has no decoder to prime — it's shown at the
+                        // sync instant (play_at → scheduledStart). A video primes
+                        // paused so play_at just flips playWhenReady on.
+                        if (item.type != "image") {
+                            controllerRef?.loadPaused(path, seekMs, singleLoop(pl))
+                        }
+                        playState = "buffering"
+                        ready = true
+                        sendReady(pid, groupId, prepareId, true)
                     }
-                    playState = "buffering"
-                    ready = true
+                    if (ready) return
                 }
             } else if (prefetchBarrier) {
                 // §21 栅栏:后台等缓存完成再回 ready,不阻塞消息循环。
@@ -814,21 +827,19 @@ class PlayerService : Service() {
             if (!prepareGeneration.isCurrent(generation)) return
             if (downloader.isReady(item.itemId)) {
                 val readyFile = downloader.readyPath(item.itemId)
-                readyFile?.let { downloader.touch(it) }
                 val path = readyFile?.absolutePath
-                if (path != null) {
-                    if (!prepareGeneration.isCurrent(generation)) return
+                if (path != null && prepareGeneration.runIfCurrent(generation) {
+                    readyFile.let { downloader.touch(it) }
                     if (item.type != "image") {
                         controllerRef?.loadPaused(path, seekMs, singleLoop(pl))
                     }
                     playState = "buffering"
                     sendReady(pid, groupId, prepareId, true)
-                    return
-                }
+                }) return
             }
             delay(500)
         }
-        if (prepareGeneration.isCurrent(generation)) {
+        prepareGeneration.runIfCurrent(generation) {
             sendReady(pid, groupId, prepareId, false)
         }
     }

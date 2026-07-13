@@ -140,3 +140,129 @@ def test_promote_rejects_ambiguous_artifact(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="expected exactly one"):
         MODULE.promote(source, output, "v1.13.10")
+
+
+# --- verify_android_apks: internal APK version + signer gate (fail-closed) ----
+
+_CERT = "AB" * 32  # 64 hex digits
+
+
+class _FakeRunner:
+    """Stand-in for subprocess.run: maps a tool basename to canned stdout."""
+
+    def __init__(self, badging: str, certs: str):
+        self._badging = badging
+        self._certs = certs
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, check=True, text=True, capture_output=True):
+        self.calls.append(args)
+        tool = Path(args[0]).name
+        out = self._badging if tool == "aapt2" else self._certs
+
+        class _Result:
+            stdout = out
+
+        return _Result()
+
+
+def _badging(version: str, code: int) -> str:
+    return (
+        f"package: name='com.jieoz' versionCode='{code}' "
+        f"versionName='{version}' compileSdkVersion='34'\n"
+    )
+
+
+def _certs(digest: str) -> str:
+    # apksigner emits the digest in lowercase with no separators; the gate must
+    # normalise case/separators before comparing.
+    return f"Signer #1 certificate SHA-256 digest: {digest.lower()}\n"
+
+
+def _one_apk(root: Path) -> Path:
+    apk = root / "app-release.apk"
+    apk.write_bytes(b"apk")
+    return root
+
+
+def test_verify_android_apks_accepts_matching_version_and_signer(tmp_path: Path) -> None:
+    source = _one_apk(tmp_path)
+    runner = _FakeRunner(_badging("1.14.13", 61), _certs(_CERT))
+
+    # Must not raise.
+    MODULE.verify_android_apks(
+        source,
+        version="1.14.13",
+        build=61,
+        expected_cert_sha256=f"{_CERT.lower()}",
+        aapt2="aapt2",
+        apksigner="apksigner",
+        runner=runner,
+    )
+    assert any(Path(c[0]).name == "aapt2" for c in runner.calls)
+    assert any(Path(c[0]).name == "apksigner" for c in runner.calls)
+
+
+def test_verify_android_apks_rejects_version_mismatch(tmp_path: Path) -> None:
+    source = _one_apk(tmp_path)
+    runner = _FakeRunner(_badging("1.14.12", 60), _certs(_CERT))
+
+    with pytest.raises(ValueError, match="versionName/versionCode mismatch"):
+        MODULE.verify_android_apks(
+            source, version="1.14.13", build=61,
+            expected_cert_sha256=_CERT, aapt2="aapt2", apksigner="apksigner",
+            runner=runner,
+        )
+
+
+def test_verify_android_apks_rejects_signer_mismatch(tmp_path: Path) -> None:
+    source = _one_apk(tmp_path)
+    runner = _FakeRunner(_badging("1.14.13", 61), _certs("CD" * 32))
+
+    with pytest.raises(ValueError, match="signer certificate SHA-256 mismatch"):
+        MODULE.verify_android_apks(
+            source, version="1.14.13", build=61,
+            expected_cert_sha256=_CERT, aapt2="aapt2", apksigner="apksigner",
+            runner=runner,
+        )
+
+
+def test_verify_android_apks_rejects_multiple_signers(tmp_path: Path) -> None:
+    source = _one_apk(tmp_path)
+    two = _certs(_CERT) + _certs(_CERT)
+    runner = _FakeRunner(_badging("1.14.13", 61), two)
+
+    with pytest.raises(ValueError, match="signer certificate SHA-256 mismatch"):
+        MODULE.verify_android_apks(
+            source, version="1.14.13", build=61,
+            expected_cert_sha256=_CERT, aapt2="aapt2", apksigner="apksigner",
+            runner=runner,
+        )
+
+
+def test_verify_android_apks_requires_expected_cert() -> None:
+    with pytest.raises(ValueError, match="expected signer certificate SHA-256 is required"):
+        MODULE.verify_android_apks(
+            Path("."), version="1.14.13", build=61,
+            expected_cert_sha256="   ", aapt2="aapt2", apksigner="apksigner",
+            runner=_FakeRunner("", ""),
+        )
+
+
+def test_verify_android_apks_rejects_short_cert(tmp_path: Path) -> None:
+    source = _one_apk(tmp_path)
+    with pytest.raises(ValueError, match="64 hex digits"):
+        MODULE.verify_android_apks(
+            source, version="1.14.13", build=61,
+            expected_cert_sha256="ABCD", aapt2="aapt2", apksigner="apksigner",
+            runner=_FakeRunner(_badging("1.14.13", 61), _certs(_CERT)),
+        )
+
+
+def test_verify_android_apks_requires_at_least_one_apk(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no Android APKs found"):
+        MODULE.verify_android_apks(
+            tmp_path, version="1.14.13", build=61,
+            expected_cert_sha256=_CERT, aapt2="aapt2", apksigner="apksigner",
+            runner=_FakeRunner(_badging("1.14.13", 61), _certs(_CERT)),
+        )

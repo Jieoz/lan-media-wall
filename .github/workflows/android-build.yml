@@ -3,9 +3,8 @@
 # Builds android_apps/player/ (Kotlin, Gradle wrapper) into a RELEASE APK.
 # Release signing (§根因B): when the ANDROID_KEYSTORE_* Secrets are present the
 # release buildType signs with a FIXED production certificate (constant SHA256
-# across versions → 覆盖升级 / 远程 update_app §23 works). With no secrets
-# (fork PRs) app/build.gradle.kts gracefully falls back to debug signing so the
-# APK is still installable for sideload and the lane stays green.
+# across versions → 覆盖升级 / 远程 update_app §23 works). Release builds fail
+# closed when any signing Secret or the expected certificate variable is absent.
 #
 # NOTE: android_apps/player/ is produced by another track. If the Gradle wrapper
 # is not present yet, the build steps no-op gracefully (guarded below) so this
@@ -67,41 +66,36 @@ jobs:
       # versions). That is what makes 覆盖安装 / 远程 update_app (§23) work — a
       # per-build debug key changes fingerprint every version and forces
       # uninstall-reinstall (INSTALL_FAILED_UPDATE_INCOMPATIBLE). Runs only when
-      # ALL secrets are present; otherwise build.gradle.kts falls back to debug
-      # signing and the lane still passes (fork PRs, no-secret contexts).
+      # ALL secrets and the expected certificate variable are present; otherwise
+      # the release lane fails closed rather than publishing a debug-signed APK.
       # key.properties + keystore live only in $RUNNER_TEMP / the player root
       # (git-ignored) — plaintext credentials never enter the repo.
-      - name: Check for release keystore
+      - name: Prepare required release keystore
         if: steps.detect.outputs.present == 'true'
         id: keystore
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "have=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "have=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No ANDROID_KEYSTORE_BASE64 secret — release APK will be debug-signed (installable, but no cross-version overwrite-update)."
-          fi
-
-      - name: Decode keystore and write key.properties
-        if: steps.detect.outputs.present == 'true' && steps.keystore.outputs.have == 'true'
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD EXPECTED_ANDROID_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required release signing secret or certificate: $name"
+              exit 1
+            fi
+          done
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          test -s "$RUNNER_TEMP/release.keystore"
           cat > android_apps/player/key.properties <<EOF
           storeFile=$RUNNER_TEMP/release.keystore
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-          echo "::notice::Release keystore decoded — release APK will be signed with the fixed production certificate."
 
       - name: Run Android JVM unit tests
         if: steps.detect.outputs.present == 'true'
@@ -118,15 +112,24 @@ jobs:
       # Echo the signer certificate so the fixed SHA256 fingerprint is visible in
       # the CI log for real-device cross-check (§根因B verification).
       - name: Verify APK signer certificate
-        if: steps.detect.outputs.present == 'true' && steps.keystore.outputs.have == 'true'
+        if: steps.detect.outputs.present == 'true'
         shell: bash
+        env:
+          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
+          set -euo pipefail
           APK="$(ls android_apps/player/app/build/outputs/apk/release/*.apk | head -1)"
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner 2>/dev/null | sort | tail -1)"
-          if [ -n "$APKSIGNER" ]; then
-            "$APKSIGNER" verify --print-certs "$APK" | grep -i "SHA-256" || true
-          else
-            echo "::notice::apksigner not found; skipping fingerprint echo."
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner executable not found"
+            exit 1
+          fi
+          EXPECTED=$(printf '%s' "$EXPECTED_ANDROID_CERT_SHA256" | tr -cd '[:xdigit:]' | tr '[:lower:]' '[:upper:]')
+          ACTUAL=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr -cd '[:xdigit:]' | tr '[:lower:]' '[:upper:]')
+          test "${#EXPECTED}" -eq 64
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::$APK signer mismatch"
+            exit 1
           fi
 
       - name: Test + build QZX root daemon (armv7, static)

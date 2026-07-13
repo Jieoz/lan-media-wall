@@ -3,10 +3,9 @@
 # Builds remote_flutter/ (Flutter, the controller UI) into an Android APK.
 # The repo holds the portable Dart project (lib/, pubspec.yaml, test/) but not
 # the generated platform folders. This workflow runs `flutter create` to
-# materialize the android/ scaffold at build time, then assembles a debug APK.
-# A signed release APK is produced ONLY when keystore secrets are present;
-# otherwise the release step is skipped cleanly and CI still succeeds with the
-# debug artifact.
+# materialize the android/ scaffold at build time. Release APK production is
+# fail-closed: all keystore secrets plus the expected certificate fingerprint
+# must be present, and the resulting signer is verified before upload.
 name: flutter-build
 
 on:
@@ -77,6 +76,19 @@ jobs:
           else
             echo "android/ already present — skipping scaffold."
           fi
+
+      # flutter create owns android/, but process-death restoration must be a
+      # repository-owned invariant. Install the custom Activity at the exact
+      # generated package path and verify the copy byte-for-byte.
+      - name: Install non-restoring FlutterActivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="remote_flutter/android_template/MainActivity.kt"
+          TARGET="remote_flutter/android/app/src/main/kotlin/com/example/remote_flutter/MainActivity.kt"
+          test -f "$SOURCE"
+          install -D -m 0644 "$SOURCE" "$TARGET"
+          cmp --silent "$SOURCE" "$TARGET"
 
       # mobile_scanner needs CAMERA permission + minSdkVersion 21, and its
       # transitive CameraX 1.3.1 (androidx.camera:camera-core 等) requires
@@ -168,9 +180,8 @@ jobs:
       # `signingConfigs.debug`, and the GitHub runner regenerates its debug
       # keystore every run -> every version got a DIFFERENT cert -> Android
       # rejected in-place overwrite-updates. This injects a release signingConfig
-      # that reads android/key.properties (written from Secrets below); when no
-      # keystore is present it falls back to debug-signing, so keyless CI still
-      # builds installable (but non-overwrite-updatable) APKs.
+      # that reads android/key.properties (written from Secrets below). The
+      # release lane requires those credentials and never falls back to a debug key.
       - name: Inject release signingConfig into generated Gradle
         working-directory: remote_flutter
         shell: bash
@@ -288,10 +299,9 @@ jobs:
       # Decode the FIXED release keystore from Secrets and write key.properties
       # so the injected signingConfig signs with a stable cert. Reuses the SAME
       # four Secrets as the player workflow (repo-level, shared across workflows)
-      # so controller + player share one signing identity. If the Secret is
-      # absent the build falls back to debug-signing (installable sideload, but
-      # no cross-version overwrite-update) and CI still passes.
-      - name: Prepare release signing (if keystore secret present)
+      # so controller + player share one signing identity. Missing credentials or
+      # expected fingerprint fail the release lane before any APK is published.
+      - name: Prepare required release signing
         id: keystore
         working-directory: remote_flutter
         shell: bash
@@ -300,21 +310,23 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            cat > android/key.properties <<EOF
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD EXPECTED_ANDROID_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required release signing secret or certificate: $name"
+              exit 1
+            fi
+          done
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          test -s "$RUNNER_TEMP/release.keystore"
+          cat > android/key.properties <<EOF
           storeFile=$RUNNER_TEMP/release.keystore
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Release keystore present — controller APK will be signed with the fixed cert."
-          else
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret — controller APK will be DEBUG-signed (installable, but NO cross-version overwrite-update). Add the keystore Secrets to enable in-place upgrades."
-          fi
 
       # One build path: the injected signingConfig signs with the fixed cert when
       # key.properties exists, else debug-signs. No silent fallback — if a
@@ -327,22 +339,28 @@ jobs:
       # again. When a keystore was provided, assert the APK is NOT signed by the
       # Android debug cert (CN=Android Debug); fail the build if it is.
       - name: Verify APK signing identity
-        if: steps.keystore.outputs.signed == 'true'
         working-directory: remote_flutter
         shell: bash
+        env:
+          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          APK=$(ls build/app/outputs/flutter-apk/*-release.apk | head -1)
-          echo "verifying signer of: $APK"
           BT=$(ls "$ANDROID_HOME"/build-tools/ | sort -V | tail -1)
           APKSIGNER="$ANDROID_HOME/build-tools/$BT/apksigner"
-          CERT="$("$APKSIGNER" verify --print-certs "$APK")"
-          echo "$CERT"
-          if echo "$CERT" | grep -qi "CN=Android Debug"; then
-            echo "::error::Release APK is DEBUG-signed despite a keystore being present — signingConfig wiring is broken."
+          if [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner executable not found: $APKSIGNER"
             exit 1
           fi
-          echo "::notice::APK signed with the fixed release cert (not the debug cert)."
+          EXPECTED=$(printf '%s' "$EXPECTED_ANDROID_CERT_SHA256" | tr -cd '[:xdigit:]' | tr '[:lower:]' '[:upper:]')
+          test "${#EXPECTED}" -eq 64
+          for APK in build/app/outputs/flutter-apk/*-release.apk; do
+            "$APKSIGNER" verify --print-certs "$APK" > signer.txt
+            ACTUAL=$(sed -n 's/.*certificate SHA-256 digest: //p' signer.txt | head -1 | tr -cd '[:xdigit:]' | tr '[:lower:]' '[:upper:]')
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "::error::$APK signer mismatch"
+              exit 1
+            fi
+          done
 
       - name: Upload release APKs
         uses: actions/upload-artifact@v4

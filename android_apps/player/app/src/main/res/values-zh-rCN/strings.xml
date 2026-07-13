@@ -53,6 +53,16 @@
     <!-- §2 连接状态:传输层在干什么,让连不上时能自诊断,而非只有"连接断开"。 -->
     <string name="label_conn_status">连接状态</string>
     <string name="conn_starting">启动中…</string>
+    <string name="conn_waiting_setup">等待首次配置：确认下方设置，然后点击“保存并启动”</string>
+    <string name="conn_start_failed_fmt">播放服务启动失败：%1$s</string>
+    <string name="conn_unknown_failure">未知原因</string>
+    <string name="conn_service_not_created">系统在 8 秒内未创建播放服务；可能被电视的后台或自启动策略拦截</string>
+    <string name="conn_requesting_service">正在请求系统启动播放服务</string>
+    <string name="action_restart_service">重新启动播放服务</string>
+    <string name="service_restart_requested">已请求重新启动；请查看上方状态</string>
+    <string name="action_export_diag">导出诊断到文件</string>
+    <string name="diag_export_ok_fmt">诊断已保存到：\n%1$s\n(可用 USB / 文件管理器读取，无需 adb)</string>
+    <string name="diag_export_failed_fmt">写入诊断文件失败：%1$s</string>
     <string name="conn_discovering">正在局域网内查找协调者…</string>
     <string name="conn_connecting_broker_fmt">正在连接 broker %1$s…</string>
     <string name="conn_connected_broker_fmt">已连接 broker %1$s</string>
@@ -60,6 +70,20 @@
     <string name="conn_p2p_connected">遥控端已接入(P2P)</string>
     <string name="conn_disconnected_fmt">连接断开(%1$s)—— 重连中…</string>
     <string name="conn_disconnected">连接断开 —— 重连中…</string>
+
+    <!-- §2 本地诊断:无需 adb,截图即可自检 root 守护 / 重启 / 更新 / 播放状态。 -->
+    <string name="action_refresh_diag">刷新诊断</string>
+    <string name="label_diag_status">本地诊断</string>
+    <string name="diag_hint">显示本机当前可读的 root 守护 / 重启 / 更新 / 播放状态。无需导出。</string>
+    <string name="diag_unavailable">不可用</string>
+    <string name="diag_refreshing">正在刷新诊断…</string>
+    <string name="diag_helper_fmt">Root 守护:%1$s</string>
+    <string name="diag_restart_fmt">重启:%1$s</string>
+    <string name="diag_update_fmt">更新:%1$s</string>
+    <string name="diag_playback_fmt">播放:%1$s</string>
+    <string name="diag_cache_fmt">缓存:%1$s</string>
+    <string name="diag_errors_fmt">最近错误:%1$s</string>
+    <string name="diag_probe_fmt">探测:%1$s</string>
 
     <!-- §9 自救:清空 broker 配置,回到零配置 / 扫码配对。 -->
     <string name="action_reset_conn">重置连接配置</string>

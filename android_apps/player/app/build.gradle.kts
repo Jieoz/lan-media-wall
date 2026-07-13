@@ -7,10 +7,8 @@ plugins {
 }
 
 // §根因B: 稳定 release 签名。CI 从 GitHub Actions Secret 解码固定 keystore,写出
-// key.properties(指向 $RUNNER_TEMP 的 keystore,绝不进仓库)。本文件读取它;存在
-// 则 release 用**固定证书**签名——同一指纹跨版本一致,覆盖安装(§23 远程 update_app)
-// 不再 INSTALL_FAILED_UPDATE_INCOMPATIBLE、不必卸载重装。无 secret(如 fork PR)时
-// 优雅降级到 debug 签名,出可安装的 APK,构建绝不失败。
+// key.properties(指向 $RUNNER_TEMP 的 keystore,绝不进仓库)。Release 必须使用该
+// 固定证书且缺配置时 fail-closed；debug/unit-test 任务不依赖生产密钥，仍可本地运行。
 // key.properties 与 keystore 都不入库(见 .gitignore),明文凭据只活在 CI runner 内。
 val keystorePropsFile: File = rootProject.file("key.properties")
 val keystoreProps = Properties().apply {
@@ -18,8 +16,26 @@ val keystoreProps = Properties().apply {
         FileInputStream(keystorePropsFile).use { load(it) }
     }
 }
-val hasReleaseKeystore: Boolean =
-    keystoreProps.getProperty("storeFile")?.let { file(it).exists() } ?: false
+val requiredSigningKeys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+val missingSigningKeys = requiredSigningKeys.filter { keystoreProps.getProperty(it).isNullOrBlank() }
+val releaseKeystore = keystoreProps.getProperty("storeFile")
+    ?.takeIf { it.isNotBlank() }
+    ?.let(::file)
+val releaseSigningReady = missingSigningKeys.isEmpty() && releaseKeystore?.isFile == true
+
+gradle.taskGraph.whenReady {
+    val requestsRelease = allTasks.any { task ->
+        task.project == project && task.name.contains("release", ignoreCase = true)
+    }
+    if (requestsRelease && !releaseSigningReady) {
+        val reason = if (missingSigningKeys.isNotEmpty()) {
+            "missing: ${missingSigningKeys.joinToString()}"
+        } else {
+            "keystore does not exist: $releaseKeystore"
+        }
+        throw GradleException("Release signing configuration is required; $reason")
+    }
+}
 
 // Release version single source of truth: reuse remote_flutter/pubspec.yaml
 // (`version: X.Y.Z+N`) so player/controller/tag never drift again.
@@ -75,15 +91,15 @@ android {
         // 存在时才配置(否则 storeFile 为 null,AGP 会在无 release 构建时也报错)。
         // v1+v2 都开:minSdk 19 必须 v1(JAR 签名)否则 <7.0 装不上(§6.1);v2 给
         // 现代系统更快校验。凭据全部来自 key.properties(CI 从 Secret 写),不硬编码。
-        if (hasReleaseKeystore) {
-            create("release") {
-                storeFile = file(keystoreProps.getProperty("storeFile"))
+        create("release") {
+            if (releaseSigningReady) {
+                storeFile = releaseKeystore
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")
-                enableV1Signing = true
-                enableV2Signing = true
             }
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
@@ -97,14 +113,9 @@ android {
             // which installs cleanly AND removes the pre-21 MultiDex.install()
             // dependency. resource shrinking off (keeps it simple).
             isMinifyEnabled = true
-            // §根因B: 有固定 keystore(CI 解码出 key.properties) → 用 release 固定证书
-            // 签名,指纹跨版本一致 → 覆盖升级 OK。无 keystore(fork PR / 本地) → 降级
-            // 到 debug 签名,APK 仍可 sideload,构建不失败。
-            signingConfig = if (hasReleaseKeystore) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            // §根因B: release 只允许 CI 解码出的固定 keystore；配置缺失由上方
+            // taskGraph gate 直接终止，绝不静默降级为 debug 签名。
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

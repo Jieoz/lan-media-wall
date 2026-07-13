@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
+import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 
 /// 播放编排栏(设计合同 §4.1 右栏) —— 主工作区。
@@ -22,12 +23,28 @@ class OrchestrationPane extends StatefulWidget {
 class _OrchestrationPaneState extends State<OrchestrationPane> {
   String? _groupId;
   String? _deviceId;
-  String? _loadedPlaylistId;
-  bool _sync = true;
-  bool _loop = true;
-  final List<MediaItem> _items = [];
+  final PlaylistDraft _draft = PlaylistDraft();
   bool _uploading = false;
   String _uploadHint = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // The draft is the single source of truth for the editable list + options;
+    // rebuild the pane whenever it mutates so the editor stays in sync.
+    _draft.addListener(_onDraftChanged);
+  }
+
+  @override
+  void dispose() {
+    _draft.removeListener(_onDraftChanged);
+    _draft.dispose();
+    super.dispose();
+  }
+
+  void _onDraftChanged() {
+    if (mounted) setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -59,7 +76,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
   WallGroup? get _group =>
       _groupId == null ? null : context.read<WallState>().groupById(_groupId!);
 
-  bool get _canSend => _groupId != null && _items.isNotEmpty;
+  bool get _canSend => _groupId != null && _draft.isNotEmpty;
 
   String _newPlaylistId() => 'pl-${_groupId ?? "g"}-${uuid4().substring(0, 6)}';
 
@@ -112,11 +129,10 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                     ?.status
                     ?.activePlaylist;
             if (pl != null) {
-              _items..clear()..addAll(pl.items);
-              _loadedPlaylistId = pl.playlistId;
+              // load() replaces items + playback options + remembers identity
+              // and notifies; keep the UI group in sync when the playlist names one.
+              _draft.load(pl);
               _groupId = pl.groupId.isEmpty ? _groupId : pl.groupId;
-              _sync = pl.sync;
-              _loop = pl.loop;
             }
           }),
         )),
@@ -128,9 +144,9 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 .where((item) => item.deviceId == _deviceId)
                 .firstOrNull;
             final group = d?.status?.groupId ?? _groupId ?? '';
-            state.sendPlaylist(playlistId: _loadedPlaylistId ?? _newPlaylistId(),
-              groupId: group, sync: _sync, loop: _loop,
-              items: _items, mode: 'replace', deviceId: _deviceId);
+            state.sendPlaylist(playlistId: _draft.playlistId ?? _newPlaylistId(),
+              groupId: group, sync: _draft.sync, loop: _draft.loop,
+              items: _draft.items, mode: 'replace', deviceId: _deviceId);
             _toast('已更新 ${d?.deviceName ?? _deviceId} 的播放列表；未删除缓存文件');
           },
         ),
@@ -172,7 +188,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
   // ---- playlist 编辑(本地上传 + URL) ----
   Widget _playlistEditor(WallState state) {
     return _Section(
-      title: '播放列表 (${_items.length} 项)',
+      title: '播放列表 (${_draft.length} 项)',
       trailing: Wrap(
         spacing: 4,
         children: [
@@ -190,6 +206,11 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             tooltip: '加 URL',
             icon: const Icon(Icons.link),
             onPressed: () => _addUrlDialog('video'),
+          ),
+          IconButton(
+            tooltip: '清空列表',
+            icon: const Icon(Icons.clear_all),
+            onPressed: _draft.isEmpty || _uploading ? null : _clearDraft,
           ),
         ],
       ),
@@ -211,7 +232,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 ],
               ),
             ),
-          if (_items.isEmpty && !_uploading)
+          if (_draft.isEmpty && !_uploading)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
               child: Text(
@@ -221,8 +242,8 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
               ),
             )
           else
-            ...List.generate(_items.length, (i) {
-              final it = _items[i];
+            ...List.generate(_draft.length, (i) {
+              final it = _draft.items[i];
               return ListTile(
                 dense: true,
                 leading: Icon(it.isImage ? Icons.image : Icons.movie),
@@ -232,20 +253,11 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                     : '视频${it.durationMs != null ? " · ${it.durationMs}ms" : ""} · ${_sizeStr(it.size)}'),
                 trailing: Wrap(children: [
                   IconButton(tooltip: '上移', icon: const Icon(Icons.arrow_upward),
-                    onPressed: i == 0 ? null : () => setState(() {
-                      final next = PlaylistEditing.move(_items, i, i - 1);
-                      _items..clear()..addAll(next);
-                    })),
+                    onPressed: i == 0 ? null : () => _draft.move(i, i - 1)),
                   IconButton(tooltip: '下移', icon: const Icon(Icons.arrow_downward),
-                    onPressed: i == _items.length - 1 ? null : () => setState(() {
-                      final next = PlaylistEditing.move(_items, i, i + 1);
-                      _items..clear()..addAll(next);
-                    })),
+                    onPressed: i == _draft.length - 1 ? null : () => _draft.move(i, i + 1)),
                   IconButton(tooltip: '从播放列表删除', icon: const Icon(Icons.delete_outline),
-                    onPressed: () => setState(() {
-                      final next = PlaylistEditing.removeAt(_items, i);
-                      _items..clear()..addAll(next);
-                    })),
+                    onPressed: () => _draft.removeAt(i)),
                 ],
                 ),
               );
@@ -258,8 +270,8 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                   dense: true,
                   contentPadding: EdgeInsets.zero,
                   title: const Text('组内同步'),
-                  value: _sync,
-                  onChanged: (v) => setState(() => _sync = v),
+                  value: _draft.sync,
+                  onChanged: (v) => setState(() => _draft.sync = v),
                 ),
               ),
               Expanded(
@@ -267,8 +279,8 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                   dense: true,
                   contentPadding: EdgeInsets.zero,
                   title: const Text('循环'),
-                  value: _loop,
-                  onChanged: (v) => setState(() => _loop = v),
+                  value: _draft.loop,
+                  onChanged: (v) => setState(() => _draft.loop = v),
                 ),
               ),
             ],
@@ -337,7 +349,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             }
           },
         );
-        setState(() => _items.add(item));
+        _draft.add(item);
       }
       _toast('上传完成,已加入列表');
     } catch (e) {
@@ -409,30 +421,35 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
       _toast('图片必须设有效停留时长');
       return;
     }
-    setState(() {
-      _items.add(MediaItem(
-        itemId: uuid4().substring(0, 8),
-        type: isImage ? 'image' : 'video',
-        name: name,
-        url: url,
-        durationMs: dur,
-      ));
-    });
+    _draft.add(MediaItem(
+      itemId: uuid4().substring(0, 8),
+      type: isImage ? 'image' : 'video',
+      name: name,
+      url: url,
+      durationMs: dur,
+    ));
+  }
+
+  void _clearDraft() {
+    _draft.clear();
+    _draft.detachPlaylistId();
+    _toast('已清空编辑列表(未改动任何设备)');
   }
 
   void _doPrefetch(WallState state) {
     try {
       final pid = _newPlaylistId();
+      final items = _draft.items;
       state.sendPlaylist(
         playlistId: pid,
         groupId: _groupId!,
-        sync: _sync,
-        loop: _loop,
-        items: _items,
+        sync: _draft.sync,
+        loop: _draft.loop,
+        items: items,
         mode: 'replace',
       );
-      state.cachePrefetch(_items, groupId: _groupId);
-      _toast('已下发列表 + 预缓存 (${_items.length} 项)');
+      state.cachePrefetch(items, groupId: _groupId);
+      _toast('已下发列表 + 预缓存 (${items.length} 项)');
     } catch (e) {
       _toast('下发失败: $e');
     }
@@ -441,18 +458,19 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
   void _doBarrierPlay(WallState state) {
     try {
       final pid = _newPlaylistId();
+      final items = _draft.items;
       state.sendPlaylist(
         playlistId: pid,
         groupId: _groupId!,
-        sync: _sync,
-        loop: _loop,
-        items: _items,
+        sync: _draft.sync,
+        loop: _draft.loop,
+        items: items,
         mode: 'replace',
       );
-      state.cachePrefetch(_items, groupId: _groupId);
+      state.cachePrefetch(items, groupId: _groupId);
       // §21 栅栏:等全员 cache=ready 才统一起播。
       state.prepareWithBarrier(playlistId: pid, groupId: _groupId!);
-      _toast(_sync ? '已发起同步起播(等全员就绪)' : '已发起播放');
+      _toast(_draft.sync ? '已发起同步起播(等全员就绪)' : '已发起播放');
     } catch (e) {
       _toast('起播失败: $e');
     }
@@ -463,17 +481,18 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
   /// 媒体。复用被控端已加载的 playlist_id;老播放器不认 append → 回退 replace(向后兼容)。
   void _doAppend(WallState state) {
     try {
+      final items = _draft.items;
       state.sendPlaylist(
-        playlistId: _loadedPlaylistId ?? _newPlaylistId(),
+        playlistId: _draft.playlistId ?? _newPlaylistId(),
         groupId: _groupId!,
-        sync: _sync,
-        loop: _loop,
-        items: _items,
+        sync: _draft.sync,
+        loop: _draft.loop,
+        items: items,
         mode: 'append',
         deviceId: _deviceId,
       );
-      state.cachePrefetch(_items, groupId: _groupId, deviceId: _deviceId);
-      _toast('已追加 ${_items.length} 项到${_deviceId == null ? "整组" : "该设备"}当前列表(按 item_id 去重)');
+      state.cachePrefetch(items, groupId: _groupId, deviceId: _deviceId);
+      _toast('已追加 ${items.length} 项到${_deviceId == null ? "整组" : "该设备"}当前列表(按 item_id 去重)');
     } catch (e) {
       _toast('追加失败: $e');
     }

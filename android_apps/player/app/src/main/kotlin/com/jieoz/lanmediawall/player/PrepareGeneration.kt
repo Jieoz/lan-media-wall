@@ -1,20 +1,34 @@
 package com.jieoz.lanmediawall.player
 
-import java.util.concurrent.atomic.AtomicLong
-
 /**
- * Tiny API-19-compatible identity guard for asynchronous prepare barriers.
- * Every replace/cancel advances the token; a stale coroutine must check its
- * captured token before touching the decoder or reporting ready.
+ * API-19-compatible ownership gate for asynchronous prepare barriers.
+ *
+ * Generation replacement/cancellation and the winning waiter's prime + ready
+ * effects share this monitor.  Therefore replacement can happen before an old
+ * waiter acquires ownership (and suppress it), or after its complete effect
+ * block, but never in the check-to-effect window.
  */
 class PrepareGeneration {
-    private val value = AtomicLong(0L)
+    private var value = 0L
 
-    fun replace(): Long = value.incrementAndGet()
-
-    fun cancel() {
-        value.incrementAndGet()
+    @Synchronized
+    fun replace(): Long {
+        value += 1L
+        return value
     }
 
-    fun isCurrent(token: Long): Boolean = value.get() == token
+    @Synchronized
+    fun cancel() {
+        value += 1L
+    }
+
+    @Synchronized
+    fun isCurrent(token: Long): Boolean = value == token
+
+    @Synchronized
+    fun runIfCurrent(token: Long, effects: () -> Unit): Boolean {
+        if (value != token) return false
+        effects()
+        return true
+    }
 }

@@ -51,6 +51,13 @@
             android:textSize="13sp"
             android:paddingBottom="8dp" />
 
+        <Button
+            android:id="@+id/btn_restart_service"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="@string/action_restart_service" />
+
         <TextView style="@style/SettingLabel" android:text="@string/label_hardware" />
         <TextView
             android:id="@+id/text_hardware"
@@ -140,6 +147,26 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="@string/action_refresh_diag" />
+
+        <!-- §2 no-ADB export: write the on-screen diagnostics + startup state +
+             persisted player.log tail to a USB/file-manager-readable file, so a
+             box stuck at 启动中 (no service, no LAN link) is still diagnosable
+             without adb. The resolved path is shown below. -->
+        <Button
+            android:id="@+id/btn_export_diag"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/action_export_diag" />
+        <TextView
+            android:id="@+id/text_export_path"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingTop="4dp"
+            android:textIsSelectable="true"
+            android:paddingBottom="8dp" />
 
         <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
         <EditText

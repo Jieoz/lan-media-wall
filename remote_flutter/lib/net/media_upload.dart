@@ -360,8 +360,12 @@ class LocalMediaServer {
 
     late final MediaByteRange range;
     try {
+      final physicalRanges = req.headers[HttpHeaders.rangeHeader];
+      if (physicalRanges != null && physicalRanges.length != 1) {
+        throw const MediaRangeNotSatisfiable();
+      }
       range = parseSingleByteRange(
-        req.headers.value(HttpHeaders.rangeHeader),
+        physicalRanges?.single,
         total,
       );
     } on MediaRangeNotSatisfiable {
