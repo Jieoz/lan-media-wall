@@ -119,13 +119,13 @@ jobs:
           ANDROID_RUN_ID: ${{ steps.runs.outputs.android }}
           WINDOWS_RUN_ID: ${{ steps.runs.outputs.windows }}
           BROKER_RUN_ID: ${{ steps.runs.outputs.broker }}
-          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          if [ -z "$EXPECTED_ANDROID_CERT_SHA256" ]; then
-            echo "::error::Missing required expected Android signer certificate"
-            exit 1
-          fi
+          # Resolve the ONE expected signer fingerprint (§根因B) — same source as
+          # the build lanes: the optional ANDROID_RELEASE_CERT_SHA256 override,
+          # else the checked-in canonical file. Fails closed on a bad/missing value.
+          EXPECTED_ANDROID_CERT_SHA256="$(bash scripts/resolve_release_cert.sh)"
           python3 scripts/promote_release_artifacts.py \
             --source artifacts \
             --output release \

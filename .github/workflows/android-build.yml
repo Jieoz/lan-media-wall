@@ -3,8 +3,10 @@
 # Builds android_apps/player/ (Kotlin, Gradle wrapper) into a RELEASE APK.
 # Release signing (§根因B): when the ANDROID_KEYSTORE_* Secrets are present the
 # release buildType signs with a FIXED production certificate (constant SHA256
-# across versions → 覆盖升级 / 远程 update_app §23 works). Release builds fail
-# closed when any signing Secret or the expected certificate variable is absent.
+# across versions → 覆盖升级 / 远程 update_app §23 works). The expected fingerprint
+# is resolved from the checked-in canonical file (scripts/resolve_release_cert.sh,
+# optional ANDROID_RELEASE_CERT_SHA256 override). Release builds fail closed when
+# any signing Secret is absent or the expected fingerprint cannot be resolved.
 #
 # NOTE: android_apps/player/ is produced by another track. If the Gradle wrapper
 # is not present yet, the build steps no-op gracefully (guarded below) so this
@@ -60,16 +62,30 @@ jobs:
         shell: bash
         run: chmod +x android_apps/player/gradlew
 
+      # Resolve the ONE expected signer fingerprint (§根因B) for this lane from
+      # the checked-in canonical file (or the optional ANDROID_RELEASE_CERT_SHA256
+      # override), and export it for the signing + verify steps. Fails closed if
+      # no valid 64-hex-char fingerprint is resolvable.
+      - name: Resolve expected release certificate fingerprint
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        env:
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          EXPECTED_ANDROID_CERT_SHA256="$(bash scripts/resolve_release_cert.sh)"
+          echo "EXPECTED_ANDROID_CERT_SHA256=$EXPECTED_ANDROID_CERT_SHA256" >> "$GITHUB_ENV"
+
       # --- Stable release signing (§根因B) ---------------------------------
       # Decode the fixed keystore from Secrets and write key.properties so the
       # release buildType signs with a CONSTANT certificate (same SHA256 across
       # versions). That is what makes 覆盖安装 / 远程 update_app (§23) work — a
       # per-build debug key changes fingerprint every version and forces
       # uninstall-reinstall (INSTALL_FAILED_UPDATE_INCOMPATIBLE). Runs only when
-      # ALL secrets and the expected certificate variable are present; otherwise
-      # the release lane fails closed rather than publishing a debug-signed APK.
-      # key.properties + keystore live only in $RUNNER_TEMP / the player root
-      # (git-ignored) — plaintext credentials never enter the repo.
+      # ALL keystore secrets are present AND the expected fingerprint resolved
+      # above; otherwise the release lane fails closed rather than publishing a
+      # debug-signed APK. key.properties + keystore live only in $RUNNER_TEMP /
+      # the player root (git-ignored) — plaintext credentials never enter the repo.
       - name: Prepare required release keystore
         if: steps.detect.outputs.present == 'true'
         id: keystore
@@ -79,7 +95,6 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD EXPECTED_ANDROID_CERT_SHA256; do
@@ -114,8 +129,6 @@ jobs:
       - name: Verify APK signer certificate
         if: steps.detect.outputs.present == 'true'
         shell: bash
-        env:
-          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           APK="$(ls android_apps/player/app/build/outputs/apk/release/*.apk | head -1)"

@@ -95,6 +95,21 @@ class WallState extends ChangeNotifier {
   late final Discovery _discovery;
   late final P2pCoordinator _p2p;
   bool _inited = false;
+  // True only while _broker/_discovery/_p2p are allocated AND still live. init()
+  // sets it when it allocates the links; _teardownLinks() clears it after
+  // releasing them. Because the links are `late final`, disposing an unassigned
+  // one throws LateInitializationError, so every teardown path is gated on this
+  // flag — there is nothing to release when it is false, and clearing it makes
+  // teardown idempotent (dispose racing init's own post-await teardown).
+  bool _linksReady = false;
+  // Set the instant dispose() runs. init() is async: dispose() can land while it
+  // is parked at an `await` (fast unmount, or a provider torn down before the
+  // first SharedPreferences load resolves). Merely making dispose() return
+  // normally is not enough — the parked init() would still resume, allocate the
+  // links, start discovery, and notify a dead ChangeNotifier. init() therefore
+  // re-checks this flag after every await and bails (releasing anything it did
+  // allocate) so no post-dispose allocation/start/notify can occur.
+  bool _disposed = false;
 
   /// 当前拓扑（§14）。默认 p2p，发现到 broker 后切 dedicated。
   /// 这是本端 **实际运行** 的连接方式(operating topology)。
@@ -312,10 +327,16 @@ class WallState extends ChangeNotifier {
   }
 
   /// 一次性初始化：读持久化设置、建链路、启动发现。
+  ///
+  /// init() 是异步的:每个 `await` 都是一个可被 [dispose] 抢先的悬挂点(快速卸载 /
+  /// provider 尚未收到首个设置就被拆)。因此每个 await 之后都重新检查 [_disposed]:
+  /// 一旦已析构就不再分配/启动/通知,并释放此前已分配的链路,保证不会有任何
+  /// post-dispose 的分配、启动或对已死 ChangeNotifier 的 notify。
   Future<void> init() async {
-    if (_inited) return;
+    if (_inited || _disposed) return;
     _inited = true;
     await _loadSettings();
+    if (_disposed) return; // 析构发生在读设置期间:不分配任何链路。
 
     // 引导期 auth_mode：有 PSK → required(签)，无 PSK → open(空 sig)。
     // 连上协调端后据 welcome.auth_mode 再校正(§13)。
@@ -353,9 +374,32 @@ class WallState extends ChangeNotifier {
       ..onUpdateStatus = _onUpdateStatus
       ..onLogDownload = _onLogDownload
       ..onLog = _pushLog;
+    _linksReady = true;
 
     await _discovery.start();
+    if (_disposed) {
+      // 析构发生在发现启动期间。dispose() 已跑过 _teardownLinks() 并清了
+      // _linksReady,但 Discovery.start() 可能在 dispose 之后才 resume 并重新
+      // 绑定 socket/定时器。此处链路必然已分配(在 await 前),直接再 dispose 一次
+      // (三者皆幂等)以关掉这次可能的重绑,且不评估拓扑/通知已死的 ChangeNotifier。
+      _broker.dispose();
+      _discovery.dispose();
+      _p2p.dispose();
+      _linksReady = false;
+      return;
+    }
     _evaluateTopology();
+  }
+
+  /// 释放已分配的链路,恰好一次。仅 [dispose] 调用;[_linksReady] 兼作幂等闸门:
+  /// 未分配(dispose-before-init / 无 init)时为 false,直接空操作,避开对未赋值
+  /// `late final` 的访问(LateInitializationError);释放后清零,重复调用即空操作。
+  void _teardownLinks() {
+    if (!_linksReady) return;
+    _linksReady = false;
+    _broker.dispose();
+    _discovery.dispose();
+    _p2p.dispose();
   }
 
   String _fromAddress() => 'controller:$controllerId';
@@ -1151,9 +1195,12 @@ class WallState extends ChangeNotifier {
 
   @override
   void dispose() {
-    _broker.dispose();
-    _discovery.dispose();
-    _p2p.dispose();
+    // Mark disposed FIRST so an init() still parked at an await bails on resume
+    // (see init()): no post-dispose allocation/start/notify. _teardownLinks()
+    // releases whatever init() already allocated, exactly once — a no-op on the
+    // dispose-before-init / no-init path where the `late final` links are unset.
+    _disposed = true;
+    _teardownLinks();
     _localMedia.stop();
     super.dispose();
   }

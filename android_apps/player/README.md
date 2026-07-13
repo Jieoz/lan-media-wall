@@ -104,12 +104,15 @@ prefetch barrier §21, remote self-update §23).
 > keystore. A constant fingerprint across versions is what makes overwrite-install
 > and remote `update_app` (§23) work — the old per-build debug key changed
 > fingerprint every release and forced `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
-> (uninstall-reinstall). Release builds now **fail closed** if any signing Secret or
-> the repository variable `ANDROID_RELEASE_CERT_SHA256` is absent; CI also verifies
-> the produced APK against that fingerprint, so no debug-signed release can be
-> published silently. **Keystore and plaintext credentials never enter the repo** —
-> `key.properties`, `*.keystore`, `*.jks` are git-ignored; only
-> `${{ secrets.X }}` + `$RUNNER_TEMP` are used. Fixed cert SHA256:
+> (uninstall-reinstall). The expected fingerprint is a **public** value resolved by
+> `scripts/resolve_release_cert.sh` from the checked-in canonical file
+> `android_apps/player/release-cert-sha256.txt` (the repository variable
+> `ANDROID_RELEASE_CERT_SHA256` is an optional operator override, not required).
+> Release builds **fail closed** if any signing Secret is absent or no valid
+> fingerprint resolves; CI also verifies the produced APK against that fingerprint,
+> so no debug-signed release can be published silently. **Keystore and plaintext
+> credentials never enter the repo** — `key.properties`, `*.keystore`, `*.jks` are
+> git-ignored; only `${{ secrets.X }}` + `$RUNNER_TEMP` are used. Fixed cert SHA256:
 > `69:EC:70:E5:92:AE:D4:6C:4E:B1:41:2F:E7:66:8F:41:51:46:81:10:1A:CD:0D:D9:DB:B0:98:D1:E2:6D:6D:54`.
 
 ## What it does

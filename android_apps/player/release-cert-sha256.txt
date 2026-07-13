@@ -1,0 +1,17 @@
+# Canonical expected release signing certificate fingerprint (§根因B).
+#
+# This is the SHA-256 digest of the PUBLIC signing certificate that every
+# LAN Media Wall release APK (player + controller) must carry. It is NOT a
+# secret — a certificate fingerprint is public by construction (anyone can read
+# it from a shipped APK with `apksigner verify --print-certs`). Publishing it
+# here makes the expected value durable and reviewable in git, so the release
+# lanes fail closed against a fixed target without depending on a repository
+# variable being set. The private keystore stays in CI Secrets only and never
+# enters the repo.
+#
+# All build/promote lanes resolve the expected fingerprint through
+# scripts/resolve_release_cert.sh, which prefers the ANDROID_RELEASE_CERT_SHA256
+# repository variable when set (operator override) and otherwise falls back to
+# this file. Lines starting with '#' and blank lines are ignored; the first
+# remaining line is the fingerprint (colons and case are normalised away).
+69:EC:70:E5:92:AE:D4:6C:4E:B1:41:2F:E7:66:8F:41:51:46:81:10:1A:CD:0D:D9:DB:B0:98:D1:E2:6D:6D:54

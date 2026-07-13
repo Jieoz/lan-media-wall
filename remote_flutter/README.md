@@ -1,6 +1,6 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
-> **v1.14.13:** Android 冷重启不再恢复 FlutterActivity 的 instance/navigation state：仓库保存定制 `MainActivity.kt`，CI 在 `flutter create` 后按确定路径安装并逐字节核验，因此进程被杀或真正重启总是从 `ResponsiveShell` 主界面开始，不会复活设置对话框；普通前后台切换不重建 Activity，已打开的对话框继续保留。严格 Range 现在也拒绝重复物理 `Range` header，统一空体 `416`。release 构建与晋级要求固定生产证书指纹，并逐个核验 APK 包内 versionName/versionCode 与 signer。
+> **v1.14.13:** Android 冷重启不再恢复 FlutterActivity 的 instance/navigation state：仓库保存定制 `MainActivity.kt`，CI 在 `flutter create` 后按确定路径安装并逐字节核验，因此进程被杀或真正重启总是从 `ResponsiveShell` 主界面开始，不会复活设置对话框；普通前后台切换不重建 Activity，已打开的对话框继续保留。严格 Range 现在也拒绝重复物理 `Range` header，统一空体 `416`。release 构建与晋级从仓库内公开的 canonical 证书指纹（可由仓库变量覆盖）解析同一个期望 signer，并逐个核验 APK 包内 versionName/versionCode 与 signer。`WallState.init()` 在每个异步边界检查析构状态，快速卸载时不再在 `dispose()` 后分配链路、启动发现或通知已销毁的状态对象。
 
 > **v1.14.12:** P2P 本地媒体服务现在只接受 `GET/HEAD`（其他方法返回 `405` + `Allow: GET, HEAD`），严格支持单段 `N-M` / `N-` / `-N` Range；malformed、multi-range、空文件 Range 与越界统一返回空体 `416` + `Content-Range: bytes */total`。成功 `206/Content-Range` 只在拿到 stream permit 后写入，满载 `503` 仅含空体、`Retry-After: 1`，与播放器有界重试/Range 续传契约一致。gate 具备运行时参数校验及 close/generation 语义，stop 会立即解除 waiter，restart 使用全新 gate；服务不会在首项 ready/play_at 后关闭，而是保守保持到 `WallState.dispose`，因此后续列表项和新上传仍可下载。HTTP loopback 集成测试覆盖 Range/HEAD/405、并发上限/FIFO 排队/503 headers、客户端断开 permit、stop waiter 与 stop→restart。
 

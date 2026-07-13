@@ -296,6 +296,19 @@ jobs:
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "::notice::controller version_name=$NAME version_code=$CODE (from pubspec)"
 
+      # Resolve the ONE expected signer fingerprint (§根因B) shared with the
+      # player + promote lanes: checked-in canonical file, or the optional
+      # ANDROID_RELEASE_CERT_SHA256 override. Exported for the signing + verify
+      # steps below. Fails closed if no valid 64-hex-char fingerprint resolves.
+      - name: Resolve expected release certificate fingerprint
+        shell: bash
+        env:
+          ANDROID_RELEASE_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          EXPECTED_ANDROID_CERT_SHA256="$(bash scripts/resolve_release_cert.sh)"
+          echo "EXPECTED_ANDROID_CERT_SHA256=$EXPECTED_ANDROID_CERT_SHA256" >> "$GITHUB_ENV"
+
       # Decode the FIXED release keystore from Secrets and write key.properties
       # so the injected signingConfig signs with a stable cert. Reuses the SAME
       # four Secrets as the player workflow (repo-level, shared across workflows)
@@ -310,7 +323,6 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD EXPECTED_ANDROID_CERT_SHA256; do
@@ -341,8 +353,6 @@ jobs:
       - name: Verify APK signing identity
         working-directory: remote_flutter
         shell: bash
-        env:
-          EXPECTED_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
         run: |
           set -euo pipefail
           BT=$(ls "$ANDROID_HOME"/build-tools/ | sort -V | tail -1)
