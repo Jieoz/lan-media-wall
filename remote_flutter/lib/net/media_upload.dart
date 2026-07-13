@@ -139,11 +139,63 @@ class _Sha256Sink {
   }
 }
 
+/// Small async admission gate used by [LocalMediaServer]. It bounds concurrent
+/// file streams without buffering payloads in memory; queued HTTP handlers keep
+/// natural TCP backpressure until a permit is available.
+class MediaRequestGate {
+  MediaRequestGate(this.maxConcurrent, {this.maxQueued = 64})
+      : assert(maxConcurrent > 0, 'maxConcurrent must be positive'),
+        assert(maxQueued > 0, 'maxQueued must be positive');
+
+  final int maxConcurrent;
+  final int maxQueued;
+  int _active = 0;
+  final List<Completer<MediaRequestPermit>> _waiters = [];
+
+  int get active => _active;
+  int get queued => _waiters.length;
+
+  Future<MediaRequestPermit?> acquire() {
+    if (_active < maxConcurrent) {
+      _active++;
+      return Future.value(MediaRequestPermit._(this));
+    }
+    if (_waiters.length >= maxQueued) return Future.value(null);
+    final waiter = Completer<MediaRequestPermit>();
+    _waiters.add(waiter);
+    return waiter.future;
+  }
+
+  void _release() {
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete(MediaRequestPermit._(this));
+      return;
+    }
+    if (_active > 0) _active--;
+  }
+}
+
+class MediaRequestPermit {
+  MediaRequestPermit._(this._gate);
+  final MediaRequestGate _gate;
+  bool _released = false;
+
+  void release() {
+    if (_released) return;
+    _released = true;
+    _gate._release();
+  }
+}
+
 /// 模式 A 的控制端临时 HTTP 服务(§20.2)。仅在分发窗口存活:注册若干本地文件,
 /// 对被控端提供 `GET /m/<itemId>`(支持 Range 断点续传,与 broker 媒体库同契约)。
 /// 分发+全员就绪起播后可 [stop](被控端已缓存到本地,不再依赖此服务)。
 class LocalMediaServer {
+  LocalMediaServer({int maxConcurrentStreams = 6})
+      : _requestGate = MediaRequestGate(maxConcurrentStreams);
+
   HttpServer? _server;
+  final MediaRequestGate _requestGate;
   final Map<String, _Served> _files = {};
   String _host = '';
 
@@ -205,15 +257,36 @@ class LocalMediaServer {
       resp.headers.set(
           HttpHeaders.contentRangeHeader, 'bytes $start-$end/$total');
     }
-    resp.headers.contentLength = end - start + 1;
+    // Do not publish a success Content-Length before admission: if the bounded
+    // queue is saturated this response becomes an empty 503 instead.
+    final responseLength = end - start + 1;
     if (req.method == 'HEAD') {
+      resp.headers.contentLength = responseLength;
       await resp.close();
       return;
     }
+    // Keep the HTTP wait queue finite as well as the active stream count.
+    // Once saturated, clients receive 503 + Retry-After and retain their .part
+    // files for a later Range retry.
+    final permit = await _requestGate.acquire();
+    if (permit == null) {
+      resp.statusCode = HttpStatus.serviceUnavailable;
+      resp.headers.contentLength = 0;
+      resp.headers.set(HttpHeaders.retryAfterHeader, '1');
+      await resp.close();
+      return;
+    }
+    resp.headers.contentLength = responseLength;
     try {
       await resp.addStream(served.file.openRead(start, end + 1));
-    } catch (_) {/* 客户端断开等 */}
-    await resp.close();
+    } catch (_) {
+      // Client disconnects leave the file and other queued transfers intact.
+    } finally {
+      permit.release();
+      try {
+        await resp.close();
+      } catch (_) {}
+    }
   }
 
   Future<void> stop() async {

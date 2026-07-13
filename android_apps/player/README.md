@@ -1,5 +1,7 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.14.11 批量 P2P 传输边界：**单台播放端最多并发下载 2 项，等待队列最多 64 项；超限项目通过 `status.cache[item_id]=error:queue-full` 明确上报，不再用无界线程池放大网络、内存和闪存争用。Range 断点续传、SHA-256 校验和缓存播放合同不变。
+
 > **v1.14.9:** API19 单 VDEC 的视频切换不再直接露出
 > MediaPlayer 重建阶段：切换前复用当前项目已缓存的 JPEG 到既有 ImageView，
 > 新视频真实首帧或失败回调后撤下覆盖层。该路径不用 PixelCopy、不并行开启
@@ -17,7 +19,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.9 / versionCode 57`** — derived from
+> **Current build: `versionName 1.14.11 / versionCode 59`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.14.11] — 2026-07-13
+
+- Bounded Android player media downloads to 2 active workers with a finite 64-item queue, preventing a large playlist from creating one thread/socket per uncached item. Queue overflow is reported as `error:queue-full` instead of retaining unbounded work.
+- Added P2P controller-side HTTP backpressure: at most 6 media streams are served concurrently, excess requests wait in a bounded FIFO queue, and overload fails explicitly with `503 Retry-After` while Range-resume remains intact. Media is still streamed from disk and never buffered wholesale in memory.
+- Added deterministic concurrency/queue regression tests for both ends. The existing per-device cache map continues to expose queued failures, downloading progress, verification, readiness, and errors in device status. P2P remains intended for small deployments (≤8 players); larger walls should use Broker/NAS distribution.
+
 ## [v1.14.10] — 2026-07-13
 
 - Fixed half-open P2P controller ownership with an API19-compatible monotonic 15s inactivity lease, 5s read tick/ping, atomic stale takeover, and generation-safe cleanup; an actually active second controller remains rejected with close 1013.

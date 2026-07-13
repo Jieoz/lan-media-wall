@@ -6,7 +6,6 @@ import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
@@ -106,9 +105,10 @@ class Downloader(
 
     /** Absolute paths that back the current playlist — NEVER evicted (§11). */
     @Volatile private var protectedPaths: Set<String> = emptySet()
-    private val pool = Executors.newCachedThreadPool { r ->
-        Thread(r, "dl-worker").apply { isDaemon = true }
-    }
+    private val pool = BoundedDownloadExecutor(
+        maxConcurrent = MAX_CONCURRENT_DOWNLOADS,
+        maxQueued = MAX_QUEUED_DOWNLOADS,
+    )
     @Volatile private var stopped = false
 
     private val client = OkHttpClient.Builder()
@@ -395,7 +395,11 @@ class Downloader(
                         target.delete()
                         entries[itemId] = CacheEntry(itemId)
                         inFlight[itemId] = true
-                        pool.submit { worker(item) }
+                        if (!pool.submit { worker(item) }) {
+                            inFlight.remove(itemId)
+                            fail(itemId, "queue-full")
+                            log("prefetch reject=$itemId reason=queue-full queued=${pool.queued}")
+                        }
                         return
                     }
                     log("prefetch ok=$itemId source=disk sha256=verified size=${target.length()}")
@@ -413,7 +417,11 @@ class Downloader(
             entries[itemId] = CacheEntry(itemId)
             inFlight[itemId] = true
         }
-        pool.submit { worker(item) }
+        if (!pool.submit { worker(item) }) {
+            inFlight.remove(itemId)
+            fail(itemId, "queue-full")
+            log("prefetch reject=$itemId reason=queue-full queued=${pool.queued}")
+        }
     }
 
     private fun quickOk(path: File, item: MediaItem): Boolean {
@@ -538,6 +546,10 @@ class Downloader(
 
     companion object {
         private const val TAG = "lmw.Downloader"
+        /** Keep per-player network/disk pressure bounded during large playlists. */
+        private const val MAX_CONCURRENT_DOWNLOADS = 2
+        /** Bound retained lambdas/items; excess work fails visibly as queue-full. */
+        private const val MAX_QUEUED_DOWNLOADS = 64
         /** §6 写前探针大小:够小以免自身造成过度写,够大以真触达闪存写路径。4 MiB。 */
         private const val PROBE_BYTES = 4 * 1024 * 1024
     }
