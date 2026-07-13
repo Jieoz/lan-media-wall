@@ -109,7 +109,7 @@ void main() {
     final socket = await Socket.connect('127.0.0.1', server.port);
     socket.write('GET /m/large HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
     await socket.flush();
-    await socket.transform(utf8.decoder).first;
+    await socket.cast<List<int>>().transform(utf8.decoder).first;
     await waitFor(() => server.activeRequests == 1);
     socket.destroy();
 
