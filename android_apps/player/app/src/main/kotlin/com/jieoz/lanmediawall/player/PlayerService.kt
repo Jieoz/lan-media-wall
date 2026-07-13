@@ -100,6 +100,9 @@ class PlayerService : Service() {
     private val logFile by lazy { File(logDir, "player.log") }
 
     private val scheduledStart = AtomicReference<Job?>(null)
+    /** Generation guard + job handle prevent stale prepare waiters from priming. */
+    private val prepareGeneration = PrepareGeneration()
+    private val prepareWaiter = AtomicReference<Job?>(null)
     /** §6.3 carousel: pending "hold this image for duration_ms, then advance"
      *  timer. Cancelled by any new prepare/play_at/advance/stop. */
     private val dwellTimer = AtomicReference<Job?>(null)
@@ -319,6 +322,8 @@ class PlayerService : Service() {
     @Volatile private var started = false
 
     override fun onDestroy() {
+        prepareGeneration.cancel()
+        prepareWaiter.getAndSet(null)?.cancel()
         super.onDestroy()
         scope.cancel()
         try { link?.stop() } catch (_: Exception) {}
@@ -748,6 +753,8 @@ class PlayerService : Service() {
         val pl = resolvePlaylist(pid)
         var ready = false
         dwellTimer.getAndSet(null)?.cancel() // §6.3: a new session voids any dwell
+        prepareWaiter.getAndSet(null)?.cancel() // stale prepare cannot prime/send ready
+        val generation = prepareGeneration.replace()
         if (pl != null && startIndex in pl.items.indices) {
             val item = pl.items[startIndex]
             playlist = pl
@@ -769,14 +776,15 @@ class PlayerService : Service() {
                 }
             } else if (prefetchBarrier) {
                 // §21 栅栏:后台等缓存完成再回 ready,不阻塞消息循环。
-                downloader.prefetch(listOf(item))
-                scope.launch {
-                    awaitCacheThenReady(pid, groupId, prepareId, item, seekMs,
+                downloader.prefetchForeground(item)
+                val waiter = scope.launch {
+                    awaitCacheThenReady(generation, pid, groupId, prepareId, item, seekMs,
                         pl, barrierTimeoutMs)
                 }
+                prepareWaiter.set(waiter)
                 return
             } else {
-                downloader.prefetch(listOf(item)) // kick a fetch; report not-ready
+                downloader.prefetchForeground(item) // promote current item; report not-ready
             }
         }
         // §9.1: echo prepare_id + group_id back so broker matches the session.
@@ -798,16 +806,18 @@ class PlayerService : Service() {
     /** §21 预缓存栅栏:轮询缓存态,ready 后 prime 并回 ready:true;超时回 ready:false,
      *  交由控制端/broker 按"已就绪者"降级起播(不无限等)。 */
     private suspend fun awaitCacheThenReady(
-        pid: String?, groupId: String?, prepareId: String?,
+        generation: Long, pid: String?, groupId: String?, prepareId: String?,
         item: MediaItem, seekMs: Long, pl: Playlist, timeoutMs: Long
     ) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            if (!prepareGeneration.isCurrent(generation)) return
             if (downloader.isReady(item.itemId)) {
                 val readyFile = downloader.readyPath(item.itemId)
                 readyFile?.let { downloader.touch(it) }
                 val path = readyFile?.absolutePath
                 if (path != null) {
+                    if (!prepareGeneration.isCurrent(generation)) return
                     if (item.type != "image") {
                         controllerRef?.loadPaused(path, seekMs, singleLoop(pl))
                     }
@@ -818,7 +828,9 @@ class PlayerService : Service() {
             }
             delay(500)
         }
-        sendReady(pid, groupId, prepareId, false)
+        if (prepareGeneration.isCurrent(generation)) {
+            sendReady(pid, groupId, prepareId, false)
+        }
     }
 
     // --- §9.2 play_at (sync-critical path) ---------------------------
@@ -922,6 +934,8 @@ class PlayerService : Service() {
     private fun hStop(payload: Json.Obj) {
         if (!targetsMe(payload)) return
         scheduledStart.getAndSet(null)?.cancel()
+        prepareGeneration.cancel()
+        prepareWaiter.getAndSet(null)?.cancel()
         dwellTimer.getAndSet(null)?.cancel()
         controllerRef?.stop()
         playState = "idle"

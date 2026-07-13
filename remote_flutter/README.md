@@ -1,6 +1,8 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
-> **v1.14.11:** P2P 临时 HTTP 媒体服务采用有界 FIFO 背压：最多同时流式发送 6 条，等待队列最多 64；再超限返回空体 `503` + `Retry-After: 1`，播放器保留 `.part` 后按 Range 续传。整个文件始终从磁盘流式发送，不整块读入内存。P2P 仍定位为 ≤8 台小场景，更大规模使用 Broker/NAS。并发与队列边界由 `media_request_gate_test.dart` 在 Flutter CI 中直接验证。
+> **v1.14.12:** P2P 本地媒体服务现在只接受 `GET/HEAD`（其他方法返回 `405` + `Allow: GET, HEAD`），严格支持单段 `N-M` / `N-` / `-N` Range；malformed、multi-range、空文件 Range 与越界统一返回空体 `416` + `Content-Range: bytes */total`。成功 `206/Content-Range` 只在拿到 stream permit 后写入，满载 `503` 仅含空体、`Retry-After: 1`，与播放器有界重试/Range 续传契约一致。gate 具备运行时参数校验及 close/generation 语义，stop 会立即解除 waiter，restart 使用全新 gate；服务不会在首项 ready/play_at 后关闭，而是保守保持到 `WallState.dispose`，因此后续列表项和新上传仍可下载。HTTP loopback 集成测试覆盖 Range/HEAD/405、并发上限/FIFO 排队/503 headers、客户端断开 permit、stop waiter 与 stop→restart。
+
+> **v1.14.11:** P2P 临时 HTTP 媒体服务采用有界 FIFO 背压：最多同时流式发送 6 条，等待队列最多 64；再超限返回空体 `503` + `Retry-After: 1`，播放器保留 `.part` 后按 Range 续传。整个文件始终从磁盘流式发送，不整块读入内存。P2P 仍定位为 ≤8 台小场景，更大规模使用 Broker/NAS。并发与队列边界由 `media_request_gate_test.dart` 和 loopback HTTP 集成测试在 Flutter CI 中验证。
 
 > **v1.14.10:** P2P close diagnostics now expose RFC6455 close code/reason in
 > controller logs and per-peer failure state. Reconnect backoff is reset only by

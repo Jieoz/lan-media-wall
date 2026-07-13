@@ -18,6 +18,7 @@ zxing = "3.5.3"
 desugar = "2.0.4"
 multidex = "2.0.1"
 junit = "4.13.2"
+mockwebserver = "3.12.13"
 coroutines = "1.8.1"
 
 [libraries]
@@ -33,6 +34,7 @@ zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" 
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "mockwebserver" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 
 [plugins]

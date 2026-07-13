@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.14.12] — 2026-07-13
+
+- Replaced the Android player's fixed FIFO download pool with a bounded two-lane scheduler: 2 active workers, at most 64 pending items, foreground promotion for the current `prepare` item, background FIFO for playlist prefetch, and item-id de-duplication. New prepare generations cancel and invalidate stale cache waiters before they can prime the decoder or report `ready`.
+- Made temporary P2P overload recoverable: Android retries bounded `429/503` responses with capped `Retry-After`/exponential backoff and jitter, preserves `.part`, resumes with `Range`, and deterministically cancels queued work plus active OkHttp calls on stop.
+- Hardened the controller's local media HTTP contract: strict single byte ranges (`N-M`, `N-`, `-N`), explicit empty `416`/`405`, success headers only after admission, empty `503 Retry-After: 1`, bounded FIFO admission, close/restart generation isolation, and deterministic waiter release on stop. Added loopback HTTP tests for ranges, overload, disconnects, stop, and restart.
+
 ## [v1.14.11] — 2026-07-13
 
 - Bounded Android player media downloads to 2 active workers with a finite 64-item queue, preventing a large playlist from creating one thread/socket per uncached item. Queue overflow is reported as `error:queue-full` instead of retaining unbounded work.

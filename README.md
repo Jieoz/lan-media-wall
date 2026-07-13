@@ -39,7 +39,7 @@ The controller orchestration pane can load and edit the active playlist reported
 | 单文件 / 轮播(v1.6) | playlist[] 统一模型，长度 1 = 单文件，>1 = 轮播。图片按 `duration_ms` 到时**自动进位**(缺省 5000ms),视频**播完自动进位**,末项 loop 回绕;Android/Windows 两端行为一致 |
 | NAS 预分发 | 媒体存 NAS(WebDAV/HTTP GET)，被控端断点续传缓存 + sha256 校验，本地秒开 |
 | 鉴权(可选,v1.1) | 三档 `auth_mode`:`open` 默认零配置免密钥 / `optional` / `required`(PSK + HMAC-SHA256)。msg_id 去重 + ts 时效在所有档位常开;可叠加 WSS |
-| 拓扑(可选,v1.1) | 三模式 `topology`:`dedicated` 独立 broker / `cohosted` 被控端兼职 broker(零额外机器)/ `p2p` 无 broker 纯直连(遥控端兼协调,适合 ≤8 台小场景；v1.14.11 起控制端最多并发 6 条媒体流、每台播放端最多并发下载 2 项并保留 64 项有界队列，超限显式失败而非无界堆积) |
+| 拓扑(可选,v1.1) | 三模式 `topology`:`dedicated` 独立 broker / `cohosted` 被控端兼职 broker(零额外机器)/ `p2p` 无 broker 纯直连(遥控端兼协调,适合 ≤8 台小场景；控制端最多并发 6 条媒体流/64 个 waiter，每台播放端最多并发下载 2 项/64 个 pending；v1.14.12 起当前 `prepare` 项可提升为前台，`429/503` 有界重试并 Range 续传，stop 确定性解除队列) |
 | 二维码配对(v1.1;v1.4.2 配置反转;v1.7 遥控端扫码) | 无摄像头 TV 盒/Windows 被控端**展示自己的** `lmw://pair?...` 二维码(首启/设置页),遥控端手机用 `mobile_scanner` 真摄像头扫码入组;同时保留粘贴链接/手填 IP 兜底 |
 | 派生密钥(v1.3) | `required`/`optional` 下各端不再共享 PSK:broker 持唯一 PSK,各端经配对二维码只拿到自己那把 `device_key = HMAC(PSK, 设备身份)`。攻破一台只暴露该台,伪造不了 broker 或别台。`key_mode` 协商 `derived`(默认)/`global`(兼容老端),部署体验与单 PSK 完全一致,零额外配置 |
 | 设备发现 | UDP 广播自动发现 + 手动 IP 直绑 + 上次清单持久化兜底;找不到 broker 自动退化 p2p |

@@ -1,7 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:remote_flutter/net/media_upload.dart';
 
 void main() {
+  test('MediaRequestGate validates runtime limits', () {
+    expect(() => MediaRequestGate(0), throwsArgumentError);
+    expect(() => MediaRequestGate(-1), throwsArgumentError);
+    expect(() => MediaRequestGate(1, maxQueued: -1), throwsArgumentError);
+  });
+
   test('MediaRequestGate admits only the configured number concurrently', () async {
     final gate = MediaRequestGate(2);
     final first = (await gate.acquire())!;
@@ -48,5 +56,37 @@ void main() {
     permit.release();
     permit.release();
     expect(gate.active, 0);
+  });
+
+  test('close immediately releases every waiter and rejects new work', () async {
+    final gate = MediaRequestGate(1, maxQueued: 3);
+    final active = (await gate.acquire())!;
+    final waiters = [gate.acquire(), gate.acquire(), gate.acquire()];
+
+    gate.close();
+
+    expect(gate.closed, isTrue);
+    expect(gate.queued, 0);
+    expect(await Future.wait(waiters), everyElement(isNull));
+    expect(await gate.acquire(), isNull);
+    active.release();
+    expect(gate.active, 0);
+  });
+
+  test('a closed generation cannot admit waiters into a replacement gate', () async {
+    final oldGate = MediaRequestGate(1);
+    final oldPermit = (await oldGate.acquire())!;
+    final oldWaiter = oldGate.acquire();
+    oldGate.close();
+
+    final newGate = MediaRequestGate(1);
+    final newPermit = await newGate.acquire();
+    oldPermit.release();
+
+    expect(await oldWaiter, isNull);
+    expect(newPermit, isNotNull);
+    expect(oldGate.active, 0);
+    expect(newGate.active, 1);
+    newPermit!.release();
   });
 }

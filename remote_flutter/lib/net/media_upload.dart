@@ -143,31 +143,56 @@ class _Sha256Sink {
 /// file streams without buffering payloads in memory; queued HTTP handlers keep
 /// natural TCP backpressure until a permit is available.
 class MediaRequestGate {
-  MediaRequestGate(this.maxConcurrent, {this.maxQueued = 64})
-      : assert(maxConcurrent > 0, 'maxConcurrent must be positive'),
-        assert(maxQueued > 0, 'maxQueued must be positive');
+  MediaRequestGate(int maxConcurrent, {int maxQueued = 64})
+      : maxConcurrent = _positive(maxConcurrent, 'maxConcurrent'),
+        maxQueued = _nonNegative(maxQueued, 'maxQueued');
 
   final int maxConcurrent;
   final int maxQueued;
   int _active = 0;
-  final List<Completer<MediaRequestPermit>> _waiters = [];
+  bool _closed = false;
+  final List<Completer<MediaRequestPermit?>> _waiters = [];
+
+  static int _positive(int value, String name) {
+    if (value <= 0) throw ArgumentError.value(value, name, 'must be positive');
+    return value;
+  }
+
+  static int _nonNegative(int value, String name) {
+    if (value < 0) {
+      throw ArgumentError.value(value, name, 'must not be negative');
+    }
+    return value;
+  }
 
   int get active => _active;
   int get queued => _waiters.length;
+  bool get closed => _closed;
 
   Future<MediaRequestPermit?> acquire() {
+    if (_closed) return Future.value(null);
     if (_active < maxConcurrent) {
       _active++;
       return Future.value(MediaRequestPermit._(this));
     }
     if (_waiters.length >= maxQueued) return Future.value(null);
-    final waiter = Completer<MediaRequestPermit>();
+    final waiter = Completer<MediaRequestPermit?>();
     _waiters.add(waiter);
     return waiter.future;
   }
 
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    final waiters = List<Completer<MediaRequestPermit?>>.of(_waiters);
+    _waiters.clear();
+    for (final waiter in waiters) {
+      waiter.complete(null);
+    }
+  }
+
   void _release() {
-    if (_waiters.isNotEmpty) {
+    if (!_closed && _waiters.isNotEmpty) {
       _waiters.removeAt(0).complete(MediaRequestPermit._(this));
       return;
     }
@@ -187,100 +212,201 @@ class MediaRequestPermit {
   }
 }
 
-/// 模式 A 的控制端临时 HTTP 服务(§20.2)。仅在分发窗口存活:注册若干本地文件,
-/// 对被控端提供 `GET /m/<itemId>`(支持 Range 断点续传,与 broker 媒体库同契约)。
-/// 分发+全员就绪起播后可 [stop](被控端已缓存到本地,不再依赖此服务)。
-class LocalMediaServer {
-  LocalMediaServer({int maxConcurrentStreams = 6})
-      : _requestGate = MediaRequestGate(maxConcurrentStreams);
+/// A normalized byte interval for one HTTP representation.
+class MediaByteRange {
+  const MediaByteRange(this.start, this.end, this.partial);
 
+  final int start;
+  final int end;
+  final bool partial;
+
+  int get length => end < start ? 0 : end - start + 1;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MediaByteRange &&
+      start == other.start &&
+      end == other.end &&
+      partial == other.partial;
+
+  @override
+  int get hashCode => Object.hash(start, end, partial);
+
+  @override
+  String toString() => 'MediaByteRange($start, $end, partial: $partial)';
+}
+
+class MediaRangeNotSatisfiable implements Exception {
+  const MediaRangeNotSatisfiable();
+}
+
+/// Strictly parses one RFC 7233 byte range. This server deliberately rejects
+/// malformed and multipart ranges instead of silently serving the whole file.
+MediaByteRange parseSingleByteRange(String? header, int total) {
+  if (total < 0) throw ArgumentError.value(total, 'total', 'must not be negative');
+  if (header == null) return MediaByteRange(0, total - 1, false);
+
+  final match = RegExp(r'^bytes=(\d*)-(\d*)$').firstMatch(header);
+  if (match == null) throw const MediaRangeNotSatisfiable();
+  final first = match.group(1)!;
+  final last = match.group(2)!;
+  if (first.isEmpty && last.isEmpty || total == 0) {
+    throw const MediaRangeNotSatisfiable();
+  }
+
+  if (first.isEmpty) {
+    final suffixLength = int.tryParse(last);
+    if (suffixLength == null || suffixLength <= 0) {
+      throw const MediaRangeNotSatisfiable();
+    }
+    final start = suffixLength >= total ? 0 : total - suffixLength;
+    return MediaByteRange(start, total - 1, true);
+  }
+
+  final start = int.tryParse(first);
+  final requestedEnd = last.isEmpty ? total - 1 : int.tryParse(last);
+  if (start == null || requestedEnd == null || start >= total || start > requestedEnd) {
+    throw const MediaRangeNotSatisfiable();
+  }
+  final end = requestedEnd >= total ? total - 1 : requestedEnd;
+  return MediaByteRange(start, end, true);
+}
+
+/// 模式 A 的控制端本地 HTTP 服务(§20.2)。服务在控制端状态对象 dispose 前保持存活，
+/// 避免首项 ready/play_at 后关闭导致后续节目单项目或新上传无法下载。每次显式 stop 后仍可
+/// start 新生命周期；对被控端提供 `GET /m/<itemId>`(支持严格单 Range 断点续传)。
+typedef MediaStreamFactory = Stream<List<int>> Function(
+  File file,
+  int start,
+  int endExclusive,
+);
+
+class LocalMediaServer {
+  LocalMediaServer({
+    int maxConcurrentStreams = 6,
+    int maxQueuedRequests = 64,
+    MediaStreamFactory? streamFactory,
+  })  : _maxConcurrentStreams = MediaRequestGate._positive(
+            maxConcurrentStreams, 'maxConcurrentStreams'),
+        _maxQueuedRequests = MediaRequestGate._nonNegative(
+            maxQueuedRequests, 'maxQueuedRequests'),
+        _streamFactory = streamFactory ?? _openFileRange;
+
+  final int _maxConcurrentStreams;
+  final int _maxQueuedRequests;
+  final MediaStreamFactory _streamFactory;
   HttpServer? _server;
-  final MediaRequestGate _requestGate;
+  MediaRequestGate? _requestGate;
   final Map<String, _Served> _files = {};
   String _host = '';
 
   int get port => _server?.port ?? 0;
   bool get running => _server != null;
+  int get activeRequests => _requestGate?.active ?? 0;
+  int get queuedRequests => _requestGate?.queued ?? 0;
 
-  /// 启动服务,绑定到 [bindHost](控制端 LAN IP,用于对外 URL)。端口 0 = 系统分配。
+  /// Starts a fresh server lifecycle. Every start gets a new admission gate, so
+  /// requests cancelled by [stop] can never leak into a restarted generation.
   Future<void> start({required String bindHost, int port = 0}) async {
     if (_server != null) return;
+    final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+    final gate = MediaRequestGate(
+      _maxConcurrentStreams,
+      maxQueued: _maxQueuedRequests,
+    );
     _host = bindHost;
-    _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-    _server!.listen(_handle, onError: (_) {});
+    _server = server;
+    _requestGate = gate;
+    server.listen((request) => _handle(request, gate), onError: (_) {});
   }
 
   /// 登记一个本地文件,返回其可 GET 的 URL(指向控制端 IP)。
   String register({required String itemId, required File file, String ext = ''}) {
+    if (_server == null) throw StateError('LocalMediaServer is not running');
     _files[itemId] = _Served(file, ext);
     final suffix = ext.isEmpty ? '' : '.$ext';
     return 'http://$_host:$port/m/$itemId$suffix';
   }
 
-  Future<void> _handle(HttpRequest req) async {
+  Future<void> _empty(HttpResponse response, int status) async {
+    response.statusCode = status;
+    response.headers.contentLength = 0;
+    await response.close();
+  }
+
+  Future<void> _handle(HttpRequest req, MediaRequestGate gate) async {
     final resp = req.response;
+    if (req.method != 'GET' && req.method != 'HEAD') {
+      resp.headers.set(HttpHeaders.allowHeader, 'GET, HEAD');
+      await _empty(resp, HttpStatus.methodNotAllowed);
+      return;
+    }
+
     // 路径 /m/<itemId>[.ext]
     final seg = req.uri.pathSegments;
     if (seg.length != 2 || seg[0] != 'm') {
-      resp.statusCode = HttpStatus.notFound;
-      await resp.close();
+      await _empty(resp, HttpStatus.notFound);
       return;
     }
     final itemId = seg[1].split('.').first;
     final served = _files[itemId];
     if (served == null || !await served.file.exists()) {
-      resp.statusCode = HttpStatus.notFound;
-      await resp.close();
+      await _empty(resp, HttpStatus.notFound);
       return;
     }
     final total = await served.file.length();
     resp.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
     resp.headers.contentType = ContentType.parse(served.contentType);
 
-    // Range 支持(断点续传,§6.2/§20.2)。
-    final range = req.headers.value(HttpHeaders.rangeHeader);
-    var start = 0, end = total - 1;
-    if (range != null && range.startsWith('bytes=')) {
-      final spec = range.substring(6).split('-');
-      start = int.tryParse(spec[0]) ?? 0;
-      if (spec.length > 1 && spec[1].isNotEmpty) {
-        end = int.tryParse(spec[1]) ?? end;
-      }
-      if (start > end || start >= total) {
-        resp.statusCode = HttpStatus.requestedRangeNotSatisfiable;
-        resp.headers.set(HttpHeaders.contentRangeHeader, 'bytes */$total');
-        await resp.close();
-        return;
-      }
-      end = end.clamp(0, total - 1);
-      resp.statusCode = HttpStatus.partialContent;
-      resp.headers.set(
-          HttpHeaders.contentRangeHeader, 'bytes $start-$end/$total');
-    }
-    // Do not publish a success Content-Length before admission: if the bounded
-    // queue is saturated this response becomes an empty 503 instead.
-    final responseLength = end - start + 1;
-    if (req.method == 'HEAD') {
-      resp.headers.contentLength = responseLength;
-      await resp.close();
-      return;
-    }
-    // Keep the HTTP wait queue finite as well as the active stream count.
-    // Once saturated, clients receive 503 + Retry-After and retain their .part
-    // files for a later Range retry.
-    final permit = await _requestGate.acquire();
-    if (permit == null) {
-      resp.statusCode = HttpStatus.serviceUnavailable;
-      resp.headers.contentLength = 0;
-      resp.headers.set(HttpHeaders.retryAfterHeader, '1');
-      await resp.close();
-      return;
-    }
-    resp.headers.contentLength = responseLength;
+    late final MediaByteRange range;
     try {
-      await resp.addStream(served.file.openRead(start, end + 1));
+      range = parseSingleByteRange(
+        req.headers.value(HttpHeaders.rangeHeader),
+        total,
+      );
+    } on MediaRangeNotSatisfiable {
+      resp.headers.set(HttpHeaders.contentRangeHeader, 'bytes */$total');
+      await _empty(resp, HttpStatus.requestedRangeNotSatisfiable);
+      return;
+    }
+
+    // HEAD reports exactly the metadata GET would return, but never consumes a
+    // stream permit and never emits a response body.
+    if (req.method == 'HEAD') {
+      if (range.partial) {
+        resp.statusCode = HttpStatus.partialContent;
+        resp.headers.set(HttpHeaders.contentRangeHeader,
+            'bytes ${range.start}-${range.end}/$total');
+      }
+      resp.headers.contentLength = range.length;
+      await resp.close();
+      return;
+    }
+
+    // Admission precedes every successful range/status/length header. A closed
+    // generation and a full queue both produce the same retryable empty 503.
+    final permit = await gate.acquire();
+    if (permit == null) {
+      resp.headers.removeAll(HttpHeaders.contentRangeHeader);
+      resp.headers.set(HttpHeaders.retryAfterHeader, '1');
+      await _empty(resp, HttpStatus.serviceUnavailable);
+      return;
+    }
+
+    if (range.partial) {
+      resp.statusCode = HttpStatus.partialContent;
+      resp.headers.set(HttpHeaders.contentRangeHeader,
+          'bytes ${range.start}-${range.end}/$total');
+    }
+    resp.headers.contentLength = range.length;
+    try {
+      if (range.length > 0) {
+        await resp.addStream(
+          _streamFactory(served.file, range.start, range.end + 1),
+        );
+      }
     } catch (_) {
-      // Client disconnects leave the file and other queued transfers intact.
+      // A disconnected client must not retain its admission permit.
     } finally {
       permit.release();
       try {
@@ -290,11 +416,18 @@ class LocalMediaServer {
   }
 
   Future<void> stop() async {
-    await _server?.close(force: true);
+    final server = _server;
+    final gate = _requestGate;
     _server = null;
+    _requestGate = null;
     _files.clear();
+    gate?.close();
+    await server?.close(force: true);
   }
 }
+
+Stream<List<int>> _openFileRange(File file, int start, int endExclusive) =>
+    file.openRead(start, endExclusive);
 
 class _Served {
   _Served(this.file, this.ext);

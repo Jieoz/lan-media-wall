@@ -1,5 +1,7 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.14.12 P2P 调度与恢复：**下载器保持单台 2 个 active worker、最多 64 个 pending，但不再使用普通 FIFO：`playlist/cache_prefetch` 进入后台队列，当前 `prepare` 项进入前台并可提升已排队的同 item；同 item 去重。控制端过载返回的 `429/503` 会按有上限的 `Retry-After`/指数退避重试，保留 `.part` 后继续 Range 续传；stop 会取消排队任务和活动 OkHttp call。prepare generation 隔离保证旧 waiter 不能 prime 解码器或发送过期 `ready`。
+
 > **v1.14.11 批量 P2P 传输边界：**单台播放端最多并发下载 2 项，等待队列最多 64 项；超限项目通过 `status.cache[item_id]=error:queue-full` 明确上报，不再用无界线程池放大网络、内存和闪存争用。Range 断点续传、SHA-256 校验和缓存播放合同不变。
 
 > **v1.14.9:** API19 单 VDEC 的视频切换不再直接露出
@@ -19,7 +21,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.11 / versionCode 59`** — derived from
+> **Current build: `versionName 1.14.12 / versionCode 60`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

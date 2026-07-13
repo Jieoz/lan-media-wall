@@ -2,11 +2,15 @@ package com.jieoz.lanmediawall.player.cache
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Call
 import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.min
+import kotlin.random.Random
 
 /**
  * Pure Range-resume math (protocol_spec §6) — extracted so it is unit-testable
@@ -64,6 +68,7 @@ class CacheEntry(val itemId: String) {
         "ready" -> "ready"
         "downloading" -> "downloading:$progress%"
         "verifying" -> "verifying"
+        "retrying" -> "retrying"
         "error" -> if (error.isNotEmpty()) "error:$error" else "error"
         else -> state
     }
@@ -86,6 +91,10 @@ class Downloader(
     private val onChange: (() -> Unit)? = null,
     private val chunkSize: Int = 256 * 1024,
     timeoutSeconds: Long = 30,
+    private val retryBaseDelayMs: Long = 1_000L,
+    private val retryMaxDelayMs: Long = 30_000L,
+    private val retryJitterMs: Long = 250L,
+    private val maxRetryAttempts: Int = 5,
     /**
      * Diagnostic sink → PlayerService.logEvent so cache-path decisions land in
      * the **exported** player.log, not logcat. The last black-screen regression
@@ -95,7 +104,9 @@ class Downloader(
     private val logSink: ((String) -> Unit)? = null,
 ) {
     private val entries = ConcurrentHashMap<String, CacheEntry>()
-    private val inFlight = ConcurrentHashMap<String, Boolean>()
+    private val inFlight = ConcurrentHashMap<String, Long>()
+    private val activeCalls = ConcurrentHashMap<String, Call>()
+    private val generation = AtomicLong(0L)
 
     private fun log(msg: String) { logSink?.invoke(msg) }
 
@@ -156,7 +167,7 @@ class Downloader(
             // 已 ready 或正在处理 → 别覆盖内存里的活状态。
             val cur = entries[itemId]
             if (cur != null && cur.state in setOf("ready", "downloading", "verifying")) continue
-            if (inFlight[itemId] == true) continue
+            if (inFlight.containsKey(itemId)) continue
             val target = localPath(item)
             val part = File(target.parentFile, target.name + ".part")
             // 完整文件必须存在、无对应 .part、且大小匹配(有 size 时)才算 ready。
@@ -215,7 +226,13 @@ class Downloader(
                 "reclaim ran, not writing new media to a fake-capacity volume")
             return
         }
-        for (item in items) ensureEntryAndStart(item)
+        for (item in items) ensureEntryAndStart(item, DownloadPriority.BACKGROUND)
+    }
+
+    /** Current/prepare misses use the foreground lane and promote queued work. */
+    fun prefetchForeground(item: MediaItem) {
+        enforceQuota(extraProtected = listOf(localPath(item).absolutePath))
+        if (probeWritable()) ensureEntryAndStart(item, DownloadPriority.FOREGROUND)
     }
 
     /**
@@ -375,53 +392,64 @@ class Downloader(
         notifyChange()
     }
 
-    private fun ensureEntryAndStart(item: MediaItem) {
+    private fun ensureEntryAndStart(item: MediaItem, priority: DownloadPriority) {
         val itemId = item.itemId
         val target = localPath(item)
+        var token = 0L
         synchronized(this) {
-            val existing = entries[itemId]
-            if (existing != null && existing.state in setOf("downloading", "verifying")) return
-            if (inFlight[itemId] == true) return
-            if (target.exists() && quickOk(target, item)) {
-                // B2 根因修复(第二处 size-only 捷径):prefetch 命中磁盘旧文件时,过去
-                // 仅 quickOk(比 size)就直接标 ready,和 restoreReadyFromDisk 同源。带
-                // sha256 的 item 必须校验通过才认 ready;不符删文件走完整下载。
-                val expectedSha = item.sha256
-                if (!expectedSha.isNullOrEmpty()) {
-                    val actual = try { sha256File(target) } catch (e: Exception) { null }
-                    if (actual == null || !actual.equals(expectedSha, ignoreCase = true)) {
-                        log("prefetch reject=$itemId reason=sha256-mismatch " +
-                            "actual=${actual?.take(12) ?: "read-fail"} expect=${expectedSha.take(12)} → delete+refetch")
-                        target.delete()
-                        entries[itemId] = CacheEntry(itemId)
-                        inFlight[itemId] = true
-                        if (!pool.submit { worker(item) }) {
-                            inFlight.remove(itemId)
-                            fail(itemId, "queue-full")
-                            log("prefetch reject=$itemId reason=queue-full queued=${pool.queued}")
-                        }
-                        return
-                    }
-                    log("prefetch ok=$itemId source=disk sha256=verified size=${target.length()}")
-                } else {
-                    log("prefetch ok=$itemId source=disk sha256=UNVERIFIED(item has no sha) size=${target.length()}")
-                }
-                val e = CacheEntry(itemId).apply {
-                    state = "ready"; progress = 100; path = target
-                }
-                entries[itemId] = e
-                notifyChange()
+            if (stopped) {
+                entries[itemId] = CacheEntry(itemId).apply { state = "error"; error = "stopped" }
                 return
             }
-            log("prefetch start=$itemId source=network url=${item.url}")
+            val existing = entries[itemId]
+            if (existing != null && existing.state in setOf("downloading", "verifying", "retrying")) return
+            if (inFlight.containsKey(itemId)) {
+                pool.submit(itemId, priority) { }
+                return
+            }
+            if (target.exists() && quickOk(target, item)) {
+                val expectedSha = item.sha256
+                if (!expectedSha.isNullOrEmpty()) {
+                    val actual = try { sha256File(target) } catch (_: Exception) { null }
+                    if (actual == null || !actual.equals(expectedSha, ignoreCase = true)) {
+                        log("prefetch reject=$itemId reason=sha256-mismatch → delete+refetch")
+                        target.delete()
+                    } else {
+                        entries[itemId] = CacheEntry(itemId).apply {
+                            state = "ready"; progress = 100; path = target
+                        }
+                        notifyChange()
+                        return
+                    }
+                } else {
+                    entries[itemId] = CacheEntry(itemId).apply {
+                        state = "ready"; progress = 100; path = target
+                    }
+                    notifyChange()
+                    return
+                }
+            }
+            token = generation.incrementAndGet()
             entries[itemId] = CacheEntry(itemId)
-            inFlight[itemId] = true
+            inFlight[itemId] = token
         }
-        if (!pool.submit { worker(item) }) {
+        val result = pool.submit(
+            itemId,
+            priority,
+            onCancelled = { cancelToken(itemId, token, "stopped") },
+        ) { worker(item, token) }
+        if (result == SubmitResult.REJECTED) cancelToken(itemId, token, if (stopped) "stopped" else "queue-full")
+    }
+
+    private fun cancelToken(itemId: String, token: Long, reason: String) {
+        synchronized(this) {
+            if (inFlight[itemId] != token) return
             inFlight.remove(itemId)
-            fail(itemId, "queue-full")
-            log("prefetch reject=$itemId reason=queue-full queued=${pool.queued}")
+            val e = entries.getOrPut(itemId) { CacheEntry(itemId) }
+            e.state = "error"
+            e.error = reason
         }
+        notifyChange()
     }
 
     private fun quickOk(path: File, item: MediaItem): Boolean {
@@ -430,80 +458,107 @@ class Downloader(
         return true
     }
 
-    private fun worker(item: MediaItem) {
+    private fun worker(item: MediaItem, token: Long) {
         val itemId = item.itemId
         val target = localPath(item)
         val part = File(target.parentFile, target.name + ".part")
         try {
-            var existing = if (part.exists()) part.length() else 0L
-            val builder = Request.Builder().url(item.url).get()
-            RangeMath.rangeHeader(existing)?.let { builder.header("Range", it) }
-
-            client.newCall(builder.build()).execute().use { resp ->
-                // okhttp 3.12: Response exposes code()/body()/header() as
-                // methods (okhttp 4 turned them into Kotlin properties).
-                val code = resp.code()
-                if (code != 200 && code != 206) {
-                    fail(itemId, "http-$code")
-                    return
-                }
-                if (code == 200 && existing > 0) {
-                    existing = 0
-                    part.delete()
-                }
-                val clen = resp.header("Content-Length")?.toLongOrNull()
-                val crTotal = RangeMath.parseContentRangeTotal(resp.header("Content-Range"))
-                val total = RangeMath.expectedTotal(existing, code, clen, crTotal) ?: item.size
-                var downloaded = existing
-                set(itemId, state = "downloading", progress = RangeMath.percent(downloaded, total))
-
-                val body = resp.body() ?: run { fail(itemId, "no-body"); return }
-                val append = existing > 0
-                val out = java.io.FileOutputStream(part, append)
-                out.use { fos ->
-                    val src = body.byteStream()
-                    val buf = ByteArray(chunkSize)
-                    while (true) {
-                        if (stopped) return // leave .part for next resume
-                        val n = src.read(buf)
-                        if (n < 0) break
-                        if (n == 0) continue
-                        fos.write(buf, 0, n)
-                        downloaded += n
-                        set(itemId, state = "downloading",
-                            progress = RangeMath.percent(downloaded, total))
+            var attempt = 0
+            while (!stopped) {
+                var existing = if (part.exists()) part.length() else 0L
+                val builder = Request.Builder().url(item.url).get()
+                RangeMath.rangeHeader(existing)?.let { builder.header("Range", it) }
+                val call = client.newCall(builder.build())
+                activeCalls[itemId] = call
+                val retryDelay = call.execute().use { resp ->
+                    activeCalls.remove(itemId, call)
+                    val code = resp.code()
+                    if (code == 429 || code == 503) {
+                        if (attempt >= maxRetryAttempts) {
+                            failIfCurrent(itemId, token, "http-$code")
+                            return
+                        }
+                        attempt++
+                        retryDelayMs(resp.header("Retry-After"), attempt)
+                    } else {
+                        if (code != 200 && code != 206) {
+                            failIfCurrent(itemId, token, "http-$code")
+                            return
+                        }
+                        if (code == 200 && existing > 0) {
+                            existing = 0
+                            part.delete()
+                        }
+                        val clen = resp.header("Content-Length")?.toLongOrNull()
+                        val crTotal = RangeMath.parseContentRangeTotal(resp.header("Content-Range"))
+                        val total = RangeMath.expectedTotal(existing, code, clen, crTotal) ?: item.size
+                        var downloaded = existing
+                        setIfCurrent(itemId, token, state = "downloading", progress = RangeMath.percent(downloaded, total))
+                        val body = resp.body() ?: run { failIfCurrent(itemId, token, "no-body"); return }
+                        java.io.FileOutputStream(part, existing > 0).use { fos ->
+                            val src = body.byteStream()
+                            val buf = ByteArray(chunkSize)
+                            while (!stopped) {
+                                val n = src.read(buf)
+                                if (n < 0) break
+                                if (n == 0) continue
+                                fos.write(buf, 0, n)
+                                downloaded += n
+                                setIfCurrent(itemId, token, state = "downloading",
+                                    progress = RangeMath.percent(downloaded, total))
+                            }
+                        }
+                        if (stopped) return
+                        null
                     }
                 }
+                if (retryDelay == null) break
+                setIfCurrent(itemId, token, state = "retrying")
+                log("download retry=$itemId attempt=$attempt delay_ms=$retryDelay")
+                if (!sleepInterruptibly(retryDelay)) return
             }
-
-            // verify
-            set(itemId, state = "verifying")
+            if (stopped) return
+            setIfCurrent(itemId, token, state = "verifying")
             val expectedSha = item.sha256
             if (!expectedSha.isNullOrEmpty()) {
                 val actual = sha256File(part)
                 if (!actual.equals(expectedSha, ignoreCase = true)) {
-                    log("download reject=$itemId reason=sha256-mismatch " +
-                        "actual=${actual.take(12)} expect=${expectedSha.take(12)} bytes=${part.length()}")
-                    part.delete() // corrupt; force clean retry
-                    fail(itemId, "sha256-mismatch")
+                    part.delete()
+                    failIfCurrent(itemId, token, "sha256-mismatch")
                     return
                 }
-                log("download verified=$itemId source=network sha256=ok bytes=${part.length()}")
-            } else {
-                log("download done=$itemId source=network sha256=UNVERIFIED(item has no sha) bytes=${part.length()}")
             }
             if (!part.renameTo(target)) {
-                // fallback: copy+delete if rename across boundary fails
                 part.copyTo(target, overwrite = true)
                 part.delete()
             }
-            set(itemId, state = "ready", progress = 100, path = target)
+            setIfCurrent(itemId, token, state = "ready", progress = 100, path = target)
         } catch (e: Exception) {
-            log("download fail=$itemId ex=${e.javaClass.simpleName}:${e.message}")
-            fail(itemId, e.javaClass.simpleName) // keep .part for resume
+            activeCalls.remove(itemId)
+            if (!stopped) failIfCurrent(itemId, token, e.javaClass.simpleName)
         } finally {
-            inFlight.remove(itemId)
+            if (stopped) cancelToken(itemId, token, "stopped")
+            else synchronized(this) { if (inFlight[itemId] == token) inFlight.remove(itemId) }
         }
+    }
+
+    private fun retryDelayMs(header: String?, attempt: Int): Long {
+        val retryAfterMs = header?.trim()?.toLongOrNull()?.coerceIn(0L, 60L)?.times(1_000L)
+        val shift = min(attempt - 1, 20)
+        val exponential = retryBaseDelayMs * (1L shl shift)
+        val base = min(retryMaxDelayMs, retryAfterMs ?: exponential)
+        val jitter = if (retryJitterMs > 0) Random.nextLong(retryJitterMs + 1) else 0L
+        return min(retryMaxDelayMs, base + jitter)
+    }
+
+    private fun sleepInterruptibly(delayMs: Long): Boolean {
+        var remaining = delayMs
+        while (!stopped && remaining > 0) {
+            val slice = min(remaining, 100L)
+            try { Thread.sleep(slice) } catch (_: InterruptedException) { return false }
+            remaining -= slice
+        }
+        return !stopped
     }
 
     private fun sha256File(file: File): String {
@@ -519,20 +574,23 @@ class Downloader(
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private fun set(
-        itemId: String, state: String? = null, progress: Int? = null,
+    private fun setIfCurrent(
+        itemId: String, token: Long, state: String? = null, progress: Int? = null,
         error: String? = null, path: File? = null,
     ) {
-        val e = entries.getOrPut(itemId) { CacheEntry(itemId) }
-        state?.let { e.state = it }
-        progress?.let { e.progress = it }
-        error?.let { e.error = it }
-        path?.let { e.path = it }
+        synchronized(this) {
+            if (inFlight[itemId] != token || stopped) return
+            val e = entries.getOrPut(itemId) { CacheEntry(itemId) }
+            state?.let { e.state = it }
+            progress?.let { e.progress = it }
+            error?.let { e.error = it }
+            path?.let { e.path = it }
+        }
         notifyChange()
     }
 
-    private fun fail(itemId: String, err: String) {
-        set(itemId, state = "error", error = err)
+    private fun failIfCurrent(itemId: String, token: Long, err: String) {
+        setIfCurrent(itemId, token, state = "error", error = err)
     }
 
     private fun notifyChange() {
@@ -540,8 +598,12 @@ class Downloader(
     }
 
     fun stop() {
-        stopped = true
+        synchronized(this) { stopped = true }
+        activeCalls.values.forEach { try { it.cancel() } catch (_: Exception) {} }
+        client.dispatcher().cancelAll()
         pool.shutdownNow()
+        val leftovers = synchronized(this) { inFlight.toMap() }
+        leftovers.forEach { (itemId, token) -> cancelToken(itemId, token, "stopped") }
     }
 
     companion object {
