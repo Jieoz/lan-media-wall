@@ -194,6 +194,18 @@ void main() {
 
       expect(invalid.brokerEndpoint, isNull);
     });
+
+    test('真实故障样本：声明 p2p 的设备不把普通 broker_hint 当协调端', () {
+      const announcedP2p = AnnounceInfo(
+        deviceId: 'and-e2d7c5b16f',
+        deviceName: 'and-e2d7c5b16f',
+        ip: '10.10.8.160',
+        brokerHint: '10.10.8.160:8770',
+        topology: 'p2p',
+      );
+
+      expect(announcedP2p.brokerEndpoint, isNull);
+    });
   });
 
   group('Commands payload (§6/§9)', () {

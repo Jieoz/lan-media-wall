@@ -344,7 +344,11 @@ class AnnounceInfo {
   bool get hasBroker => brokerHint != null && brokerHint!.isNotEmpty;
 
   /// 解析 broker_hint "ip:port" → (host, port)；无 hint 返回 null。
+  /// 明确声明 topology=p2p 的 announce 来自被控端自身，它的 broker_hint 只是
+  /// 兼容字段，不能据此把控制端切到 broker 路径；否则 raw status/time_sync 会被
+  /// BrokerClient 按 broker 合同丢弃，设备永久停在「已发现」，定向配置也无回包。
   ({String host, int port})? get brokerEndpoint {
+    if (topology?.toLowerCase() == 'p2p') return null;
     final h = brokerHint;
     if (h == null || h.isEmpty) return null;
     if (normalizeRemoteHost(h).isEmpty) return null;

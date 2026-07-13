@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.14.10] — 2026-07-13
+
+- Fixed the real P2P control path from the captured v1.14.8 controller log: a player announce that explicitly declares `topology=p2p` no longer lets a compatibility `broker_hint` switch the controller onto `BrokerClient`, where raw `status/time_sync` were intentionally discarded and every device remained “已发现”. The controller now opens per-player P2P links, consumes status, and advances cards to “已连接”.
+- Restored per-device configuration on the same path: rename/group/volume commands are delivered to the selected connected player, and the controller now confirms that the configuration command was actually queued instead of closing the dialog silently.
+
 ## [v1.14.9] — 2026-07-12
 
 - Fixed controller composition semantics: ordinary “编排/添加项目” now appends by default, while whole-list replacement is explicit in both payload and UI. Sequential A then B composition keeps `[A, B]` so previous/next target distinct content.

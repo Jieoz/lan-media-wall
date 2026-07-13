@@ -783,6 +783,11 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
       groupId: groupId.isEmpty ? null : groupId,
       volume: volume.round(),
     );
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('配置命令已投递')));
+    }
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context)

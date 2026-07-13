@@ -11,7 +11,9 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.9+57`**(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.14.10+58`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+>
+> **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >
 > **v1.14.8**:控制端配合有序播放列表 `replace`/`append`——`sendPlaylist` 新增 `mode` 参数,编排面板新增「③追加到当前列表」按钮(`_doAppend`,复用被控端保留的 `playlist_id`,按 `item_id` 去重合并到当前序列尾部、不打断在播内容;老播放器不认 `mode` 自动回退 `replace`);`DeviceStatus` 解析 additive 的 `current_index`/`playlist_count`。**拓扑诊断诚实化**:诊断汇总区分 **operating**(本端实际连接方式)与 **declared**(协调端 welcome 声明)两个拓扑并同时打印,修「汇总说 `topology=dedicated,p2p_peers=0` 而日志说 `topology=p2p`」的自相矛盾;broker 路径收到本应由 broker 聚合的 `status/time_sync/ready` 时显式记「落到 broker 路径被丢弃」而非静默,`online=null` 变可归因。
 >
