@@ -135,15 +135,16 @@ void main() {
     final uri = Uri.parse('http://127.0.0.1:$oldPort/m/slow');
 
     final first = newClient().getUrl(uri).then((r) => r.close());
+    final firstStopped = expectLater(first, throwsA(anything));
     await waitFor(() => server.activeRequests == 1);
     final queued = newClient().getUrl(uri).then((r) => r.close());
+    final queuedStopped = expectLater(queued, throwsA(anything));
     await waitFor(() => server.queuedRequests == 1);
 
     await server.stop();
     expect(server.activeRequests, 0);
     expect(server.queuedRequests, 0);
-    await expectLater(queued, throwsA(anything));
-    await expectLater(first, throwsA(anything));
+    await Future.wait<void>([queuedStopped, firstStopped]);
 
     await blocker.close();
     blockStream = false;
