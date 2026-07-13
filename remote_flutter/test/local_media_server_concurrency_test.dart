@@ -121,10 +121,13 @@ void main() {
     file = File('${temp.path}/slow.bin');
     await file.writeAsBytes([1]);
     final blocker = StreamController<List<int>>();
+    var blockStream = true;
     server = LocalMediaServer(
       maxConcurrentStreams: 1,
       maxQueuedRequests: 1,
-      streamFactory: (_, __, ___) => blocker.stream,
+      streamFactory: (source, start, end) => blockStream
+          ? blocker.stream
+          : source.openRead(start, end),
     );
     await server.start(bindHost: '127.0.0.1');
     server.register(itemId: 'slow', file: file);
@@ -143,6 +146,7 @@ void main() {
     await expectLater(first, throwsA(anything));
 
     await blocker.close();
+    blockStream = false;
     await server.start(bindHost: '127.0.0.1');
     server.register(itemId: 'slow', file: file);
     final response = await newClient()
