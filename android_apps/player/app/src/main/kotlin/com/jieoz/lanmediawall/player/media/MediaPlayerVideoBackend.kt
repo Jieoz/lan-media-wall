@@ -56,6 +56,18 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     override var onError: ((String) -> Unit)? = null
     override var onEnded: (() -> Unit)? = null
     override var onFirstFrame: (() -> Unit)? = null
+    override var onLoopBoundary: ((LoopBoundaryStateMachine.Action) -> Unit)? = null
+    @Volatile override var hasLoopBoundaryFrame: Boolean = false
+    private val loopBoundary = LoopBoundaryStateMachine()
+    private val loopPoll = object : Runnable {
+        override fun run() {
+            if (looping && state == State.STARTED) {
+                val action = loopBoundary.sample(safePosition(), knownDurationMs, true, hasLoopBoundaryFrame)
+                if (action != LoopBoundaryStateMachine.Action.NONE) onLoopBoundary?.invoke(action)
+                mainHandler.postDelayed(this, 100)
+            }
+        }
+    }
 
     private fun log(msg: String) { logSink?.invoke(msg) }
 
@@ -345,6 +357,10 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
             }
             mp.start()
             state = State.STARTED
+            if (looping) {
+                mainHandler.removeCallbacks(loopPoll)
+                mainHandler.post(loopPoll)
+            }
             log("started position_ms=${safePosition()}")
         } catch (t: Throwable) {
             failLoad("start", t)
@@ -352,6 +368,8 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     }
 
     override fun pause() = runOnMain {
+        mainHandler.removeCallbacks(loopPoll)
+        onLoopBoundary?.invoke(loopBoundary.reset())
         startWhenPrepared = false // a pause before prepared cancels the auto-start
         syncArmed = false         // …and cancels any pending late-start compensation
         val mp = player ?: return@runOnMain
@@ -376,6 +394,7 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     }
 
     override fun seekTo(ms: Long) = runOnMain {
+        onLoopBoundary?.invoke(loopBoundary.onSeek())
         val target = ms.coerceAtLeast(0)
         val mp = player
         if (mp != null && state in setOf(State.PREPARED, State.STARTED, State.PAUSED, State.COMPLETED)) {
@@ -437,6 +456,8 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
     }
 
     private fun releasePlayer() {
+        mainHandler.removeCallbacks(loopPoll)
+        onLoopBoundary?.invoke(loopBoundary.reset())
         preparedSeekInProgress = false
         startWhenPrepared = false
         syncArmed = false

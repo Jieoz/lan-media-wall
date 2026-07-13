@@ -367,6 +367,17 @@ These can't be exercised in a headless CI/container and need a device:
 
 ## Inbound-frame observability & p2p clock fix (1.10.1)
 
+### Stale P2P controller lease takeover (1.14.10)
+
+`P2pServer` keeps the single-controller rule, but no longer lets a half-open old
+socket own it forever. It uses API19-compatible `SystemClock.elapsedRealtime()`,
+a 5s socket read tick/ping, and a 15s inactivity lease. Any received WS frame
+renews the lease. A genuinely active second controller still gets close `1013`;
+after expiry a new controller atomically replaces and closes the stale socket.
+Ownership generations prevent the old receive thread/finally from clearing the
+replacement. Controller close logs expose code/reason. Real-device validation
+of takeover timing and Wi-Fi jitter tolerance remains pending.
+
 Diagnoses the "shows connected but push does nothing, with no logs" class of
 bug (typically after a FORCE reinstall wipes `/data/data` and re-pairing):
 
@@ -388,3 +399,9 @@ bug (typically after a FORCE reinstall wipes `/data/data` and re-pairing):
 - `Envelope.peekTypeFrom` gives callers a verify-free peek at a raw frame's
   `type`/`from`/`sig` length purely for the drop log (Envelope stays
   Android-free; only the caller Logs).
+> 当前状态：legacy 更新激活与单解码器循环边界遮罩的机制实现已完成；云编译和 QZX 真机验证待完成。不得据此声称视觉故障已在真机解决。
+> Legacy `/data/app` fallback note: the success reply means **staged and reboot
+> pending**, not version-verified.  The `.lmw-backup` is deliberately retained
+> across reboot.  Package/version verification followed by backup commit/cleanup
+> is a separate startup integration and remains a real-device release gate; this
+> repository does not claim that cross-lifecycle verification is implemented.

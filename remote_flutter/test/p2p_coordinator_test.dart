@@ -18,9 +18,17 @@ class FakeWsLink implements WsLink {
   final _ctrl = StreamController<String>.broadcast();
   final _bin = StreamController<Uint8List>.broadcast();
   final _ready = Completer<void>();
+  @override
+  int? closeCode;
+  @override
+  String? closeReason;
 
   void completeReady() {
     if (!_ready.isCompleted) _ready.complete();
+  }
+
+  void failReady(Object error) {
+    if (!_ready.isCompleted) _ready.completeError(error);
   }
 
   /// 模拟收到一帧。
@@ -30,7 +38,9 @@ class FakeWsLink implements WsLink {
   void injectBinary(Uint8List bytes) => _bin.add(bytes);
 
   /// 模拟连接被动断开（onDone 触发 → 协调端走重连路径）。
-  void drop() {
+  void drop({int? code, String? reason}) {
+    closeCode = code;
+    closeReason = reason;
     _ctrl.close();
     _bin.close();
   }
@@ -733,6 +743,73 @@ void main() {
         async.elapse(const Duration(seconds: 60));
         expect(dialCount, 1);
 
+        coord.dispose();
+      });
+    });
+
+    test('旧 link delayed ready error 不删除 replacement、不离线、不排重连', () {
+      fakeAsync((async) {
+        final created = <FakeWsLink>[];
+        final logs = <String>[];
+        final coord = P2pCoordinator(
+          codec: openCodec(), controllerId: 'c1', nowFn: () => 1,
+          linkFactory: (uri) {
+            final link = FakeWsLink(uri);
+            created.add(link);
+            return link;
+          },
+        )..onLog = logs.add;
+        const peer = P2pPeer(deviceId: 'a', host: 'h', port: 8770);
+        coord.setPeers([peer]);
+        final old = created.single;
+        coord.setPeers(const []);
+        coord.setPeers([peer]);
+        created.last.completeReady();
+        async.flushMicrotasks();
+
+        old.failReady(StateError('delayed old handshake failure'));
+        async.flushMicrotasks();
+        expect(coord.connectedCount, 1);
+        async.elapse(const Duration(seconds: 10));
+        expect(created.length, 2);
+        expect(logs.where((l) => l.contains('后重连 a')), isEmpty);
+        coord.dispose();
+      });
+    });
+
+    test('upgrade 后连续 1013 保留指数退避 1s→2s→4s，welcome 后重置', () {
+      fakeAsync((async) {
+        final created = <FakeWsLink>[];
+        final logs = <String>[];
+        final coord = P2pCoordinator(
+          codec: openCodec(), controllerId: 'c1', nowFn: () => 1,
+          linkFactory: (uri) {
+            final link = FakeWsLink(uri);
+            created.add(link);
+            return link;
+          },
+        )..onLog = logs.add;
+        coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+
+        for (final delay in const [1000, 2000, 4000]) {
+          created.last.completeReady();
+          async.flushMicrotasks();
+          created.last.drop(code: 1013, reason: 'controller already active');
+          async.flushMicrotasks();
+          expect(logs.lastWhere((l) => l.contains('后重连')), contains('${delay}ms'));
+          expect(logs.any((l) => l.contains('code=1013') &&
+              l.contains('controller already active')), isTrue);
+          async.elapse(Duration(milliseconds: delay));
+        }
+
+        created.last.completeReady();
+        async.flushMicrotasks();
+        created.last.inject(frame(openCodec(), 'welcome', {'topology': 'p2p'},
+            from: 'player:a'));
+        async.flushMicrotasks();
+        created.last.drop(code: 1006, reason: 'wifi');
+        async.flushMicrotasks();
+        expect(logs.lastWhere((l) => l.contains('后重连')), contains('1000ms'));
         coord.dispose();
       });
     });

@@ -18,6 +18,10 @@ abstract class WsLink {
   /// 连接就绪 future（握手完成）。
   Future<void> get ready;
 
+  /// RFC6455 close diagnostics, available when the stream completes.
+  int? get closeCode;
+  String? get closeReason;
+
   /// 发送一帧文本。
   void sendText(String data);
 
@@ -58,6 +62,12 @@ class IoWsLink implements WsLink {
 
   @override
   Future<void> get ready => _ch.ready;
+
+  @override
+  int? get closeCode => _ch.closeCode;
+
+  @override
+  String? get closeReason => _ch.closeReason;
 
   @override
   void sendText(String data) => _ch.sink.add(data);

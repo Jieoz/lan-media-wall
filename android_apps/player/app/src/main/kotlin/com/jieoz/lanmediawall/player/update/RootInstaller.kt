@@ -43,7 +43,12 @@ object RootInstaller {
      * so the controller/log sees the real breakpoint instead of a flat
      * "install-failed". On success it carries the daemon's `ok ...` line.
      */
-    data class InstallResult(val ok: Boolean, val detail: String)
+    data class InstallResult(
+        val ok: Boolean,
+        val detail: String,
+        val state: RootDaemonProtocol.InstallState = if (ok) RootDaemonProtocol.InstallState.PM_SUCCESS else RootDaemonProtocol.InstallState.FAILED,
+        val rebootRequired: Boolean = false,
+    )
 
     @Synchronized
     fun probe(force: Boolean = false): Probe {
@@ -140,15 +145,19 @@ object RootInstaller {
         }
         log("install_daemon_send path=${apk.absolutePath} daemon_probe=${probe.detail}")
         val resp = request(RootDaemonProtocol.installRequest(apk.absolutePath))
-        if (resp == null || !RootDaemonProtocol.isOk(resp)) {
+        val parsed = RootDaemonProtocol.parseInstall(resp ?: "")
+        if (parsed.state == RootDaemonProtocol.InstallState.FAILED) {
             Log.e(TAG, "daemon install failed: ${resp ?: "unreachable"}")
             log("install_daemon_fail resp=${resp ?: "unreachable"}")
-            // Surface the daemon's own error line so the real pm/pathology is visible.
             return InstallResult(false, "daemon:${resp ?: "unreachable"}")
         }
-        log("install_daemon_ok resp=$resp")
-        // pm-install + app-restart dispatched by the daemon (no reboot)
-        return InstallResult(true, resp)
+        log("install_daemon_reply state=${parsed.state} reboot_required=${parsed.rebootRequired} resp=$resp")
+        return InstallResult(
+            ok = parsed.state == RootDaemonProtocol.InstallState.PM_SUCCESS,
+            detail = parsed.detail,
+            state = parsed.state,
+            rebootRequired = parsed.rebootRequired,
+        )
     }
 
     /** Whole-device reboot — the separate HIGH-RISK action, only for the explicit

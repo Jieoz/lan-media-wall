@@ -84,6 +84,8 @@ object WsFrame {
 
     fun encodePong(payload: ByteArray): ByteArray = encode(OP_PONG, payload)
 
+    fun encodePing(payload: ByteArray = byteArrayOf()): ByteArray = encode(OP_PING, payload)
+
     /**
      * Read and decode one frame from [input] (a client→server frame, expected
      * masked). Returns null at clean EOF. Throws [WsProtocolException] on a

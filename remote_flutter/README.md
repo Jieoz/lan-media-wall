@@ -1,5 +1,11 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.14.10:** P2P close diagnostics now expose RFC6455 close code/reason in
+> controller logs and per-peer failure state. Reconnect backoff is reset only by
+> a verified application frame (welcome or later), not by HTTP upgrade, so
+> repeated `1013` closes back off 1s→2s→4s instead of retrying every second.
+> Real-device validation remains pending.
+
 > **v1.14.9:** 普通「编排/添加项目到当前列表」默认发送
 > `mode=append`；整列替换改为明确标注的缓存/播放操作并显式发送
 > `mode=replace`。逐项添加 A、B 因而保留为同一有序活动节目单，而不是让 B

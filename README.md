@@ -71,6 +71,7 @@ The controller orchestration pane can load and edit the active playlist reported
 | P2P 拓扑迁移与无效 Broker 地址(v1.13.9) | `0.0.0.0` / `::` 仅可用于服务端监听,不能作为控制端远端地址。控制端会自动清理历史通配地址设置并在发现设备后进入 P2P;Broker 未连接时命令明确失败,分组和设备配置不再静默丢弃 |
 | 黑屏根因修复 + 诊断可观测(v1.13.11) | **B1**:`PlayerService` 过去从未订阅 `PlayerController.onPlayerError`,ExoPlayer 解码错误时 `playState` 仍停在 `"playing"`,黑屏被伪装成「播放正常」。现在错误一发生即写 `player.log`、推进 `errors`、翻 `playState="error"`,watchdog 同步识别为恢复触发。**B2**:重启恢复(`restoreReadyFromDisk`)与预取命中(`quickOk` 捷径)两处同源路径过去**只比 size** 就标 `ready`,截断/损坏文件被当可播 → `OMX_ErrorStreamCorrupt` 黑屏;现在带 `sha256` 的 item 恢复前必须校验通过,不符删文件回退完整下载。**诊断**:`PlayerController`/`Downloader` 各接 `logSink`,把状态转移、**首帧渲染**、分辨率、错误码、load 源描述、cache 命中来源与 SHA 校验结果落到**导出的 player.log**(不再只进被截断的 logcat);控制端 P2P `_sendTo`/`send` 记出站 `msgId`+payload 摘要+扇出 `delivered/targets`,汇入可复制的 `logLines` |
 | P2P 缩略图 & 主动重连(v1.12) | 无 broker/P2P 直连下也能看到设备墙缩略图:把 `thumb_meta`+紧跟二进制帧的两帧配对逻辑抽成共享 `ThumbPairing` 状态机,broker 与 p2p 两路复用同一实现(此前 p2p 路径把 `thumb_meta` 丢进 default 分支丢弃)。P2P 断线新增指数退避主动重连(1s→30s)+ 端点去重防双连接,不再干等下一轮 UDP discover |
+| P2P 半开接管与关闭可观测(v1.14.10) | Player 用 monotonic 15s inactivity lease + 5s read tick/ping 管理唯一 controller；活跃第二控制端仍以 `1013` 拒绝，半开旧连接过租约后允许 generation-safe 原子接管并关闭旧 socket。Controller 日志/UI 失败原因带 WS close code/reason；仅收到验过的 `welcome`/有效帧后重置 backoff，upgrade→`1013` 连续失败保持 1s→2s→4s 指数退避。真机验收待完成。 |
 | 重启自动恢复播放(v1.12) | 被控端(Android player)重启后 `Downloader` 按 last_task playlist 从磁盘按内容寻址文件名重建 ready 索引,`readyPath` 命中本地已缓存文件而非回退到已失效的临时 url,修「重启丢内容黑屏」。纯读、幂等,不额外写盘 |
 | 假容量闪存写安全(v1.12,红线) | 扩容/假容量盒子 `df` 报的巨大剩余是假的:配额重构为 `min(configuredMax, 保守绝对上限)`,空间百分比只能**往下收紧绝不放大**;下载前做「真实可写」探针(小文件写+fsync+读回+删,低频);投新内容前主动回收不再被最近 playlist 引用的孤儿媒体(保护当前/`.part`/last_task 引用文件不误删),防写穿真实颗粒变砖 |
 | 升级入口可发现性(v1.12) | 遥控端顶部远程更新按钮从纯图标改为带「更新固件」文字标签;单设备详情弹窗新增「推送升级」入口,走同一 `update_app` 流程但目标预锁定该台(协议不变,仅改可达性) |
@@ -234,3 +235,4 @@ Every exact commit on `main` is built once across all four targets and must pass
 ### License
 
 MIT. Design informed by [Syncplay](https://github.com/Syncplay/syncplay) and [Anthias](https://github.com/Screenly/Anthias) (both GPLv3); this is an independent implementation that does not copy their code.
+> 当前状态：legacy 更新激活与单解码器循环边界遮罩的机制实现已完成；云编译和 QZX 真机验证待完成。不得据此声称视觉故障已在真机解决。

@@ -2,6 +2,8 @@
 
 ## [v1.14.10] — 2026-07-13
 
+- Fixed half-open P2P controller ownership with an API19-compatible monotonic 15s inactivity lease, 5s read tick/ping, atomic stale takeover, and generation-safe cleanup; an actually active second controller remains rejected with close 1013.
+- Exposed WebSocket close code/reason through the Flutter P2P link and peer failure/log paths. Reconnect backoff now resets only after a verified application frame, so repeated upgrade→1013 closes back off 1s→2s→4s instead of storming every second. Real-device validation remains pending.
 - Fixed the real P2P control path from the captured v1.14.8 controller log: a player announce that explicitly declares `topology=p2p` no longer lets a compatibility `broker_hint` switch the controller onto `BrokerClient`, where raw `status/time_sync` were intentionally discarded and every device remained “已发现”. The controller now opens per-player P2P links, consumes status, and advances cards to “已连接”.
 - Restored per-device configuration on the same path: rename/group/volume commands are delivered to the selected connected player, and the controller now confirms that the configuration command was actually queued instead of closing the dialog silently.
 
@@ -451,3 +453,4 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/); main com
 [v1.0.0]: https://github.com/Jieoz/lan-media-wall/releases/tag/v1.0.0
 
 [v1.7.0]: https://github.com/Jieoz/lan-media-wall/releases/tag/v1.7.0
+> 当前状态：legacy 更新激活与单解码器循环边界遮罩的机制实现已完成；云编译和 QZX 真机验证待完成。不得据此声称视觉故障已在真机解决。

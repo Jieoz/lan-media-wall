@@ -27,9 +27,10 @@ class AppUpdater(
         .build()
 
     sealed class Result {
-        /** APK downloaded + sha256-verified + activated by the daemon via
-         *  `pm install -r` + app restart (no whole-device reboot). */
+        /** PackageManager activated the APK and app restart was dispatched. */
         object Installing : Result()
+        /** Legacy scanner file is staged and reboot activation was dispatched. */
+        data class ActivationDispatched(val detail: String, val rebootRequired: Boolean = true) : Result()
         data class Failed(val reason: String) : Result()
     }
 
@@ -97,10 +98,12 @@ class AppUpdater(
             // fallback — on the target su denies the app UID and setuid is a
             // no-op under no_new_privs, so the daemon is the only path that works.
             val installed = RootInstaller.install(pkg, apk, log)
-            return if (installed.ok) Result.Installing
-                   // Propagate the daemon's real reason (pm failure / path / probe)
-                   // instead of a flat "install-failed" so the breakpoint is visible.
-                   else Result.Failed(installed.detail)
+            return when (installed.state) {
+                RootDaemonProtocol.InstallState.PM_SUCCESS -> Result.Installing
+                RootDaemonProtocol.InstallState.LEGACY_ACTIVATION_DISPATCHED ->
+                    Result.ActivationDispatched(installed.detail, installed.rebootRequired)
+                RootDaemonProtocol.InstallState.FAILED -> Result.Failed(installed.detail)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "update failed: ${e.javaClass.simpleName}")
             log("update_exception ${e.javaClass.simpleName}: ${e.message ?: ""}")

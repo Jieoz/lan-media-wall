@@ -114,6 +114,11 @@
 // 0700-private cache/update dir. NOT /data/app — we no longer hand-place the APK
 // there; PackageManager owns activation now.
 #define LMW_STAGED_APK    "/data/local/tmp/lmw_update_staged.apk"
+// YunOS 4.4.2-only activation target. Package name and slot are compile-time
+// constants, matching the field-validated deploy_player.sh scanner path.
+#define LMW_LEGACY_APK        "/data/app/" LMW_PKG "-1.apk"
+#define LMW_LEGACY_BACKUP_APK LMW_LEGACY_APK ".lmw-backup"
+#define LMW_LEGACY_TMP_APK    LMW_LEGACY_APK ".lmw-new"
 // Root-owned file holding the single authorized Player uid (written by setup).
 #define LMW_UID_FILE      "/data/local/tmp/lmw_root_daemon.uid"
 // Abstract socket name (leading NUL added at bind time). Kotlin connects with
@@ -242,18 +247,90 @@ static int lmw_read_allowed_uid(const char *path) {
     return uid;
 }
 
-static int lmw_pm_has_success_line(const char *out) {
+static int lmw_pm_has_exact_line(const char *out, const char *expected) {
+    if (!out || !expected) return 0;
+    size_t expected_len = strlen(expected);
     const char *p = out;
     while (*p) {
-        const char *end = strchr(p, '\n');
-        if (!end) end = p + strlen(p);
+        const char *line_end = strchr(p, '\n');
+        const char *next = line_end ? line_end + 1 : p + strlen(p);
+        const char *end = line_end ? line_end : next;
         while (p < end && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
         while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
-        if ((size_t)(end - p) == 7 && memcmp(p, "Success", 7) == 0) return 1;
-        p = *end ? end + 1 : end;
+        if ((size_t)(end - p) == expected_len && memcmp(p, expected, expected_len) == 0) return 1;
+        p = next;
     }
     return 0;
 }
+
+static int lmw_pm_has_success_line(const char *out) {
+    return lmw_pm_has_exact_line(out, "Success");
+}
+
+static int lmw_pm_is_invalid_install_location(const char *out) {
+    return lmw_pm_has_exact_line(out,
+        "Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]");
+}
+
+typedef enum { INSTALL_FAIL = 0, INSTALL_PM_SUCCESS = 1, INSTALL_LEGACY_STAGE = 2 } lmw_install_action;
+static lmw_install_action lmw_install_decision(const char *out) {
+    if (lmw_pm_has_success_line(out)) return INSTALL_PM_SUCCESS;
+    if (lmw_pm_is_invalid_install_location(out)) return INSTALL_LEGACY_STAGE;
+    return INSTALL_FAIL;
+}
+static const char *lmw_legacy_target_path(void) { return LMW_LEGACY_APK; }
+static const char *lmw_legacy_temp_path(void) { return LMW_LEGACY_TMP_APK; }
+static const char *lmw_legacy_backup_path(void) { return LMW_LEGACY_BACKUP_APK; }
+static mode_t lmw_legacy_target_mode(void) { return 0644; }
+
+typedef enum { BACKUP_ABSENT = 0, BACKUP_PENDING_COMMIT = 1 } lmw_backup_state;
+#ifdef LMW_DAEMON_TEST
+static lmw_backup_state lmw_legacy_backup_state(int backup_exists) {
+    return backup_exists ? BACKUP_PENDING_COMMIT : BACKUP_ABSENT;
+}
+
+// Separate startup commit hook: only after real package/version verification.
+static int lmw_legacy_commit_verified(const char *backup, int version_verified) {
+    if (!version_verified) return 0;
+    return unlink(backup) == 0 || errno == ENOENT;
+}
+#endif
+
+#ifndef LMW_DAEMON_TEST
+static int lmw_copy_regular(const char *src, const char *dst);
+
+// Stage for the boot package scanner without ever uninstalling. The existing APK
+// is moved to a fixed backup first; every later failure restores it. The new APK
+// is copied/chmodded under a temporary name and atomically renamed into place.
+static int lmw_legacy_stage(const char *verified_apk) {
+    struct stat oldst;
+    int had_old = lstat(lmw_legacy_target_path(), &oldst) == 0;
+    if (had_old && (!S_ISREG(oldst.st_mode) || S_ISLNK(oldst.st_mode))) return 0;
+    if (unlink(lmw_legacy_temp_path()) != 0 && errno != ENOENT) return 0;
+    if (lmw_copy_regular(verified_apk, lmw_legacy_temp_path()) != 0) goto fail;
+    if (chmod(lmw_legacy_temp_path(), lmw_legacy_target_mode()) != 0) goto fail;
+    // Never destroy the only backup. A stale backup makes the transaction fail
+    // closed and requires operator inspection.
+    if (had_old && access(lmw_legacy_backup_path(), F_OK) == 0) goto fail;
+    if (had_old && rename(lmw_legacy_target_path(), lmw_legacy_backup_path()) != 0) goto fail;
+    if (rename(lmw_legacy_temp_path(), lmw_legacy_target_path()) != 0) goto restore;
+    sync();
+    return 1;
+restore:
+    if (had_old) rename(lmw_legacy_backup_path(), lmw_legacy_target_path());
+fail:
+    unlink(LMW_LEGACY_TMP_APK);
+    return 0;
+}
+
+static int lmw_legacy_rollback(void) {
+    if (access(lmw_legacy_backup_path(), F_OK) != 0) return 1;
+    if (unlink(lmw_legacy_target_path()) != 0 && errno != ENOENT) return 0;
+    if (rename(lmw_legacy_backup_path(), lmw_legacy_target_path()) != 0) return 0;
+    sync();
+    return 1;
+}
+#endif
 
 // ---- §restart-state-machine: pure decision helpers ------------------------
 // The v1.14.3 restart was a BLIND one-shot shell chain (force-stop; sleep; am
@@ -517,6 +594,45 @@ static void lmw_do_reboot(void) {
     reboot(RB_AUTOBOOT);
 }
 
+typedef struct { int gate_fd; } lmw_reboot_gate;
+
+// Two-phase dispatch: detached child reports ready, then blocks on a parent gate.
+static int lmw_prepare_delayed_reboot(lmw_reboot_gate *gate) {
+    int ready[2], go[2];
+    if (pipe(ready) != 0) return 0;
+    if (pipe(go) != 0) { close(ready[0]); close(ready[1]); return 0; }
+    pid_t pid = fork();
+    if (pid < 0) { close(ready[0]); close(ready[1]); close(go[0]); close(go[1]); return 0; }
+    if (pid == 0) {
+        close(ready[0]); close(go[1]);
+        if (setsid() < 0) _exit(1);
+        pid_t g = fork();
+        if (g < 0) _exit(1);
+        if (g > 0) _exit(0);
+        if (write(ready[1], "R", 1) != 1) _exit(1);
+        close(ready[1]);
+        char token;
+        if (read(go[0], &token, 1) != 1) _exit(1);
+        close(go[0]);
+        sleep(1);
+        lmw_do_reboot();
+        _exit(1);
+    }
+    close(ready[1]); close(go[0]);
+    int status = 0; char token = 0;
+    int child_ok = waitpid(pid, &status, 0) >= 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    int ready_ok = read(ready[0], &token, 1) == 1 && token == 'R';
+    close(ready[0]);
+    if (!child_ok || !ready_ok) { close(go[1]); return 0; }
+    gate->gate_fd = go[1];
+    return 1;
+}
+static int lmw_release_reboot(lmw_reboot_gate *gate) {
+    int ok = write(gate->gate_fd, "G", 1) == 1;
+    close(gate->gate_fd); gate->gate_fd = -1;
+    return ok;
+}
+
 // ---- §restart-state-machine: side-effecting worker ------------------------
 //
 // The v1.14.3 restart was a single blind `sh -c "am force-stop; sleep 1; am start
@@ -757,16 +873,40 @@ static void lmw_handle_install(int fd, const char *path) {
     // seconds on the daemon is acceptable and lets us report the real outcome.
     char pmout[1024];
     int ok = lmw_pm_install(pmout, sizeof(pmout));
-    unlink(LMW_STAGED_APK); // never leave a world-readable APK lying around
+    lmw_install_action action = lmw_install_decision(pmout);
     if (!ok) {
+        if (action == INSTALL_LEGACY_STAGE) {
+            if (!lmw_legacy_stage(path)) {
+                unlink(LMW_STAGED_APK);
+                dprintf(fd, "error install legacy_activation_failed\n");
+                return;
+            }
+            unlink(LMW_STAGED_APK);
+            lmw_reboot_gate gate = { .gate_fd = -1 };
+            if (!lmw_prepare_delayed_reboot(&gate)) {
+                int restored = lmw_legacy_rollback();
+                dprintf(fd, "error install legacy_reboot_dispatch_failed rollback=%s\n",
+                        restored ? "restored" : "failed");
+                fsync(fd);
+                return;
+            }
+            // Child is ready but gated: deliver and half-close the reply first.
+            dprintf(fd, "ok install state=legacy_staged reboot_pending via=data_app_scanner\n");
+            fsync(fd);
+            shutdown(fd, SHUT_WR);
+            if (!lmw_release_reboot(&gate)) (void)lmw_legacy_rollback();
+            return;
+        }
+        unlink(LMW_STAGED_APK);
         char summary[128];
         lmw_pm_summary(pmout, summary, sizeof(summary));
         dprintf(fd, "error install pm_failed detail=%s\n", summary);
-        return; // NO reboot fallback — a failed update must not strand the box.
+        return;
     }
+    unlink(LMW_STAGED_APK); // never leave a world-readable PM stage lying around
     // Relaunch the freshly-installed app (pm force-stopped it). App-only; no reboot.
     if (lmw_restart_app())
-        dprintf(fd, "ok install activated via=pm_install restart_dispatched\n");
+        dprintf(fd, "ok install state=pm_success activated via=pm_install restart_dispatched\n");
     else
         dprintf(fd, "error install activated_but_restart_dispatch_failed\n");
     fsync(fd);
@@ -906,6 +1046,7 @@ static void lmw_ignore_sigpipe(void) {
     sigaction(SIGPIPE, &sa, NULL);
 }
 
+#ifndef LMW_DAEMON_TEST
 int main(int argc, char **argv) {
     lmw_ignore_sigpipe();
 
@@ -972,5 +1113,6 @@ int main(int argc, char **argv) {
     lmw_serve(listen_fd);
     return 0;
 }
+#endif
 
 #endif // LMW_DAEMON_TEST

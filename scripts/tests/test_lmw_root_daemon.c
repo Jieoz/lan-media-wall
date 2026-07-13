@@ -120,6 +120,36 @@ static void test_pm_success_line(void) {
     CHECK(lmw_pm_has_success_line("") == 0, "empty output rejected");
 }
 
+static void test_legacy_install_contract(void) {
+    CHECK(lmw_pm_is_invalid_install_location("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]\n") == 1,
+          "exact invalid install location classified");
+    CHECK(lmw_pm_is_invalid_install_location("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION_EXTRA]\n") == 0,
+          "lookalike invalid location rejected");
+    CHECK(lmw_install_decision("Success\n") == INSTALL_PM_SUCCESS, "pm success stays primary path");
+    CHECK(lmw_install_decision("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]\n") == INSTALL_LEGACY_STAGE,
+          "only exact invalid location selects legacy stage");
+    CHECK(lmw_install_decision("Failure [INSTALL_FAILED_VERSION_DOWNGRADE]\n") == INSTALL_FAIL,
+          "ordinary install failure does not enter legacy stage");
+    CHECK(strcmp(lmw_legacy_target_path(), "/data/app/com.jieoz.lanmediawall.player-1.apk") == 0,
+          "legacy target fixed");
+    CHECK(strcmp(lmw_legacy_temp_path(), "/data/app/com.jieoz.lanmediawall.player-1.apk.lmw-new") == 0,
+          "legacy temp is independent");
+    CHECK(strcmp(lmw_legacy_backup_path(), "/data/app/com.jieoz.lanmediawall.player-1.apk.lmw-backup") == 0,
+          "legacy backup is independent");
+    CHECK(lmw_legacy_target_mode() == 0644, "legacy target mode is 0644");
+    CHECK(lmw_legacy_backup_state(0) == BACKUP_ABSENT, "missing backup is clean state");
+    CHECK(lmw_legacy_backup_state(1) == BACKUP_PENDING_COMMIT, "existing backup remains pending commit");
+
+    char tmpl[] = "/tmp/lmw_backup_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0, "temporary backup fixture created");
+    if (fd >= 0) close(fd);
+    CHECK(lmw_legacy_commit_verified(tmpl, 0) == 0 && access(tmpl, F_OK) == 0,
+          "unverified startup cannot delete backup");
+    CHECK(lmw_legacy_commit_verified(tmpl, 1) == 1 && access(tmpl, F_OK) != 0,
+          "verified startup commits by deleting backup");
+}
+
 // ---- §restart-state-machine: pure helpers driving the deterministic restart ----
 // These lock the decision logic of the RESTART_APP worker so the "force-stop but
 // never came back" field failure is caught by construction, not by a blind chain.
@@ -304,6 +334,7 @@ int main(void) {
     test_command_requires_auth();
     test_read_allowed_uid();
     test_pm_success_line();
+    test_legacy_install_contract();
     test_am_start_failed();
     test_extract_pid();
     test_should_retry_restart();

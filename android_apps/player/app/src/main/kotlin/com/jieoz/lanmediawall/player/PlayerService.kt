@@ -860,6 +860,7 @@ class PlayerService : Service() {
         // arm end-of-video auto-advance, then unpause at the sync instant.
         ctl.onVideoEnded = { onCurrentEnded() }
         val loop = singleLoop(pl)
+        ctl.armLoopOverlay(if (loop) item.itemId else null)
         ctl.loadPaused(uri, seekMs, loop)
         // §6.4: primary thumbnail trigger — one-shot per item, fired on load so a
         // normally-playing video still yields a controller preview (the v1.14.7
@@ -1309,9 +1310,12 @@ class PlayerService : Service() {
                 packageName, url!!, sha!!, log = { logEvent(it) },
             )) {
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Installing -> {
-                    // pm-activated; app restarts (no whole-device reboot).
                     logEvent("update_app installing (daemon activated pm install -r)")
                     reportUpdate("installing", "app-restart")
+                }
+                is com.jieoz.lanmediawall.player.update.AppUpdater.Result.ActivationDispatched -> {
+                    logEvent("update_app legacy_activation_dispatched reboot_required=${r.rebootRequired}")
+                    reportUpdate("legacy_activation_dispatched", r.detail, r.rebootRequired)
                 }
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Failed -> {
                     logEvent("update_app failed reason=${r.reason}")
@@ -1323,11 +1327,12 @@ class PlayerService : Service() {
     }
 
     /** Report §22 update progress/outcome back to the coordinator (best-effort). */
-    private fun reportUpdate(state: String, detail: String) {
+    private fun reportUpdate(state: String, detail: String, rebootRequired: Boolean = false) {
         link?.send("update_status", jsonObj {
             put("device_id", settings.deviceId)
-            put("state", state)      // downloading | installing | rejected | failed
+            put("state", state)      // downloading | installing | legacy_activation_dispatched | rejected | failed
             put("detail", detail)
+            put("reboot_required", rebootRequired)
             put("version_code", BuildConfig.VERSION_CODE)
         })
     }

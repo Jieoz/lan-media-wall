@@ -384,6 +384,8 @@ broker 独立进程/容器,被控端与遥控端都**作为 WS 客户端**拨向
 - **同步精度**:协调者(遥控端)通常在 WiFi 上,抖动比有线 broker 大;主时钟随遥控端走,遥控端断开则同步会话中断。目标精度从 ±50–100ms 放宽到**尽力而为(典型 ±100–200ms)**。
 - **规模**:遥控端要同时维持 N 条连接并本地扇出,**适合小规模(经验值 ≤8 台)**;30 屏仍应用模式 A/B。
 - **多遥控端**:p2p 下不建议多个遥控端同时控同一批被控端(无 broker 做单一真相源,时钟主可能打架)。如需多控,用模式 A/B。
+- **单控制连接租约**:被控端同一时刻只接受一个活跃 controller。任何入站 WS 帧（含 ping/pong）续租；服务端以 monotonic clock、5s read tick/ping 和 15s inactivity lease 检测半开连接。租约内的第二 controller 在 upgrade 后收到 close `1013`;租约到期后新连接可原子接管并关闭旧 socket，旧接收线程的 finally 以 generation 校验，不能清掉新 owner。
+- **关闭可观测与重连**:controller 必须记录/上报 WS close code 与 reason。HTTP upgrade 不代表稳定连接，不能据此清空重连退避；只有收到并验过 `welcome`/首个有效协议帧后才重置。连续 `1013` 按 1s→2s→4s…指数退避（上限 30s），避免固定 1s 风暴。
 - **持久化**:无 broker 的 `state.json` 注册表;遥控端在本地持久化"上次设备清单"作为兜底(§7 已有)。
 
 ### 14.5 模式选择与发现(零配置默认)
@@ -658,3 +660,4 @@ force-stop App)→ 仅在 pm 回 `Success` 时 `RESTART_APP` 重新拉起 App。
 - broker 必须把 `download_logs` / `debug_snapshot` 转发给目标 player,并把 `download_logs_result` / `diagnostic_status` 广播给 controller;回包只接受 `role == "player"` 的连接,防止控制端伪造另一台设备的诊断结果。
 - P2P 协调端没有 broker 聚合层,但仍必须显式处理 `download_logs_result` / `diagnostic_status` 入站类型并调用控制端状态层回调;落入 unknown/default 等同丢包。
 - controller 必须按 `device_id` 维护 pending 请求并设置超时释放;player 必须在失败时也回 `ok:false,error:<reason>` 或写入本地日志,避免永久挂起。
+> 当前状态：legacy 更新激活与单解码器循环边界遮罩的机制实现已完成；云编译和 QZX 真机验证待完成。不得据此声称视觉故障已在真机解决。

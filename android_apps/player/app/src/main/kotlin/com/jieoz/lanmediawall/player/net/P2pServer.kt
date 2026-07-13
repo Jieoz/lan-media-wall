@@ -1,19 +1,21 @@
 package com.jieoz.lanmediawall.player.net
 
 import android.util.Log
+import android.os.SystemClock
 import com.jieoz.lanmediawall.player.sync.ClockSync
 import java.io.BufferedInputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
+
 import kotlin.concurrent.thread
 
 /**
@@ -73,7 +75,6 @@ class P2pServer(
 ) : CoordinatorLink {
 
     private val from = "player:$deviceId"
-    private val replay = ReplayCache()
 
     @Volatile override var authMode: AuthMode = initialAuthMode
         private set
@@ -81,28 +82,30 @@ class P2pServer(
     @Volatile var keyMode: KeyMode = initialKeyMode
         private set
 
-    // the single connected controller (§14.4) — its socket + output stream.
-    private val active = AtomicReference<Conn?>(null)
+    // A controller owns a bounded inactivity lease. SystemClock.elapsedRealtime()
+    // is monotonic on API 19 and is unaffected by wall-clock corrections.
+    private val controllerLease = ControllerLease<Conn>(CONTROLLER_LEASE_MS)
     @Volatile private var server: ServerSocket? = null
     private val stopped = AtomicBoolean(false)
-    private var firstConnect = true
-
-    // pending time_sync round-trips, correlated by msg_id (we are the prober).
-    private val pendingSync = ConcurrentHashMap<String, Long>()
 
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "p2p-scheduler").apply { isDaemon = true }
         }
-    private var syncFuture: ScheduledFuture<*>? = null
+
 
     /** One controller connection: the socket + a lock guarding ordered writes. */
     private class Conn(val socket: Socket, val out: OutputStream) {
         val writeLock = Any()
+        @Volatile var syncFuture: ScheduledFuture<*>? = null
+        val replay = ReplayCache()
+        val clock = ClockSync()
+        @Volatile var firstConnect = true
+        val pendingSync = ConcurrentHashMap<String, Long>()
     }
 
     override val isConnected: Boolean
-        get() = active.get()?.socket?.isClosed == false
+        get() = controllerLease.current()?.socket?.isClosed == false
 
     override fun start() {
         if (stopped.get()) return
@@ -137,6 +140,9 @@ class P2pServer(
     private fun handleController(socket: Socket) {
         try {
             socket.tcpNoDelay = true
+            // Bound a silent half-open read. Timeouts drive pings/lease checks;
+            // they are not themselves disconnects, tolerating short Wi-Fi stalls.
+            socket.soTimeout = READ_TICK_MS.toInt()
             val input = BufferedInputStream(socket.getInputStream())
             val out = socket.getOutputStream()
             // --- RFC6455 opening handshake (§14.3) ------------------------
@@ -154,7 +160,8 @@ class P2pServer(
 
             // --- single-controller guard (§14.4) --------------------------
             val conn = Conn(socket, out)
-            if (!active.compareAndSet(null, conn)) {
+            val acquired = controllerLease.acquire(conn, SystemClock.elapsedRealtime())
+            if (acquired is ControllerLease.Acquire.Rejected<*>) {
                 // a controller is already connected; reject this extra one with
                 // close code 1013 (try again later), mirroring p2p_server.py.
                 Log.w(TAG, "reject 2nd controller $peer (1013): one already connected")
@@ -164,28 +171,37 @@ class P2pServer(
                 socket.close()
                 return
             }
+            val owner = when (acquired) {
+                is ControllerLease.Acquire.Acquired -> acquired.owner
+                is ControllerLease.Acquire.Replaced -> {
+                    val stale = acquired.stale.value
+                    Log.w(TAG, "taking over stale controller $peer after ${CONTROLLER_LEASE_MS}ms inactivity")
+                    try { stale.socket.close() } catch (_: Exception) {}
+                    acquired.owner
+                }
+                is ControllerLease.Acquire.Rejected -> return
+            }
             Log.i(TAG, "controller connected: $peer")
 
             clock.reset() // §1: re-handshake on every (re)connect
-            replay.clear() // §3: fresh replay window per connection (no stale DUPs)
-            firstConnect = true // §3: widen freshness window for the first frame
             // we are the coordinator now — send welcome immediately (§14.3).
             sendOn(conn, "welcome", buildWelcomePayload())
             try { onConnect() } catch (_: Exception) {}
-            startSyncLoop()
+            startSyncLoop(owner)
             try {
-                recvLoop(conn, input)
+                recvLoop(owner, input)
             } finally {
-                stopSyncLoop()
-                active.compareAndSet(conn, null)
-                firstConnect = false
+                stopSyncLoop(conn)
+                controllerLease.release(owner)
                 Log.i(TAG, "controller disconnected: $peer")
                 try { socket.close() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
             Log.w(TAG, "controller conn error: ${e.javaClass.simpleName}: ${e.message}")
             try { socket.close() } catch (_: Exception) {}
-            active.updateAndGet { if (it?.socket === socket) null else it }
+            controllerLease.currentOwner()?.takeIf { it.value.socket === socket }?.let {
+                controllerLease.release(it)
+            }
         }
     }
 
@@ -216,16 +232,31 @@ class P2pServer(
         return null
     }
 
-    private fun recvLoop(conn: Conn, input: BufferedInputStream) {
+    private fun recvLoop(owner: ControllerLease.Owner<Conn>, input: BufferedInputStream) {
+        val conn = owner.value
         while (!stopped.get() && !conn.socket.isClosed) {
             val frame = try {
                 WsFrame.readFrame(input)
+            } catch (_: SocketTimeoutException) {
+                if (controllerLease.currentOwner()?.generation != owner.generation) break
+                if (SystemClock.elapsedRealtime() - controllerLease.lastActivityMs() >= CONTROLLER_LEASE_MS) {
+                    controllerLease.release(owner)
+                    try { conn.socket.close() } catch (_: Exception) {}
+                    break
+                }
+                try {
+                    synchronized(conn.writeLock) { WsFrame.write(conn.out, WsFrame.encodePing(byteArrayOf())) }
+                } catch (_: Exception) { break }
+                continue
             } catch (e: Exception) {
                 // §2 可见性:区分断开原因(异常 read vs 干净 EOF vs close 帧),
                 // 否则\"连上又断\"到底谁先挂无从判断。
                 Log.w(TAG, "recv ended: read error ${e.javaClass.simpleName}: ${e.message}")
                 break
             } ?: run { Log.i(TAG, "recv ended: clean EOF (peer closed socket)"); null } ?: break
+            // Any received frame proves bidirectional activity (including pong,
+            // close, binary, and frames later rejected at the envelope layer).
+            if (!controllerLease.renew(owner, SystemClock.elapsedRealtime())) break
             when {
                 frame.isClose -> {
                     Log.i(TAG, "recv ended: controller sent CLOSE frame")
@@ -236,7 +267,7 @@ class P2pServer(
                     try { synchronized(conn.writeLock) { WsFrame.write(conn.out, WsFrame.encodePong(frame.payload)) } } catch (_: Exception) {}
                 }
                 frame.isPong -> { /* transport keepalive ack — ignore */ }
-                frame.isText -> handleText(frame.text())
+                frame.isText -> handleText(owner, frame.text())
                 frame.isBinary -> { /* controller→player binary is unused (§6.4) */ }
                 else -> { /* continuation/unknown — ignore */ }
             }
@@ -266,7 +297,7 @@ class P2pServer(
      *  controller plays the broker role). Returns msg_id, or null if no
      *  controller is connected. */
     override fun send(type: String, payload: Json, to: String): String? {
-        val conn = active.get() ?: return null
+        val conn = controllerLease.current() ?: return null
         return sendOn(conn, type, payload, to)
     }
 
@@ -304,7 +335,7 @@ class P2pServer(
     /** Send a raw binary frame (thumbnail JPEG, §6.4) to the controller. Must
      *  follow a thumb_meta text frame sent by the caller. */
     override fun sendBinary(data: ByteArray): Boolean {
-        val conn = active.get() ?: return false
+        val conn = controllerLease.current() ?: return false
         if (conn.socket.isClosed) return false
         return try {
             synchronized(conn.writeLock) {
@@ -317,15 +348,18 @@ class P2pServer(
     }
 
     // --- inbound verify + dispatch -----------------------------------
-    private fun handleText(raw: String) {
+    private fun handleText(owner: ControllerLease.Owner<Conn>, raw: String) {
+        if (!isCurrent(owner)) return
+        val session = owner.value
         // §8: freshness is checked against the **controller's** master clock, not
         // our raw wall clock. We fold local now → master via the learned offset
         // (0 before the first time_sync lands, harmless: the first-connect window
         // is 120s). Using uncorrected nowMs() would STALE-drop a controller whose
         // clock legitimately differs from ours — the exact silent-drop bug.
-        val nowMaster = clock.masterNow()
+        val nowMaster = session.clock.masterNow()
+        if (!isCurrent(owner)) return
         val result = Envelope.verify(
-            psk, raw, replay = replay, firstConnect = firstConnect,
+            psk, raw, replay = session.replay, firstConnect = session.firstConnect,
             now = nowMaster,
             authMode = authMode, keyMode = keyMode,
             verifyKeyFor = ::verifyKeyFor,
@@ -341,16 +375,19 @@ class P2pServer(
             return
         }
         val parsed = result.parsed
+        if (!isCurrent(owner)) return
+        session.firstConnect = false
         Log.i(TAG, "RX ${parsed.type} from=${parsed.from} authed=${parsed.authed} " +
             "sigLen=${parsed.sig.length}")
         when (parsed.type) {
             // controller answered *our* probe → learn offset to its clock.
-            "time_sync_ack" -> { onTimeSyncAck(parsed.payloadObj); return }
+            "time_sync_ack" -> { onTimeSyncAck(owner, parsed.payloadObj); return }
             // controller probing us → answer as the spec's ack-er (§8.1).
-            "time_sync" -> { answerTimeSync(parsed); return }
+            "time_sync" -> { answerTimeSync(owner, parsed); return }
             // controller's hello to us; welcome already sent, nothing to register.
             "hello" -> return
         }
+        if (!isCurrent(owner)) return
         try {
             onMessage(parsed.type, parsed.payloadObj, parsed)
         } catch (e: Exception) {
@@ -371,28 +408,35 @@ class P2pServer(
     private fun verifyKeyFor(fromIdentity: String): ByteArray? = null
 
     // --- §8 clock: controller is master ------------------------------
-    private fun startSyncLoop() {
-        stopSyncLoop()
-        syncFuture = scheduler.scheduleWithFixedDelay(
-            { sendTimeSync() }, 0, timeSyncIntervalS, TimeUnit.SECONDS)
+    private fun startSyncLoop(owner: ControllerLease.Owner<Conn>) {
+        stopSyncLoop(owner.value)
+        owner.value.syncFuture = scheduler.scheduleWithFixedDelay(
+            { sendTimeSync(owner) },
+            0, timeSyncIntervalS, TimeUnit.SECONDS)
     }
 
-    private fun stopSyncLoop() {
-        syncFuture?.cancel(false)
-        syncFuture = null
+    private fun stopSyncLoop(conn: Conn) {
+        conn.syncFuture?.cancel(false)
+        conn.syncFuture = null
     }
 
-    private fun sendTimeSync() {
+    private fun isCurrent(owner: ControllerLease.Owner<Conn>): Boolean =
+        controllerLease.currentOwner()?.generation == owner.generation
+
+    private fun sendTimeSync(owner: ControllerLease.Owner<Conn>) {
+        if (!isCurrent(owner)) return
         val t1 = Envelope.nowMs()
-        val mid = send("time_sync", jsonObj { put("t1", t1) }) ?: return
-        pendingSync[mid] = t1
-        if (pendingSync.size > 64) {
-            val it = pendingSync.keys.iterator()
+        val mid = sendOn(owner.value, "time_sync", jsonObj { put("t1", t1) }) ?: return
+        if (!isCurrent(owner)) return
+        owner.value.pendingSync[mid] = t1
+        if (owner.value.pendingSync.size > 64) {
+            val it = owner.value.pendingSync.keys.iterator()
             if (it.hasNext()) { it.next(); it.remove() }
         }
     }
 
-    private fun onTimeSyncAck(payload: Json.Obj) {
+    private fun onTimeSyncAck(owner: ControllerLease.Owner<Conn>, payload: Json.Obj) {
+        if (!isCurrent(owner)) return
         val t4 = Envelope.nowMs()
         val e = payload.entries
         var t1 = e["t1"].asLongOrNull() ?: return
@@ -401,14 +445,19 @@ class P2pServer(
         // [v1.1] prefer req_msg_id correlation if present; else correlate by t1
         // (our recorded send time defends against a tampered echo).
         val reqMid = (e["req_msg_id"].asString() ?: e["msg_id"].asString())
-        if (reqMid != null) pendingSync.remove(reqMid)?.let { t1 = it }
+        val correlated = reqMid?.let { owner.value.pendingSync.remove(it) } ?: return
+        t1 = correlated
+        if (!isCurrent(owner)) return
+        owner.value.clock.addSample(t1, t2, t3, t4)
+        if (!isCurrent(owner)) return
         clock.addSample(t1, t2, t3, t4)
     }
 
-    private fun answerTimeSync(req: Envelope.Parsed) {
+    private fun answerTimeSync(owner: ControllerLease.Owner<Conn>, req: Envelope.Parsed) {
+        if (!isCurrent(owner)) return
         val t2 = Envelope.nowMs()
         val t1 = req.payloadObj.entries["t1"].asLongOrNull() ?: return
-        send("time_sync_ack", jsonObj {
+        sendOn(owner.value, "time_sync_ack", jsonObj {
             put("t1", t1)
             put("t2", t2)
             put("t3", Envelope.nowMs())
@@ -418,9 +467,11 @@ class P2pServer(
 
     override fun stop() {
         stopped.set(true)
-        stopSyncLoop()
         try { server?.close() } catch (_: Exception) {}
-        active.getAndSet(null)?.let { conn ->
+        controllerLease.currentOwner()?.let { owner ->
+            controllerLease.release(owner)
+            val conn = owner.value
+            stopSyncLoop(conn)
             try { synchronized(conn.writeLock) { WsFrame.write(conn.out, WsFrame.encodeClose(1000)) } } catch (_: Exception) {}
             try { conn.socket.close() } catch (_: Exception) {}
         }
@@ -433,6 +484,13 @@ class P2pServer(
         // a WS opening-handshake head is small; cap to defend against a peer
         // that never sends the blank-line terminator.
         private const val MAX_HEAD = 16 * 1024
+
+        // 15s tolerates several seconds of Wi-Fi jitter, while bounding recovery
+        // from the observed 1s reconnect storm. A 5s read tick sends RFC6455 ping;
+        // any inbound frame renews the lease, otherwise a new controller may take
+        // over atomically at 15s and closes the stale socket.
+        private const val CONTROLLER_LEASE_MS = 15_000L
+        private const val READ_TICK_MS = 5_000L
 
         private const val BAD_REQUEST =
             "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"

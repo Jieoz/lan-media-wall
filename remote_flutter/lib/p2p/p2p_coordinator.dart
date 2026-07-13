@@ -203,7 +203,7 @@ class P2pCoordinator {
       return;
     }
     // 本次要（重新）建连 → 清掉该 key 的待重连定时器，避免重复触发。
-    _cancelReconnect(peer.deviceId);
+    _cancelReconnectTimer(peer.deviceId);
     // §14.5 可见性：拨号即上报 connecting，UI 立刻显示「连接中」。
     _emitPeerState(peer.deviceId, PeerLinkState.connecting, null);
     final WsLink link;
@@ -227,7 +227,10 @@ class P2pCoordinator {
     final textSub = link.textStream.listen(
       (text) => _onText(_keyForLink(link) ?? peer.deviceId, text),
       onError: (Object e) => _onLinkError(_keyForLink(link) ?? peer.deviceId, e),
-      onDone: () => _onLinkDone(_keyForLink(link) ?? peer.deviceId),
+      onDone: () => _onLinkDone(
+        _keyForLink(link) ?? peer.deviceId,
+        link: link,
+      ),
       cancelOnError: false,
     );
     // 二进制帧只承载缩略图 JPEG；交给该连接的 [ThumbPairing] 与前一帧 thumb_meta
@@ -237,21 +240,22 @@ class P2pCoordinator {
       cancelOnError: false,
     );
     _subs[peer.deviceId] =
-        _PeerSubs(text: textSub, binary: binarySub, thumbs: thumbs);
+        _PeerSubs(link: link, text: textSub, binary: binarySub, thumbs: thumbs);
     link.ready.then((_) {
       final key = _keyForLink(link);
       if (key == null) return; // 已被替换/断开
       _log('已连接被控端 ${peer.deviceName ?? peer.deviceId}(${peer.uri})');
-      // 连上即清退避：下一次断线从 1s 起重连，而非停留在上次的高退避。
-      _reconnectBackoff.remove(key);
+      // HTTP upgrade only proves the socket opened. Keep accumulated backoff
+      // until a verified application frame proves a stable session.
       _emitPeerState(key, PeerLinkState.connected, null);
       _sendHello(key);
       _emitPeers();
     }).catchError((Object e) {
       final key = _keyForLink(link) ?? peer.deviceId;
+      if (!identical(_links[key], link)) return;
       _log('握手失败 $key: $e');
       _emitPeerState(key, PeerLinkState.failed, '握手失败: $e');
-      _onLinkDone(key);
+      _onLinkDone(key, link: link);
     });
   }
 
@@ -381,8 +385,12 @@ class P2pCoordinator {
 
   /// 取消并清掉某 key 的待重连定时器 + 退避状态。
   void _cancelReconnect(String deviceId) {
-    _reconnectTimers.remove(deviceId)?.cancel();
+    _cancelReconnectTimer(deviceId);
     _reconnectBackoff.remove(deviceId);
+  }
+
+  void _cancelReconnectTimer(String deviceId) {
+    _reconnectTimers.remove(deviceId)?.cancel();
   }
 
   void _onLinkError(String deviceId, Object e) {
@@ -390,15 +398,30 @@ class P2pCoordinator {
     _emitPeerState(deviceId, PeerLinkState.failed, '连接错误: $e');
   }
 
-  void _onLinkDone(String deviceId) {
-    _log('连接关闭 $deviceId');
-    final wasConnected = _links.containsKey(deviceId);
-    _subs.remove(deviceId)?.cancel();
+  void _onLinkDone(String deviceId, {required WsLink link}) {
+    final code = link.closeCode;
+    final reason = link.closeReason;
+    final detail =
+        'code=${code ?? "unknown"} reason=${reason?.isNotEmpty == true ? reason : "none"}';
+    _log('连接关闭 $deviceId ($detail)');
+    if (!identical(_links[deviceId], link)) {
+      final stale = _subs[deviceId];
+      if (stale != null && identical(stale.link, link)) {
+        _subs.remove(deviceId)?.cancel();
+      }
+      _log('忽略旧连接关闭 $deviceId：replacement 仍为当前连接');
+      return;
+    }
+    final wasConnected = true;
+    final currentSubs = _subs[deviceId];
+    if (currentSubs != null && identical(currentSubs.link, link)) {
+      _subs.remove(deviceId)?.cancel();
+    }
     _links.remove(deviceId);
     aggregator.markOffline(deviceId);
     // 曾连上又断开 → 失败态（掉线）；从未连上的（拨号即失败）已在 _dial 上报。
     if (wasConnected) {
-      _emitPeerState(deviceId, PeerLinkState.failed, '连接断开');
+      _emitPeerState(deviceId, PeerLinkState.failed, '连接断开 ($detail)');
     }
     // 任务 C：断线主动重连（带退避）。仅当该端点仍被期望连接（未被 _disconnect
     // 移除）时才排——靠 UDperiodic discover 才重连有状态空档，这里补上主动重连。
@@ -425,6 +448,9 @@ class P2pCoordinator {
       _log('入站验签失败($arrivalKey ${env.type}): $vr');
       return;
     }
+    // A verified application frame, unlike HTTP upgrade, proves this session is
+    // usable. Reset only now so repeated upgrade→1013 retains exponential delay.
+    _reconnectBackoff.remove(arrivalKey);
     // 根因 A 修复:身份归一。占位 key(host:port)承载的连接,一旦帧里带出真实
     // device_id(status/ready 的 payload.device_id,或 welcome 的 from=player:<id>),
     // 就把连接从占位 key 重绑定到真实 id,使 connectedIds 与 WallAggregator/
@@ -723,8 +749,9 @@ class P2pCoordinator {
 /// 一条 p2p 直连的订阅集合：文本帧 + 二进制帧（缩略图）两条订阅，加上该连接的
 /// 缩略图两帧配对状态机 [ThumbPairing]。随 link 一起建立/迁移（身份归一）/关闭。
 class _PeerSubs {
-  _PeerSubs({required this.text, required this.binary, required this.thumbs});
+  _PeerSubs({required this.link, required this.text, required this.binary, required this.thumbs});
 
+  final WsLink link;
   final StreamSubscription<String> text;
   final StreamSubscription<Uint8List> binary;
   final ThumbPairing thumbs;

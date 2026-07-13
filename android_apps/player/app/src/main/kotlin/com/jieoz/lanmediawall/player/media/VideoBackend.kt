@@ -41,6 +41,16 @@ interface VideoBackend {
     /** Fired only after the new source has rendered real pixels. */
     var onFirstFrame: (() -> Unit)?
 
+    /** True only while the controller has a cached frame for the current source. */
+    var hasLoopBoundaryFrame: Boolean
+        get() = false
+        set(_) {}
+
+    /** API19 single-item loop boundary actions. Backends without this need no wiring. */
+    var onLoopBoundary: ((LoopBoundaryStateMachine.Action) -> Unit)?
+        get() = null
+        set(_) {}
+
     /** Build the kernel (idempotent). */
     fun init()
 

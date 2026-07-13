@@ -43,6 +43,24 @@ object RootDaemonProtocol {
 
     data class Probe(val ready: Boolean, val detail: String)
 
+    enum class InstallState { PM_SUCCESS, LEGACY_ACTIVATION_DISPATCHED, FAILED }
+    data class InstallReply(val state: InstallState, val detail: String) {
+        val ok: Boolean get() = state != InstallState.FAILED
+        val rebootRequired: Boolean get() = state == InstallState.LEGACY_ACTIVATION_DISPATCHED
+    }
+
+    fun parseInstall(response: String): InstallReply {
+        val line = response.trim()
+        return when {
+            line.startsWith("ok install ") && line.contains("state=pm_success") ->
+                InstallReply(InstallState.PM_SUCCESS, line)
+            line.startsWith("ok install ") && line.contains("state=legacy_activation_dispatched") &&
+                line.contains("reboot_required") ->
+                InstallReply(InstallState.LEGACY_ACTIVATION_DISPATCHED, line)
+            else -> InstallReply(InstallState.FAILED, line.ifBlank { "empty" })
+        }
+    }
+
     /** Parse the daemon's PROBE reply. Ready requires an explicit root euid so a
      *  non-root impostor bound to the same abstract name can never look ready. */
     fun parseProbe(response: String): Probe {

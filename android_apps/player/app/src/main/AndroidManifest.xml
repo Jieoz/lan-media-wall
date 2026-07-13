@@ -3,16 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:installLocation="internalOnly">
 
-    <!-- §6.3: MUST pin installLocation=internalOnly. Target 4.4.2 boxes are
-         AliOS/YunOS-forked (device QZX_C1, com.yunos.tv.*), whose modified
-         PackageManagerService runs a location-recommendation heuristic at
-         parse time. When installLocation is UNSPECIFIED (-1) that heuristic
-         can fail and the installer bails with the misleading
-         INSTALL_FAILED_INVALID_INSTALL_LOCATION - even with `pm install -f`,
-         because the failure happens before the force-internal flag applies.
-         Declaring internalOnly forces INSTALL_LOCATION_INTERNAL_ONLY and
-         skips the recommender entirely. Also correct for a kiosk box: the app
-         never migrates to (removable) external storage. -->
+    <!-- §6.3: Prefer internal storage on standards-compliant PackageManager.
+         Some AliOS/YunOS forks still return INVALID_INSTALL_LOCATION before the
+         normal flag takes effect, so this declaration is not treated as a
+         guarantee; the root daemon has an exact-error legacy activation path. -->
 
     <!-- §1/§6: WS + Range downloads + UDP discovery -->
     <uses-permission android:name="android.permission.INTERNET" />

@@ -92,11 +92,31 @@ class RootDaemonProtocolTest {
 
     @Test
     fun install_response_ok_detected() {
-        assertTrue(RootDaemonProtocol.isOk("ok install activated via=pm_install restart_dispatched"))
+        assertTrue(RootDaemonProtocol.isOk("ok install state=pm_success activated via=pm_install restart_dispatched"))
         assertTrue(RootDaemonProtocol.isOk("ok restart_app accepted restart_dispatched"))
         assertTrue(RootDaemonProtocol.isOk("ok reboot rebooting"))
         assertFalse(RootDaemonProtocol.isOk("error install pm_failed detail=Failure [INSTALL_FAILED]"))
         assertFalse(RootDaemonProtocol.isOk("error install path rejected code=6"))
         assertFalse(RootDaemonProtocol.isOk(""))
+    }
+
+    @Test
+    fun parse_install_distinguishes_pm_legacy_and_failure() {
+        val pm = RootDaemonProtocol.parseInstall(
+            "ok install state=pm_success activated via=pm_install restart_dispatched")
+        assertEquals(RootDaemonProtocol.InstallState.PM_SUCCESS, pm.state)
+        assertTrue(pm.ok)
+        assertFalse(pm.rebootRequired)
+
+        val legacy = RootDaemonProtocol.parseInstall(
+            "ok install state=legacy_activation_dispatched reboot_required via=data_app_scanner")
+        assertEquals(RootDaemonProtocol.InstallState.LEGACY_ACTIVATION_DISPATCHED, legacy.state)
+        assertTrue(legacy.ok)
+        assertTrue(legacy.rebootRequired)
+
+        val failed = RootDaemonProtocol.parseInstall("error install pm_failed detail=Failure")
+        assertEquals(RootDaemonProtocol.InstallState.FAILED, failed.state)
+        assertFalse(failed.ok)
+        assertFalse(failed.rebootRequired)
     }
 }

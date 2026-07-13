@@ -42,6 +42,10 @@ class PlayerController(
     private val thumbSeq = AtomicInteger(0)
     private val thumbnailFlight = ThumbnailSingleFlight()
     private val transitionState = VideoTransitionStateMachine()
+    @Volatile private var loopOverlayJpeg: ByteArray? = null
+    @Volatile private var loopOverlayItemId: String? = null
+    private val loopOverlayOwner = LoopOverlayOwner()
+    @Volatile private var loopOverlayToken: LoopOverlayOwner.Token? = null
     /** §6.4 root-performance: one cached thumbnail per item (keyed by itemId). */
     private val thumbnailCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, ByteArray>>()
 
@@ -92,6 +96,15 @@ class PlayerController(
             videoBackend.onFirstFrame = {
                 finishTransition(failed = false)
             }
+            videoBackend.onLoopBoundary = boundary@{ action ->
+                val token = loopOverlayToken
+                if (token == null || !loopOverlayOwner.accepts(token)) return@boundary
+                when (action) {
+                    LoopBoundaryStateMachine.Action.SHOW_OVERLAY -> showTransitionFrame(loopOverlayJpeg)
+                    LoopBoundaryStateMachine.Action.HIDE_OVERLAY -> hideImage()
+                    LoopBoundaryStateMachine.Action.NONE -> Unit
+                }
+            }
         }
     }
 
@@ -124,6 +137,7 @@ class PlayerController(
 
     /** Load a file/URL, seek, and stay paused — primes for a synced start. */
     fun loadPaused(uri: String, seekMs: Long = 0, loop: Boolean = false) {
+        if (!loop) disarmLoopOverlay()
         hideImage()
         lastError = null
         videoBackend.loadPaused(uri, seekMs, loop)
@@ -131,6 +145,7 @@ class PlayerController(
 
     /** Load and start playing immediately (used for non-synced / advance). */
     fun loadAndPlay(uri: String, seekMs: Long = 0, loop: Boolean = false, preserveOverlay: Boolean = false) {
+        if (!loop) disarmLoopOverlay()
         if (!preserveOverlay) hideImage()
         lastError = null
         videoBackend.loadAndPlay(uri, seekMs, loop)
@@ -149,6 +164,7 @@ class PlayerController(
      * video kernels can't render one). No-op if the ImageView isn't attached yet.
      */
     fun showImage(path: String) = runOnMain {
+        disarmLoopOverlay()
         val iv = imageView ?: return@runOnMain
         val file = File(path.removePrefix("file://"))
         val bmp = try {
@@ -175,6 +191,7 @@ class PlayerController(
     }
 
     fun stop() {
+        disarmLoopOverlay()
         videoBackend.stop()
         hideImage()
     }
@@ -221,6 +238,23 @@ class PlayerController(
 
     /** §6.4: the thumbnail already captured for [itemId], or null if none yet. */
     fun cachedThumbnail(itemId: String): Pair<Int, ByteArray>? = thumbnailCache[itemId]
+
+    /** Select an already-captured frame for the current single-item loop source. */
+    fun armLoopOverlay(itemId: String?) {
+        loopOverlayToken = loopOverlayOwner.arm(itemId)
+        loopOverlayItemId = itemId
+        loopOverlayJpeg = itemId?.let { thumbnailCache[it]?.second }
+        videoBackend.hasLoopBoundaryFrame = loopOverlayJpeg != null
+    }
+
+    private fun disarmLoopOverlay() {
+        loopOverlayOwner.disarm()
+        loopOverlayToken = null
+        loopOverlayItemId = null
+        loopOverlayJpeg = null
+        videoBackend.hasLoopBoundaryFrame = false
+        hideImage()
+    }
 
     /** Drop cached thumbnails for items no longer referenced (playlist change). */
     fun retainThumbnails(keepItemIds: Set<String>) {
@@ -287,6 +321,10 @@ class PlayerController(
             bmp.recycle()
             val captured = thumbSeq.incrementAndGet() to jpeg
             thumbnailCache[itemId] = captured
+            if (loopOverlayItemId == itemId) {
+                loopOverlayJpeg = jpeg
+                videoBackend.hasLoopBoundaryFrame = true
+            }
             captured
         } finally {
             lease.close()
@@ -294,6 +332,7 @@ class PlayerController(
     }
 
     fun release() {
+        disarmLoopOverlay()
         videoBackend.release()
         runOnMain { imageView = null }
     }
