@@ -1,6 +1,6 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
-> **v1.14.11:** P2P 临时 HTTP 媒体服务采用有界 FIFO 背压：最多同时流式发送 6 条，等待队列最多 64；再超限返回空体 `503` + `Retry-After: 1`，播放器保留 `.part` 后按 Range 续传。整个文件始终从磁盘流式发送，不整块读入内存。P2P 仍定位为 ≤8 台小场景，更大规模使用 Broker/NAS。
+> **v1.14.11:** P2P 临时 HTTP 媒体服务采用有界 FIFO 背压：最多同时流式发送 6 条，等待队列最多 64；再超限返回空体 `503` + `Retry-After: 1`，播放器保留 `.part` 后按 Range 续传。整个文件始终从磁盘流式发送，不整块读入内存。P2P 仍定位为 ≤8 台小场景，更大规模使用 Broker/NAS。并发与队列边界由 `media_request_gate_test.dart` 在 Flutter CI 中直接验证。
 
 > **v1.14.10:** P2P close diagnostics now expose RFC6455 close code/reason in
 > controller logs and per-peer failure state. Reconnect backoff is reset only by
