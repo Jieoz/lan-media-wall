@@ -1117,10 +1117,13 @@ Future<void> _pushContentToDeviceDialog(
   var uploading = false;
   var uploadHint = '';
   final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
-  final groupId = device.status?.groupId ?? '';
+  final groupId = active?.groupId.isNotEmpty == true
+      ? active!.groupId
+      : device.status?.groupId ?? '';
 
   await showDialog<void>(
     context: context,
+    barrierDismissible: false,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setLocal) {
         Future<void> pick(String type) async {
@@ -1161,7 +1164,9 @@ Future<void> _pushContentToDeviceDialog(
           }
         }
 
-        return AlertDialog(
+        return PopScope(
+          canPop: !uploading,
+          child: AlertDialog(
           title: Text('推送内容 → $name'),
           content: SizedBox(
             width: 460,
@@ -1328,6 +1333,7 @@ Future<void> _pushContentToDeviceDialog(
                     },
             ),
           ],
+        ),
         );
       },
     ),

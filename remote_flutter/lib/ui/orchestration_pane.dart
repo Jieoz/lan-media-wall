@@ -134,6 +134,10 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
               final group = status.activePlaylist!.groupId;
               _groupId = group.isEmpty ? _groupId : group;
             } else if (id != null) {
+              // Never leave the previously selected device's playlist armed for
+              // a different/legacy box.
+              _draft.clear();
+              _draft.detachPlaylistId();
               _toast('该设备未上报可编辑的当前播放列表；请先升级被控端');
             }
           }),
