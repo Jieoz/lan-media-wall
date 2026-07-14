@@ -156,6 +156,32 @@ class Downloader:
                 return e.path
             return None
 
+    def ready_paths(self) -> Dict[str, Path]:
+        """item_id -> on-disk path for every READY entry (cache inventory)."""
+        with self._lock:
+            return {k: e.path for k, e in self._entries.items()
+                    if e.state == "ready" and e.path}
+
+    def inflight_paths(self) -> Dict[str, Optional[Path]]:
+        """item_id -> partial path (or None) for entries still downloading /
+        verifying — these are protected as ``inflight`` (their ``.part`` must
+        never be reclaimed under a delete window)."""
+        with self._lock:
+            out: Dict[str, Optional[Path]] = {}
+            for k, e in self._entries.items():
+                if e.state in ("pending", "downloading", "verifying"):
+                    out[k] = e.path
+            return out
+
+    def prune_entries(self, item_ids: List[str]) -> None:
+        """Drop cache-index rows whose physical blob was just deleted, so no
+        entry keeps pointing at a removed file (design §4.2 step 6)."""
+        with self._lock:
+            for iid in item_ids:
+                self._entries.pop(iid, None)
+                self._threads.pop(iid, None)
+        self._notify()
+
     def prefetch(self, items: List[Dict[str, Any]]) -> None:
         """Queue a batch (§6.2). Already-ready items are skipped; others get a
         background worker thread."""

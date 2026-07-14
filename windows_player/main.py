@@ -30,6 +30,9 @@ from clock import ClockSync, now_ms
 from downloader import Downloader
 from versioning import APP_VERSION
 from websocket_client import BrokerClient
+import cache_cleanup
+import cache_live
+import cache_refs
 
 log = logging.getLogger("lmw.main")
 
@@ -336,7 +339,11 @@ class Player:
             "app_version": APP_VERSION,
             "ip": self.ip,
             "screen": self._screen(),
-            "capabilities": ["video", "image", "audio", "thumbnail"],
+            # cache_cleanup_v1 / cache_inventory_v1 advertised ONLY now that the
+            # live handlers + terminal-result emission exist (capability truth,
+            # E0001): a controller must never send and silently time out.
+            "capabilities": ["video", "image", "audio", "thumbnail",
+                             "cache_cleanup_v1", "cache_inventory_v1"],
             "group_id": self.group_id,
         })
 
@@ -394,6 +401,8 @@ class Player:
             "muted": bool(snap.get("muted", self.muted) if snap else self.muted),
             "audio_master": self.audio_master,
             "cache": self.downloader.cache_status(),
+            # §26 lightweight summary (full per-item list is on-demand via §28).
+            "cache_summary": self._cache_summary(),
             "clock_offset_ms": self.clock.offset_ms,
             "cpu": self._cpu_percent(),
             "errors": self._errors[-5:],
@@ -437,6 +446,8 @@ class Player:
             "configure_device": self._h_configure_device,
             "debug_snapshot": self._h_debug_snapshot,
             "download_logs": self._h_download_logs,
+            "cache_cleanup": self._h_cache_cleanup,
+            "cache_inventory": self._h_cache_inventory,
             "resume_last": self._h_resume_last,
             "welcome": self._h_welcome,
         }.get(type_)
@@ -453,6 +464,110 @@ class Player:
     async def _ack(self, env: Dict[str, Any], ok: bool, err: str = "") -> None:
         await self.ws.send("ack", {"ack_of": env.get("msg_id"), "ok": ok,
                                    "err": err})
+
+    # --- §27/§28 cache cleanup + inventory (cache_cleanup_v1) ---------
+    def _cleanup(self) -> "cache_cleanup.CacheCleanup":
+        """Long-lived cleanup transaction (holds the idempotency journal)."""
+        c = getattr(self, "_cleanup_obj", None)
+        if c is None:
+            backend = cache_live.LiveCacheBackend(self)
+            c = cache_cleanup.CacheCleanup(backend)
+            self._cleanup_obj = c  # type: ignore[attr-defined]
+            self._cleanup_backend = backend  # type: ignore[attr-defined]
+        return c
+
+    async def _h_cache_cleanup(self, payload, env) -> None:
+        """§27: async destructive op. NO optimistic generic ack — the player
+        emits ONLY the terminal cache_cleanup_result (truthfulness, E0001)."""
+        if not self._targets_me(payload):
+            return
+        req = cache_cleanup.CleanupRequest(
+            request_id=str(payload.get("request_id", "")),
+            mode=str(payload.get("mode", "unreferenced")),
+            item_ids=payload.get("item_ids"),
+            dry_run=bool(payload.get("dry_run", False)),
+            expected_push_id=payload.get("expected_push_id"),
+            reason=str(payload.get("reason", "manual")),
+        )
+        # Scan/verify/delete off the event loop so the WS receive loop, heartbeat
+        # and playback transitions never stall (design req. 10).
+        result = await asyncio.to_thread(self._cleanup().run, req)
+        result["device_id"] = self.device_id
+        if not req.dry_run:
+            self._last_cleanup = {  # type: ignore[attr-defined]
+                "at": now_ms(),
+                "error": "" if result.get("ok") else result.get("error", ""),
+            }
+            self._cache_dirty.set()  # commit changed the cache → refresh status
+        await self.ws.send("cache_cleanup_result", result, to="controller")
+
+    async def _h_cache_inventory(self, payload, env) -> None:
+        """§28: on-demand full per-item inventory (not in periodic status)."""
+        if not self._targets_me(payload):
+            return
+        items = await asyncio.to_thread(self._inventory_items)
+        await self.ws.send("cache_inventory_result", {
+            "request_id": str(payload.get("request_id", "")),
+            "device_id": self.device_id,
+            "items": items,
+        }, to="controller")
+
+    def _inventory_items(self) -> List[Dict[str, Any]]:
+        backend = cache_live.LiveCacheBackend(self)
+        snapshot = backend.build_snapshot()
+        out: List[Dict[str, Any]] = []
+        for it in backend.inventory():
+            iid = it["item_id"]
+            key = cache_live.content_key_of(it)
+            reasons: List[str] = []
+            kind, reason = snapshot.classify_item(iid)
+            if reason is not None and reason != cache_refs.NOT_FOUND:
+                reasons.append(reason)
+            out.append({
+                "item_id": iid,
+                "content_key": key,
+                "bytes": backend.size_of(key) if key else None,
+                "state": "ready",
+                "protection_reasons": reasons,
+                "last_access_ms": 0,
+            })
+        return out
+
+    def _cache_summary(self) -> Dict[str, Any]:
+        """§26 lightweight summary for periodic status (no full item list)."""
+        backend = cache_live.LiveCacheBackend(self)
+        snapshot = backend.build_snapshot()
+        ready_items = 0
+        total_bytes = 0
+        protected_items = 0
+        reclaimable_items = 0
+        reclaimable_bytes = 0
+        for it in backend.inventory():
+            iid = it["item_id"]
+            key = cache_live.content_key_of(it)
+            size = backend.size_of(key) if key else None
+            ready_items += 1
+            if size:
+                total_bytes += size
+            kind, reason = snapshot.classify_item(iid)
+            if reason is not None and reason != cache_refs.NOT_FOUND:
+                protected_items += 1
+            else:
+                reclaimable_items += 1
+                if size:
+                    reclaimable_bytes += size
+        inflight = len(self.downloader.inflight_paths())
+        last = getattr(self, "_last_cleanup", {"at": 0, "error": ""})
+        return {
+            "ready_items": ready_items,
+            "total_bytes": total_bytes,
+            "reclaimable_items": reclaimable_items,
+            "reclaimable_bytes": reclaimable_bytes,
+            "protected_items": protected_items,
+            "inflight_items": inflight,
+            "last_cleanup_at": last.get("at", 0),
+            "last_cleanup_error": last.get("error", ""),
+        }
 
     async def _h_welcome(self, payload, env) -> None:
         # broker may override our group assignment via snapshot; honor it if
