@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.15.2] — 2026-07-14
+
+- Hardened Android Player document-provider export: overwriting an existing destination now explicitly truncates it, preventing stale trailing bytes from an older longer diagnostic, and a broken provider returning success without a destination Uri now produces a visible failure instead of silently doing nothing.
+
 ## [v1.15.1] — 2026-07-14
 
 - Android Player diagnostics now launch the system document picker, so the operator chooses Downloads, internal storage, or a mounted USB destination; stripped Android 4.4/YunOS builds without DocumentsUI fall back to the existing app-external file path instead of losing export. The generated text still includes startup state and persisted `player.log` and remains independent of the player service/LAN link.

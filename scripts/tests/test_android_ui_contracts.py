@@ -19,7 +19,8 @@ def test_player_diagnostics_uses_create_document_picker_and_selected_uri() -> No
     assert "Intent.ACTION_CREATE_DOCUMENT" in source
     assert 'setType("text/plain")' in source
     assert "startActivityForResult" in source
-    assert "contentResolver.openOutputStream" in source
+    assert 'contentResolver.openOutputStream(uri, "wt")' in source
+    assert "document provider returned no destination Uri" in source
     assert "DIAGNOSTIC_EXPORT_REQUEST" in source
     assert "exportDiagnosticsToFallbackFile" in source
     assert "getExternalFilesDir(null) ?: filesDir" in source

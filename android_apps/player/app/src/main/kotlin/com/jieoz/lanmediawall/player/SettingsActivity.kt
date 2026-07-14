@@ -255,10 +255,19 @@ class SettingsActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != DIAGNOSTIC_EXPORT_REQUEST || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
+        val uri = data?.data
+        if (uri == null) {
+            showDiagnosticExportFailure(
+                IllegalStateException("document provider returned no destination Uri"),
+            )
+            return
+        }
         try {
             val bundle = buildLocalDiagnosticText()
-            contentResolver.openOutputStream(uri, "w")?.bufferedWriter()?.use { it.write(bundle) }
+            // "wt" explicitly truncates an existing document selected through
+            // ACTION_CREATE_DOCUMENT. Plain "w" may leave an old trailing tail
+            // with some DocumentsProvider implementations.
+            contentResolver.openOutputStream(uri, "wt")?.bufferedWriter()?.use { it.write(bundle) }
                 ?: throw IllegalStateException("document provider returned no output stream")
             val destination = uri.toString()
             binding.textExportPath.text = getString(R.string.diag_export_ok_fmt, destination)
