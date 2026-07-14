@@ -60,8 +60,9 @@
     <string name="conn_requesting_service">正在请求系统启动播放服务</string>
     <string name="action_restart_service">重新启动播放服务</string>
     <string name="service_restart_requested">已请求重新启动；请查看上方状态</string>
-    <string name="action_export_diag">导出诊断到文件</string>
-    <string name="diag_export_ok_fmt">诊断已保存到：\n%1$s\n(可用 USB / 文件管理器读取，无需 adb)</string>
+    <string name="action_export_diag">选择路径并导出诊断</string>
+    <string name="diag_export_ok_fmt">诊断已保存到：\n%1$s</string>
+    <string name="diag_export_fallback_ok_fmt">系统没有可用的文件选择器（%2$s），诊断已改存到：\n%1$s\n可用文件管理器或 USB 读取。</string>
     <string name="diag_export_failed_fmt">写入诊断文件失败：%1$s</string>
     <string name="conn_discovering">正在局域网内查找协调者…</string>
     <string name="conn_connecting_broker_fmt">正在连接 broker %1$s…</string>

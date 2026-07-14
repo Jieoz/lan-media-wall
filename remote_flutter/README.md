@@ -1,5 +1,7 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.15.1 即时启动：**Android 原生 `MainActivity` 在 Flutter 初始化前丢弃冷启动/进程重建传入的 saved-state bundle，并继续禁用 Flutter 状态保存，因此每次真正重启都进入可立即操作的 `ResponsiveShell`，不会复活配置对话框；配置只由顶部“设置”按钮显式打开，普通前后台切换仍保留用户主动打开的对话框。
+
 > **v1.15.0 媒体推送进度：**Broker 与 P2P 在 `WallState` 汇入同一任务状态机；下载中最多显示 99%，只有校验、原子落盘并由播放器上报 `ready` 后才是 100%。每次非空 `replace` 使用唯一 `push_id`，播放器采纳后回显，避免复用 `playlist_id` 时继承旧完成状态。聚合仅计算本次任务预期条目，不把设备历史缓存库存算入；命令投递失败不会创建幽灵 0% 任务，空 `replace` 清空后历史 cache 也不会恢复进度条。
 
 > **v1.14.13:** Android 冷重启不再恢复 FlutterActivity 的 instance/navigation state：仓库保存定制 `MainActivity.kt`，CI 在 `flutter create` 后按确定路径安装并逐字节核验，因此进程被杀或真正重启总是从 `ResponsiveShell` 主界面开始，不会复活设置对话框；普通前后台切换不重建 Activity，已打开的对话框继续保留。严格 Range 现在也拒绝重复物理 `Range` header，统一空体 `416`。release 构建与晋级从仓库内公开的 canonical 证书指纹（可由仓库变量覆盖）解析同一个期望 signer，并逐个核验 APK 包内 versionName/versionCode 与 signer。`WallState.init()` 在每个异步边界检查析构状态，快速卸载时不再在 `dispose()` 后分配链路、启动发现或通知已销毁的状态对象。
@@ -25,7 +27,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.15.0+62`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.15.1+63`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >

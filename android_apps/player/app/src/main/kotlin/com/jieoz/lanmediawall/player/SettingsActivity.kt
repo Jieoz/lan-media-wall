@@ -74,7 +74,7 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnResetConn.setOnClickListener { confirmResetConnection() }
         binding.btnRefreshDiag.setOnClickListener { renderDiagnostics() }
         binding.btnRestartService.setOnClickListener { startPlayerService() }
-        binding.btnExportDiag.setOnClickListener { exportDiagnostics() }
+        binding.btnExportDiag.setOnClickListener { chooseDiagnosticExportPath() }
     }
 
     override fun onResume() {
@@ -223,29 +223,77 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * §2 no-ADB export: write the current diagnostics + startup phase + the
-     * persisted player.log tail to an external, file-manager-readable file.
+     * §2 no-ADB export: ask Android's document provider for the destination.
+     * This lets the operator pick internal storage, Downloads, or a mounted USB
+     * volume instead of hiding the result under Android/data.
      *
      * This deliberately does NOT depend on a running [PlayerService] or a
      * controller link: the exact failure we must diagnose (stuck at 启动中 /
      * START_FAILED) is when no service exists, so the LAN export path is dead.
      * player.log is written under the shared app filesDir, so its tail is
-     * available here even across a failed service start. getExternalFilesDir is
-     * API 8+, so this holds the minSdk-19 line.
+     * available here even across a failed service start. ACTION_CREATE_DOCUMENT
+     * is available from API 19, exactly matching this app's minimum SDK.
      */
-    private fun exportDiagnostics() {
+    private fun chooseDiagnosticExportPath() {
+        val fileName = "lmw-player-diag-${settings.deviceId}-${System.currentTimeMillis()}.txt"
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            setType("text/plain")
+            putExtra(Intent.EXTRA_TITLE, fileName)
+        }
+        try {
+            startActivityForResult(intent, DIAGNOSTIC_EXPORT_REQUEST)
+        } catch (t: Throwable) {
+            // Some stripped Android 4.4/YunOS images have no DocumentsUI at all.
+            // Preserve a usable no-adb path instead of turning export into a
+            // dead button: save under the app's file-manager-visible directory.
+            exportDiagnosticsToFallbackFile(t)
+        }
+    }
+
+    @Deprecated("Android API 19-compatible document picker callback")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != DIAGNOSTIC_EXPORT_REQUEST || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
         try {
             val bundle = buildLocalDiagnosticText()
-            val dir = getExternalFilesDir(null) ?: filesDir
-            if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, "lmw-player-diag-${settings.deviceId}-${System.currentTimeMillis()}.txt")
-            file.writeText(bundle)
-            binding.textExportPath.text = getString(R.string.diag_export_ok_fmt, file.absolutePath)
-            toast(getString(R.string.diag_export_ok_fmt, file.absolutePath))
+            contentResolver.openOutputStream(uri, "w")?.bufferedWriter()?.use { it.write(bundle) }
+                ?: throw IllegalStateException("document provider returned no output stream")
+            val destination = uri.toString()
+            binding.textExportPath.text = getString(R.string.diag_export_ok_fmt, destination)
+            toast(getString(R.string.diag_export_ok_fmt, destination))
         } catch (t: Throwable) {
-            val msg = "${t.javaClass.simpleName}: ${t.message ?: ""}"
-            binding.textExportPath.text = getString(R.string.diag_export_failed_fmt, msg)
-            toast(getString(R.string.diag_export_failed_fmt, msg))
+            showDiagnosticExportFailure(t)
+        }
+    }
+
+    private fun showDiagnosticExportFailure(t: Throwable) {
+        val msg = "${t.javaClass.simpleName}: ${t.message ?: ""}"
+        binding.textExportPath.text = getString(R.string.diag_export_failed_fmt, msg)
+        toast(getString(R.string.diag_export_failed_fmt, msg))
+    }
+
+    private fun exportDiagnosticsToFallbackFile(pickerFailure: Throwable) {
+        try {
+            val dir = getExternalFilesDir(null) ?: filesDir
+            if (!dir.exists() && !dir.mkdirs()) {
+                throw IllegalStateException("cannot create ${dir.absolutePath}")
+            }
+            val file = File(
+                dir,
+                "lmw-player-diag-${settings.deviceId}-${System.currentTimeMillis()}.txt",
+            )
+            file.writeText(buildLocalDiagnosticText())
+            val destination = file.absolutePath
+            binding.textExportPath.text = getString(
+                R.string.diag_export_fallback_ok_fmt,
+                destination,
+                pickerFailure.javaClass.simpleName,
+            )
+            toast(getString(R.string.diag_export_ok_fmt, destination))
+        } catch (writeFailure: Throwable) {
+            showDiagnosticExportFailure(writeFailure)
         }
     }
 
@@ -478,6 +526,7 @@ class SettingsActivity : AppCompatActivity() {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
     companion object {
+        private const val DIAGNOSTIC_EXPORT_REQUEST = 0x4C4D
         @Volatile private var serviceStartElapsedMs = 0L
     }
 }

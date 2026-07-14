@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.15.1] — 2026-07-14
+
+- Android Player diagnostics now launch the system document picker, so the operator chooses Downloads, internal storage, or a mounted USB destination; stripped Android 4.4/YunOS builds without DocumentsUI fall back to the existing app-external file path instead of losing export. The generated text still includes startup state and persisted `player.log` and remains independent of the player service/LAN link.
+- Android Controller cold/process relaunch now discards the Activity saved-state bundle at the native boundary before Flutter initializes, in addition to disabling Flutter state restoration. It always enters the ready-to-use `ResponsiveShell`; settings remains an explicit toolbar-button action and ordinary background/resume keeps an already-open dialog.
+
 ## [v1.15.0] — 2026-07-14
 
 - Playlist editing/control now spans add/append, whole-list replace, delete-one, clear-all, arbitrary reorder/up-down and prev/next, driven from one tested `PlaylistDraft`; broker and P2P converge on a single semantic handler.

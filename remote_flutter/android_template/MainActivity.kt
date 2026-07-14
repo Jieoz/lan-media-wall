@@ -1,5 +1,6 @@
 package com.example.remote_flutter
 
+import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 
 /**
@@ -11,4 +12,11 @@ import io.flutter.embedding.android.FlutterActivity
  */
 class MainActivity : FlutterActivity() {
     override fun shouldRestoreAndSaveState(): Boolean = false
+
+    // Some Android/vendor combinations hand FlutterActivity a saved route before
+    // shouldRestoreAndSaveState() is consulted. Null it at the Activity boundary
+    // so a true relaunch always starts from Dart's canonical home shell.
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(null)
+    }
 }

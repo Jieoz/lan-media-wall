@@ -1,5 +1,7 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.15.1 启动诊断导出：**设置页的“选择路径并导出诊断”调用 Android 系统文档选择器，操作者可选择下载目录、内部存储或已挂载 U 盘；导出仍不依赖播放服务和局域网连接，内容包含启动阶段、设置、播放/缓存/更新状态及持久化 `player.log` 尾部。
+
 > **v1.15.0 推送任务边界：**每次 `playlist mode=replace` 采纳后在 `status.push_id` 回显控制端生成的唯一任务标识，不能再用可复用的 `playlist_id` 误认新任务。下载阶段进度封顶 99%，仅校验并原子落盘成功后进入 `ready`(100%)。空 `replace` 是明确的「清空并停播」：取消 prepare/dwell/定时起播，停止解码器、清活动列表和恢复任务，并显示 idle 画面；缓存文件本身仍保留。
 
 > **v1.14.12 P2P 调度与恢复：**下载器保持单台 2 个 active worker、最多 64 个 pending，但不再使用普通 FIFO：`playlist/cache_prefetch` 进入后台队列，当前 `prepare` 项进入前台并可提升已排队的同 item；同 item 去重。控制端过载返回的 `429/503` 会按有上限的 `Retry-After`/指数退避重试，保留 `.part` 后继续 Range 续传；stop 会取消排队任务和活动 OkHttp call。prepare generation 隔离保证旧 waiter 不能 prime 解码器或发送过期 `ready`。
@@ -23,7 +25,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.15.0 / versionCode 62`** — derived from
+> **Current build: `versionName 1.15.1 / versionCode 63`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
