@@ -1,5 +1,7 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.15.3：**版本随 Android Player 设置页诊断刷新修复统一晋级；控制端即时启动合同不变。
+
 > **v1.15.2：**版本随 Android Player 诊断导出完整性修复统一晋级；控制端即时启动与显式设置入口行为保持 v1.15.1 的合同不变。
 
 > **v1.15.1 即时启动：**Android 原生 `MainActivity` 在 Flutter 初始化前丢弃冷启动/进程重建传入的 saved-state bundle，并继续禁用 Flutter 状态保存，因此每次真正重启都进入可立即操作的 `ResponsiveShell`，不会复活配置对话框；配置只由顶部“设置”按钮显式打开，普通前后台切换仍保留用户主动打开的对话框。
@@ -29,7 +31,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.15.2+64`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.15.3+65`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >

@@ -1,5 +1,7 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.15.3 诊断刷新：**设置页若先于异步 `PlayerService.onCreate` 打开，服务就绪边沿会触发一次完整诊断重绘，因此播放/缓存/错误/探针不再一直停留于 `service not ready`；平稳状态不会每秒重复 root daemon 探测。
+
 > **v1.15.2 导出完整性：**覆盖已存在的诊断文件时使用截断写入，避免旧文件更长时尾部残留；系统文档提供器若错误地返回成功但没有目标 Uri，设置页会明确显示失败，不再静默无响应。
 
 > **v1.15.1 启动诊断导出：**设置页的“选择路径并导出诊断”调用 Android 系统文档选择器，操作者可选择下载目录、内部存储或已挂载 U 盘；导出仍不依赖播放服务和局域网连接，内容包含启动阶段、设置、播放/缓存/更新状态及持久化 `player.log` 尾部。
@@ -27,7 +29,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.15.2 / versionCode 64`** — derived from
+> **Current build: `versionName 1.15.3 / versionCode 65`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.15.3] — 2026-07-14
+
+- Fixed stale Android Player settings diagnostics: if the settings Activity renders before `PlayerService.onCreate`, the one-second status loop now detects the service-availability edge and refreshes playback/cache/error/probe fields once. A live service no longer leaves the screen stuck on `service not ready`; root-daemon probes are not repeated every tick.
+
 ## [v1.15.2] — 2026-07-14
 
 - Hardened Android Player document-provider export: overwriting an existing destination now explicitly truncates it, preventing stale trailing bytes from an older longer diagnostic, and a broken provider returning success without a destination Uri now produces a visible failure instead of silently doing nothing.

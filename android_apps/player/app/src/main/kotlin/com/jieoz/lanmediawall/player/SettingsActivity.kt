@@ -38,6 +38,8 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var settings: Settings
+    /** Last service availability represented by the diagnostics labels. */
+    private var diagnosticsServicePresent = false
 
     /** §2 connection-status refresher: ConnState is polled by the service, so
      *  re-render it on a light UI-thread tick while this screen is visible. */
@@ -46,6 +48,10 @@ class SettingsActivity : AppCompatActivity() {
         override fun run() {
             detectStalledServiceStart()
             renderConnStatus()
+            val servicePresent = PlayerService.instance != null
+            if (DiagnosticsRefreshPolicy.shouldRefresh(diagnosticsServicePresent, servicePresent)) {
+                renderDiagnostics()
+            }
             ui.postDelayed(this, 1000)
         }
     }
@@ -358,6 +364,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun renderDiagnostics() {
+        diagnosticsServicePresent = PlayerService.instance != null
         binding.textDiagStatus.text = getString(R.string.diag_refreshing)
         val helper = describeHelper()
         val restart = describeRestart()
