@@ -27,7 +27,12 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Pinned: windows-latest now resolves to windows-2025-vs2026 (Visual Studio
+    # 2026), which the pinned Flutter 3.24.5 toolchain cannot detect — its VS
+    # probe fails and falls back to the hard-coded "Visual Studio 16 2019"
+    # generator, so CMake reports "could not find any instance of Visual Studio".
+    # windows-2022 ships VS2022, which Flutter 3.24.5 recognizes.
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
@@ -247,7 +252,10 @@ jobs:
   # player above. Generate its platform scaffold in CI and publish a separate,
   # self-contained immutable bundle.
   controller:
-    runs-on: windows-latest
+    # Pinned to windows-2022 (VS2022): the pinned Flutter 3.24.5 cannot detect
+    # the VS2026 that windows-latest now provides, so its CMake generator probe
+    # fails. See the build job above for the full rationale.
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
