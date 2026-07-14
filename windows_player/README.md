@@ -1,11 +1,14 @@
 # LAN Media Wall — Windows 10 Player
 
-> **v1.15.3 Phase A — 缓存清理内核(仅内核,未接线):**新增经证明安全的缓存清理
+> **v1.16.0 Phase A — 缓存清理内核(仅内核,未接线):**新增经证明安全的缓存清理
 > 内核 `cache_hash.py` / `cache_refs.py` / `cache_cleanup.py`,与 Android
 > (`android_apps/player/.../cache/`) **协议等价、逐字节同构**(见
 > [`../protocol_spec.md`](../protocol_spec.md) §25–§29)。当前仅落地纯逻辑核心与测试:
 > canonical 节目单哈希、引用快照/保护并集、dry-run/commit 同一规划器、代次
 > fail-closed、`request_id` 幂等(有界 FIFO 日志,上限 128)、结构化逐项结果。
+> 物理 blob 删除后按 `content_key` 修剪**其全部别名 item id**(不止被请求的候选),
+> 索引不再残留指向已删文件的行;`deleted` 仍只如实回报被请求的候选 id,dry-run 与
+> 删除失败不修剪任何条目,重复的候选 id 只删除/修剪/回报一次。
 > **这不是用户可见/已部署的行为:**请求路由、`status` 摘要发射、broker/P2P 回传、
 > Flutter UI、以及 `hello.capabilities` 能力声明都属 Phase B,尚未接线。不得据此
 > 声称清理已上线。

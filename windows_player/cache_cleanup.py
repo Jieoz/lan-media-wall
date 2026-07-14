@@ -50,8 +50,18 @@ class CleanupRequest:
 
 @dataclass
 class _Plan:
-    """Planner output — identical for dry-run and commit."""
-    # content_key -> {"item_ids": [...], "bytes": int}
+    """Planner output — identical for dry-run and commit.
+
+    Per physical ``content_key`` we track two distinct id sets:
+      * ``item_ids`` — the requested candidate ids that resolved to this blob;
+        these drive the honest ``deleted`` response (protocol reports what was
+        asked for, per design §3.2).
+      * ``prune_ids`` — EVERY inventory/index id that resolves to this blob.
+        When the single physical file is deleted, all of these aliases become
+        invalid and must be pruned, or the index keeps rows pointing at a
+        deleted file (root-cause of the dangling-alias bug).
+    """
+    # content_key -> {"item_ids": [...], "bytes": int, "prune_ids": [...]}
     delete_by_key: "OrderedDict[str, Dict[str, Any]]" = field(
         default_factory=OrderedDict)
     skipped: List[Dict[str, str]] = field(default_factory=list)
@@ -110,7 +120,9 @@ class CacheCleanup:
               snapshot: R.CacheReferenceSnapshot) -> _Plan:
         plan = _Plan()
         if request.mode == "selected":
-            candidate_ids = list(request.item_ids or [])
+            # de-dupe requested ids: a repeated id must not be reported twice
+            # nor prune twice. Preserve first-seen order.
+            candidate_ids = list(dict.fromkeys(request.item_ids or []))
         else:
             candidate_ids = [it["item_id"] for it in self._be.inventory()
                              if it.get("item_id") is not None]
@@ -129,7 +141,10 @@ class CacheCleanup:
                 continue
             entry = plan.delete_by_key.get(key)
             if entry is None:
-                entry = {"item_ids": [], "bytes": int(size)}
+                # The blob reached here only because it is unprotected, so EVERY
+                # alias sharing it is safe to prune once the file is deleted.
+                entry = {"item_ids": [], "bytes": int(size),
+                         "prune_ids": sorted(snapshot.items_for_key(key))}
                 plan.delete_by_key[key] = entry
             entry["item_ids"].append(iid)
         return plan
@@ -144,8 +159,10 @@ class CacheCleanup:
                 for iid in entry["item_ids"]:
                     failed.append({"item_id": iid, "reason": DELETE_FAILED})
                 continue
-            # prune in-memory/persistent index for every id sharing this blob
-            self._be.prune_index(entry["item_ids"])
+            # The one physical blob is gone: prune EVERY alias that resolves to
+            # it (not just the requested candidates), so no index row is left
+            # dangling at a deleted file. Delete failure prunes nothing.
+            self._be.prune_index(entry["prune_ids"])
             for i, iid in enumerate(entry["item_ids"]):
                 deleted.append({
                     "item_id": iid,

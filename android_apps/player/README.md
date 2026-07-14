@@ -1,12 +1,15 @@
 # LAN Media Wall — Android Player (被控端)
 
-> **v1.15.3 Phase A — 缓存清理内核(仅内核,未接线):**新增 Kotlin 缓存清理内核
+> **v1.16.0 Phase A — 缓存清理内核(仅内核,未接线):**新增 Kotlin 缓存清理内核
 > `cache/CacheHash.kt` / `cache/CacheReferenceSnapshot.kt` / `cache/CacheCleanup.kt`
 > 及其单元测试,与 Windows 播放端 (`windows_player/cache_*.py`) **协议等价、逐字节
 > 同构**(见 [`../../protocol_spec.md`](../../protocol_spec.md) §25–§29):canonical
 > 节目单哈希、引用快照/保护并集、dry-run/commit 同一规划器、代次 fail-closed、
-> `request_id` 幂等(有界 FIFO 日志,上限 128)、结构化逐项结果。全部走 API 19 兼容的
-> 纯 JVM 逻辑,不引入现代文件系统 API。**这不是用户可见/已部署的行为:**入站请求路由、
+> `request_id` 幂等(有界 FIFO 日志,上限 128)、结构化逐项结果。物理 blob 删除后按
+> `content_key` 修剪**其全部别名 item id**(不止被请求的候选),索引不再残留指向已删
+> 文件的行;`deleted` 仍只如实回报被请求的候选 id,dry-run 与删除失败不修剪任何条目,
+> 重复的候选 id 只删除/修剪/回报一次。全部走 API 19 兼容的纯 JVM 逻辑,不引入现代
+> 文件系统 API。**这不是用户可见/已部署的行为:**入站请求路由、
 > `status.cache_summary` 发射、broker/P2P 回传、Flutter UI、以及 `hello.capabilities`
 > 能力声明(`cache_cleanup_v1`)都属 Phase B,尚未接线。Kotlin 编译/真机验证仍需按
 > exact-SHA GitHub Actions 完成,本仓库不据此声称清理已上线。
@@ -40,7 +43,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.15.3 / versionCode 65`** — derived from
+> **Current build: `versionName 1.16.0 / versionCode 66`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

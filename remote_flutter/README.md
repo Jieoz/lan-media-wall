@@ -1,5 +1,7 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.16.0：**本次为播放端 Phase A 缓存清理内核 + 协议合同(仅内核,未接线)统一晋级,**控制端本身无功能改动**;版本随全端单一真相源 `pubspec.yaml` 同步递增。Phase B(请求路由、状态发射、broker/P2P 回传、Flutter UI、能力声明)尚未接线,控制端不呈现任何缓存清理入口。
+
 > **v1.15.3：**控制端选择在线设备后，会把该机上报的有序 `active_playlist`、当前播放项和循环模式完整载入同一个 `PlaylistDraft`。编排栏与设备卡推送弹窗都能标记当前项、上移/下移、删除、追加并整列应用；重排按 `item_id` 跟踪当前媒体，删除节目项不删缓存。旧版设备未上报活动列表时会清空上一台草稿，避免跨设备误发；上传期间禁止关闭弹窗，避免异步回调访问已销毁状态。版本同时包含 Android Player 设置页诊断刷新修复。
 
 > **v1.15.2：**版本随 Android Player 诊断导出完整性修复统一晋级；控制端即时启动与显式设置入口行为保持 v1.15.1 的合同不变。
@@ -31,7 +33,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.15.3+65`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.16.0+66`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >

@@ -81,8 +81,13 @@ class CacheCleanup(
     )
 
     private class Plan {
-        // contentKey -> (ordered item ids sharing it, blob bytes)
+        // contentKey -> ordered REQUESTED candidate ids that resolved to it.
+        // Drives the honest `deleted` response (protocol reports what was asked).
         val deleteByKey = LinkedHashMap<String, MutableList<String>>()
+        // contentKey -> EVERY alias id that resolves to it. When the one physical
+        // file is deleted, all of these become invalid and must be pruned, or the
+        // index keeps rows pointing at a deleted file (dangling-alias bug).
+        val pruneByKey = LinkedHashMap<String, List<String>>()
         val keyBytes = LinkedHashMap<String, Long>()
         val skipped = ArrayList<Skipped>()
     }
@@ -127,7 +132,8 @@ class CacheCleanup(
     private fun plan(request: Request, snapshot: CacheReferenceSnapshot): Plan {
         val plan = Plan()
         val candidateIds: List<String> = if (request.mode == "selected") {
-            request.itemIds ?: emptyList()
+            // de-dupe requested ids: a repeated id must not report/prune twice.
+            (request.itemIds ?: emptyList()).distinct()
         } else {
             backend.inventory().map { it.itemId }
         }
@@ -145,6 +151,9 @@ class CacheCleanup(
             }
             val ids = plan.deleteByKey.getOrPut(key) {
                 plan.keyBytes[key] = size
+                // The blob reached here only because it is unprotected, so EVERY
+                // alias sharing it is safe to prune once the file is deleted.
+                plan.pruneByKey[key] = snapshot.itemsForKey(key).sorted()
                 ArrayList()
             }
             ids.add(iid)
@@ -161,7 +170,9 @@ class CacheCleanup(
                 for (iid in ids) failed.add(Failed(iid, DELETE_FAILED))
                 continue
             }
-            backend.pruneIndex(ids)
+            // The one physical blob is gone: prune EVERY alias resolving to it,
+            // not just the requested candidates. Delete failure prunes nothing.
+            backend.pruneIndex(plan.pruneByKey[key] ?: ids)
             val bytes = plan.keyBytes[key] ?: 0L
             ids.forEachIndexed { i, iid ->
                 deleted.add(Deleted(iid, key, if (i == 0) bytes else 0L))

@@ -214,6 +214,65 @@ def test_selected_unknown_id_is_not_found():
     assert res["skipped"][0]["reason"] == R.NOT_FOUND
 
 
+# --- dangling-alias invariant (selected mode, shared blob) --------------
+def test_selected_one_alias_prunes_all_aliases_of_shared_blob():
+    # a1 and a2 are two DIFFERENT item ids that resolve to the SAME physical
+    # blob (same sha). Neither is protected. A selected cleanup names only a1.
+    a1 = item("a1", "DEAD")
+    a2 = item("a2", "dead")  # same content_key as a1
+    be = FakeBackend([a1, a2])
+    res = cleanup(be).run(req(mode="selected", item_ids=["a1"]))
+
+    # (2) the shared physical blob is deleted exactly once
+    assert be.deleted_keys == [content_key_of(a1)]
+    assert len(be.deleted_keys) == 1
+    # (3) BOTH alias ids are pruned from the index — no dangling row for a2
+    assert sorted(be.pruned_index) == ["a1", "a2"]
+    # (4) the response honestly reports only the requested candidate id
+    assert [d["item_id"] for d in res["deleted"]] == ["a1"]
+    # one-byte-count-per-blob preserved
+    assert res["freed_bytes"] == 1000
+
+
+def test_selected_duplicate_id_deletes_and_prunes_once():
+    a = item("a", "AA")
+    be = FakeBackend([a])
+    res = cleanup(be).run(req(mode="selected", item_ids=["a", "a", "a"]))
+    assert be.deleted_keys == [content_key_of(a)]      # deleted once
+    assert be.pruned_index == ["a"]                     # pruned once
+    assert [d["item_id"] for d in res["deleted"]] == ["a"]  # reported once
+    assert res["freed_bytes"] == 1000
+
+
+def test_unreferenced_mode_prunes_every_alias_of_reclaimed_blob():
+    # two unreferenced aliases sharing one blob; unreferenced sweep reclaims it.
+    a1 = item("a1", "F00D")
+    a2 = item("a2", "f00d")
+    be = FakeBackend([a1, a2])
+    res = cleanup(be).run(req())  # unreferenced mode
+    assert be.deleted_keys == [content_key_of(a1)]      # one physical delete
+    assert sorted(be.pruned_index) == ["a1", "a2"]      # both aliases pruned
+    assert res["freed_bytes"] == 1000                   # counted once
+
+
+def test_dry_run_shared_alias_prunes_nothing():
+    a1, a2 = item("a1", "DEAD"), item("a2", "dead")
+    be = FakeBackend([a1, a2])
+    res = cleanup(be).run(req(mode="selected", item_ids=["a1"], dry_run=True))
+    assert be.deleted_keys == [] and be.pruned_index == []  # nothing mutated
+    assert [d["item_id"] for d in res["deleted"]] == ["a1"]  # candidate only
+
+
+def test_delete_failure_shared_alias_prunes_nothing():
+    a1, a2 = item("a1", "DEAD"), item("a2", "dead")
+    be = FakeBackend([a1, a2], delete_fail=[content_key_of(a1)])
+    res = cleanup(be).run(req(mode="selected", item_ids=["a1"]))
+    assert be.deleted_keys == []          # physical delete failed
+    assert be.pruned_index == []          # so NO alias is pruned
+    assert res["failed"][0]["item_id"] == "a1"
+    assert res["failed"][0]["reason"] == C.DELETE_FAILED
+
+
 # --- distinct failure reasons -------------------------------------------
 def test_missing_file_reports_not_found_not_delete_failed():
     a = item("a", "AA")

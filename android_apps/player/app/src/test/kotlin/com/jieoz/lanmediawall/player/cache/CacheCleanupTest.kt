@@ -249,4 +249,60 @@ class CacheCleanupTest {
         assertEquals(1, res.summaryAfter["ready_items"])
         assertEquals("push-1", res.observedPushId)
     }
+
+    // --- dangling-alias invariant (selected mode, shared blob) ----------
+    @Test fun selected_one_alias_prunes_all_aliases_of_shared_blob() {
+        // a1 and a2 are two DIFFERENT ids resolving to the SAME physical blob;
+        // neither protected. A selected cleanup names only a1.
+        val a1 = item("a1", "DEAD"); val a2 = item("a2", "dead")
+        val be = FakeBackend(listOf(a1, a2))
+        val res = CacheCleanup(be).run(req(mode = "selected", itemIds = listOf("a1")))
+        // (2) blob deleted exactly once
+        assertEquals(listOf(keyOf(a1)), be.deletedKeys)
+        // (3) BOTH aliases pruned — no dangling row for a2
+        assertEquals(listOf("a1", "a2"), be.prunedIndex.sorted())
+        // (4) response honestly reports only the requested candidate id
+        assertEquals(listOf("a1"), res.deleted.map { it.itemId })
+        assertEquals(1000L, res.freedBytes)  // one-byte-count-per-blob
+    }
+
+    @Test fun selected_duplicate_id_deletes_and_prunes_once() {
+        val a = item("a", "AA")
+        val be = FakeBackend(listOf(a))
+        val res = CacheCleanup(be).run(
+            req(mode = "selected", itemIds = listOf("a", "a", "a")))
+        assertEquals(listOf(keyOf(a)), be.deletedKeys)
+        assertEquals(listOf("a"), be.prunedIndex)
+        assertEquals(listOf("a"), res.deleted.map { it.itemId })
+        assertEquals(1000L, res.freedBytes)
+    }
+
+    @Test fun unreferenced_mode_prunes_every_alias_of_reclaimed_blob() {
+        val a1 = item("a1", "F00D"); val a2 = item("a2", "f00d")
+        val be = FakeBackend(listOf(a1, a2))
+        val res = CacheCleanup(be).run(req())  // unreferenced sweep
+        assertEquals(listOf(keyOf(a1)), be.deletedKeys)      // one physical delete
+        assertEquals(listOf("a1", "a2"), be.prunedIndex.sorted())  // both pruned
+        assertEquals(1000L, res.freedBytes)                  // counted once
+    }
+
+    @Test fun dry_run_shared_alias_prunes_nothing() {
+        val a1 = item("a1", "DEAD"); val a2 = item("a2", "dead")
+        val be = FakeBackend(listOf(a1, a2))
+        val res = CacheCleanup(be).run(
+            req(mode = "selected", itemIds = listOf("a1"), dryRun = true))
+        assertTrue(be.deletedKeys.isEmpty() && be.prunedIndex.isEmpty())
+        assertEquals(listOf("a1"), res.deleted.map { it.itemId })
+    }
+
+    @Test fun delete_failure_shared_alias_prunes_nothing() {
+        val a1 = item("a1", "DEAD"); val a2 = item("a2", "dead")
+        val be = FakeBackend(listOf(a1, a2),
+            deleteFail = listOf("sha256:dead"))
+        val res = CacheCleanup(be).run(req(mode = "selected", itemIds = listOf("a1")))
+        assertTrue(be.deletedKeys.isEmpty())   // physical delete failed
+        assertTrue(be.prunedIndex.isEmpty())   // so NO alias pruned
+        assertEquals("a1", res.failed[0].itemId)
+        assertEquals(CacheCleanup.DELETE_FAILED, res.failed[0].reason)
+    }
 }
