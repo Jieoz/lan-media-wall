@@ -17,6 +17,9 @@ class PlaylistDraft extends ChangeNotifier {
   /// 载入来源的分组;新建草稿时为 null,由 UI 的当前选组决定。
   String? groupId;
 
+  /// Current item reported by the selected device. Null for a fresh/local draft.
+  int? currentIndex;
+
   /// 组内同步起播(§21)。默认开。
   bool sync = true;
 
@@ -59,10 +62,16 @@ class PlaylistDraft extends ChangeNotifier {
     if (from < 0 || from >= _items.length || to < 0 || to >= _items.length) {
       return;
     }
+    final currentItemId = currentIndex != null && currentIndex! < _items.length
+        ? _items[currentIndex!].itemId
+        : null;
     final next = PlaylistEditing.move(_items, from, to);
     _items
       ..clear()
       ..addAll(next);
+    if (currentItemId != null) {
+      currentIndex = _items.indexWhere((item) => item.itemId == currentItemId);
+    }
     notifyListeners();
   }
 
@@ -70,6 +79,11 @@ class PlaylistDraft extends ChangeNotifier {
   void removeAt(int index) {
     if (index < 0 || index >= _items.length) return;
     _items.removeAt(index);
+    if (currentIndex == index) {
+      currentIndex = null;
+    } else if (currentIndex != null && currentIndex! > index) {
+      currentIndex = currentIndex! - 1;
+    }
     notifyListeners();
   }
 
@@ -77,11 +91,12 @@ class PlaylistDraft extends ChangeNotifier {
   void clear() {
     if (_items.isEmpty) return;
     _items.clear();
+    currentIndex = null;
     notifyListeners();
   }
 
   /// 从被控端当前 [ActivePlaylist] 整体载入:替换条目与播放选项、记住其身份。
-  void load(ActivePlaylist active) {
+  void load(ActivePlaylist active, {int? currentIndex}) {
     playlistId = active.playlistId;
     groupId = active.groupId.isEmpty ? null : active.groupId;
     sync = active.sync;
@@ -89,7 +104,20 @@ class PlaylistDraft extends ChangeNotifier {
     _items
       ..clear()
       ..addAll(active.items);
+    this.currentIndex = currentIndex != null && currentIndex >= 0 &&
+            currentIndex < _items.length
+        ? currentIndex
+        : null;
     notifyListeners();
+  }
+
+  /// Loads the exact ordered playlist echoed by a player status frame.
+  /// Returns false for legacy players that do not expose active_playlist.
+  bool loadFromDevice(DeviceStatus status) {
+    final active = status.activePlaylist;
+    if (active == null) return false;
+    load(active, currentIndex: status.currentIndex);
+    return true;
   }
 
   /// 丢弃载入身份,回到「新建」态(条目保留,由调用方决定是否 [clear])。

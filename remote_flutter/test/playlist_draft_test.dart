@@ -67,6 +67,64 @@ void main() {
       expect(draft.items.map((item) => item.itemId), ['c', 'a']);
     });
 
+    test('loading a device status imports its active playlist and current index', () {
+      final draft = PlaylistDraft()..add(_b);
+      const status = DeviceStatus(
+        deviceId: 'box-1',
+        online: true,
+        currentIndex: 1,
+        activePlaylist: ActivePlaylist(
+          playlistId: 'pl-live',
+          groupId: 'lobby',
+          sync: false,
+          loopMode: LoopMode.one,
+          items: [_c, _a],
+        ),
+      );
+
+      expect(draft.loadFromDevice(status), isTrue);
+
+      expect(draft.playlistId, 'pl-live');
+      expect(draft.groupId, 'lobby');
+      expect(draft.currentIndex, 1);
+      expect(draft.loopMode, LoopMode.one);
+      expect(draft.items.map((item) => item.itemId), ['c', 'a']);
+    });
+
+    test('loading a legacy status without active playlist is a no-op', () {
+      final draft = PlaylistDraft()..add(_a);
+      const status = DeviceStatus(
+        deviceId: 'legacy-box',
+        online: true,
+        playlistId: 'pl-legacy',
+        currentIndex: 0,
+      );
+
+      expect(draft.loadFromDevice(status), isFalse);
+      expect(draft.playlistId, isNull);
+      expect(draft.currentIndex, isNull);
+      expect(draft.items, [_a]);
+    });
+
+    test('moving the current item follows it and moving another item shifts its index', () {
+      final draft = PlaylistDraft()
+        ..load(const ActivePlaylist(
+          playlistId: 'pl-live',
+          groupId: 'lobby',
+          sync: true,
+          loopMode: LoopMode.all,
+          items: [_a, _b, _c],
+        ), currentIndex: 1);
+
+      draft.move(1, 2);
+      expect(draft.items.map((item) => item.itemId), ['a', 'c', 'b']);
+      expect(draft.currentIndex, 2);
+
+      draft.move(0, 2);
+      expect(draft.items.map((item) => item.itemId), ['c', 'b', 'a']);
+      expect(draft.currentIndex, 1);
+    });
+
     test('public item view is immutable', () {
       final draft = PlaylistDraft()..addAll(const [_a]);
 

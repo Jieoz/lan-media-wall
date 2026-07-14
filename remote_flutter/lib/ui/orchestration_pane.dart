@@ -121,18 +121,20 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             value: d.deviceId, child: Text(d.deviceName.isEmpty ? d.deviceId : d.deviceName))],
           onChanged: (id) => setState(() {
             _deviceId = id;
-            final pl = id == null
+            final status = id == null
                 ? null
                 : state.wallDevices
                     .where((d) => d.deviceId == id)
                     .firstOrNull
-                    ?.status
-                    ?.activePlaylist;
-            if (pl != null) {
-              // load() replaces items + playback options + remembers identity
-              // and notifies; keep the UI group in sync when the playlist names one.
-              _draft.load(pl);
-              _groupId = pl.groupId.isEmpty ? _groupId : pl.groupId;
+                    ?.status;
+            if (status != null && _draft.loadFromDevice(status)) {
+              // The player echoes its exact ordered active playlist and current
+              // index in status. Import that as the editable draft instead of
+              // constructing a new one from cache inventory.
+              final group = status.activePlaylist!.groupId;
+              _groupId = group.isEmpty ? _groupId : group;
+            } else if (id != null) {
+              _toast('该设备未上报可编辑的当前播放列表；请先升级被控端');
             }
           }),
         )),
@@ -147,7 +149,8 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             state.sendPlaylist(playlistId: _draft.playlistId ?? _newPlaylistId(),
               groupId: group, sync: _draft.sync, loopMode: _draft.loopMode,
               items: _draft.items, mode: 'replace', deviceId: _deviceId);
-            _toast('已更新 ${d?.deviceName ?? _deviceId} 的播放列表；未删除缓存文件');
+            state.cachePrefetch(_draft.items, deviceId: _deviceId);
+            _toast('已更新 ${d?.deviceName ?? _deviceId} 的播放列表并开始缓存；未删除缓存文件');
           },
         ),
       ]),
@@ -265,8 +268,22 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
               final it = _draft.items[i];
               return ListTile(
                 dense: true,
-                leading: Icon(it.isImage ? Icons.image : Icons.movie),
-                title: Text(it.name, overflow: TextOverflow.ellipsis),
+                leading: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Icon(it.isImage ? Icons.image : Icons.movie),
+                    if (_draft.currentIndex == i)
+                      const Positioned(
+                        right: -7,
+                        bottom: -7,
+                        child: Icon(Icons.play_circle_fill, size: 15),
+                      ),
+                  ],
+                ),
+                title: Text(
+                  '${i + 1}. ${it.name}${_draft.currentIndex == i ? " · 当前播放" : ""}',
+                  overflow: TextOverflow.ellipsis,
+                ),
                 subtitle: Text(it.isImage
                     ? '图片 · ${it.durationMs ?? 0}ms · ${_sizeStr(it.size)}'
                     : '视频${it.durationMs != null ? " · ${it.durationMs}ms" : ""} · ${_sizeStr(it.size)}'),

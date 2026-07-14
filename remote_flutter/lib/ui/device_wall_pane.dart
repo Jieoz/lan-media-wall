@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
+import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 import 'device_wall_layout.dart';
 import 'invite_screen.dart';
@@ -1108,9 +1109,12 @@ class _DeviceStatusView extends StatelessWidget {
 /// group_id 沿用该台当前组(仅用于 payload 携带,broker/p2p 靠 device_id 收敛目标)。
 Future<void> _pushContentToDeviceDialog(
     BuildContext context, WallState state, WallDevice device) async {
-  final items = <MediaItem>[];
+  final draft = PlaylistDraft();
+  final active = device.status?.activePlaylist;
+  if (active != null) {
+    draft.load(active, currentIndex: device.status?.currentIndex);
+  }
   var uploading = false;
-  var loopMode = LoopMode.all;
   var uploadHint = '';
   final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
   final groupId = device.status?.groupId ?? '';
@@ -1147,7 +1151,8 @@ Future<void> _pushContentToDeviceDialog(
                   }
                 },
               );
-              setLocal(() => items.add(item));
+              draft.add(item);
+              setLocal(() {});
             }
           } catch (e) {
             setLocal(() => uploadHint = '上传失败: $e');
@@ -1165,8 +1170,17 @@ Future<void> _pushContentToDeviceDialog(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text('只推给这一台(单播)。内容先缓存到该盒子本地,缓存就绪后从头播放。',
-                      style: Theme.of(ctx).textTheme.bodySmall),
+                  if (active != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        '已载入设备当前列表 ${draft.length} 项，可调整顺序、删除或追加后整列应用。',
+                        style: Theme.of(ctx).textTheme.bodySmall,
+                      ),
+                    )
+                  else
+                    Text('只推给这一台(单播)。内容先缓存到该盒子本地,缓存就绪后从头播放。',
+                        style: Theme.of(ctx).textTheme.bodySmall),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -1199,23 +1213,52 @@ Future<void> _pushContentToDeviceDialog(
                         ],
                       ),
                     ),
-                  if (items.isEmpty && !uploading)
+                  if (draft.isEmpty && !uploading)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 8),
                       child: Text('尚未添加内容', style: TextStyle(fontSize: 12)),
                     )
                   else
-                    ...List.generate(items.length, (i) {
-                      final it = items[i];
+                    ...List.generate(draft.length, (i) {
+                      final it = draft.items[i];
                       return ListTile(
                         dense: true,
-                        leading:
-                            Icon(it.isImage ? Icons.image : Icons.movie),
-                        title:
-                            Text(it.name, overflow: TextOverflow.ellipsis),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => setLocal(() => items.removeAt(i)),
+                        leading: Icon(it.isImage ? Icons.image : Icons.movie),
+                        title: Text(
+                          '${i + 1}. ${it.name}${draft.currentIndex == i ? " · 当前播放" : ""}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: Wrap(
+                          children: [
+                            IconButton(
+                              tooltip: '上移',
+                              icon: const Icon(Icons.arrow_upward),
+                              onPressed: i == 0
+                                  ? null
+                                  : () {
+                                      draft.move(i, i - 1);
+                                      setLocal(() {});
+                                    },
+                            ),
+                            IconButton(
+                              tooltip: '下移',
+                              icon: const Icon(Icons.arrow_downward),
+                              onPressed: i == draft.length - 1
+                                  ? null
+                                  : () {
+                                      draft.move(i, i + 1);
+                                      setLocal(() {});
+                                    },
+                            ),
+                            IconButton(
+                              tooltip: '删除',
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () {
+                                draft.removeAt(i);
+                                setLocal(() {});
+                              },
+                            ),
+                          ],
                         ),
                       );
                     }),
@@ -1224,7 +1267,7 @@ Future<void> _pushContentToDeviceDialog(
                     decoration: const InputDecoration(
                         labelText: '循环模式', border: InputBorder.none,
                         contentPadding: EdgeInsets.zero),
-                    value: loopMode,
+                    value: draft.loopMode,
                     items: const [
                       DropdownMenuItem(
                           value: LoopMode.none, child: Text('不循环')),
@@ -1233,8 +1276,10 @@ Future<void> _pushContentToDeviceDialog(
                       DropdownMenuItem(
                           value: LoopMode.one, child: Text('单项循环')),
                     ],
-                    onChanged: (v) =>
-                        setLocal(() => loopMode = v ?? LoopMode.all),
+                    onChanged: (v) {
+                      draft.setLoopMode(v ?? LoopMode.all);
+                      setLocal(() {});
+                    },
                   ),
                 ],
               ),
@@ -1247,7 +1292,7 @@ Future<void> _pushContentToDeviceDialog(
             FilledButton.icon(
               icon: const Icon(Icons.play_circle),
               label: const Text('推送并播放'),
-              onPressed: (uploading || items.isEmpty)
+              onPressed: (uploading || draft.isEmpty)
                   ? null
                   : () {
                       try {
@@ -1258,12 +1303,12 @@ Future<void> _pushContentToDeviceDialog(
                           playlistId: pid,
                           groupId: groupId,
                           sync: false,
-                          loopMode: loopMode,
-                          items: items,
+                          loopMode: draft.loopMode,
+                          items: draft.items,
                           mode: 'replace',
                           deviceId: device.deviceId,
                         );
-                        state.cachePrefetch(items, deviceId: device.deviceId);
+                        state.cachePrefetch(draft.items, deviceId: device.deviceId);
                         state.prepareWithBarrier(
                           playlistId: pid,
                           groupId: groupId,
@@ -1274,7 +1319,7 @@ Future<void> _pushContentToDeviceDialog(
                           ..clearSnackBars()
                           ..showSnackBar(SnackBar(
                               content: Text(
-                                  '已向「$name」推送 ${items.length} 项(缓存就绪后播放)')));
+                                  '已向「$name」应用 ${draft.length} 项(缓存就绪后播放)')));
                       } catch (e) {
                         ScaffoldMessenger.of(context)
                           ..clearSnackBars()
@@ -1287,4 +1332,5 @@ Future<void> _pushContentToDeviceDialog(
       },
     ),
   );
+  draft.dispose();
 }
