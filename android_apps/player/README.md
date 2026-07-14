@@ -1,5 +1,16 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.15.3 Phase A — 缓存清理内核(仅内核,未接线):**新增 Kotlin 缓存清理内核
+> `cache/CacheHash.kt` / `cache/CacheReferenceSnapshot.kt` / `cache/CacheCleanup.kt`
+> 及其单元测试,与 Windows 播放端 (`windows_player/cache_*.py`) **协议等价、逐字节
+> 同构**(见 [`../../protocol_spec.md`](../../protocol_spec.md) §25–§29):canonical
+> 节目单哈希、引用快照/保护并集、dry-run/commit 同一规划器、代次 fail-closed、
+> `request_id` 幂等(有界 FIFO 日志,上限 128)、结构化逐项结果。全部走 API 19 兼容的
+> 纯 JVM 逻辑,不引入现代文件系统 API。**这不是用户可见/已部署的行为:**入站请求路由、
+> `status.cache_summary` 发射、broker/P2P 回传、Flutter UI、以及 `hello.capabilities`
+> 能力声明(`cache_cleanup_v1`)都属 Phase B,尚未接线。Kotlin 编译/真机验证仍需按
+> exact-SHA GitHub Actions 完成,本仓库不据此声称清理已上线。
+
 > **v1.15.3 诊断刷新：**设置页若先于异步 `PlayerService.onCreate` 打开，服务就绪边沿会触发一次完整诊断重绘，因此播放/缓存/错误/探针不再一直停留于 `service not ready`；平稳状态不会每秒重复 root daemon 探测。
 
 > **v1.15.2 导出完整性：**覆盖已存在的诊断文件时使用截断写入，避免旧文件更长时尾部残留；系统文档提供器若错误地返回成功但没有目标 Uri，设置页会明确显示失败，不再静默无响应。
@@ -178,6 +189,41 @@ prefetch barrier §21, remote self-update §23).
 - **§7 discovery** — UDP 8772 responder: verifies `discover`, unicasts a signed
   `announce`.
 
+## Cache-lifecycle cleanup core (Phase A, §25–§29 — core only, not wired)
+
+`app/src/main/kotlin/.../player/cache/` holds the proven-safe cache cleanup
+core, **behaviorally on par with the Windows player** (`windows_player/cache_*.py`)
+and frozen against the same cross-language fixture so the contract can't drift:
+
+- **`CacheHash.kt`** — `CacheHash.canonicalHash(playlist)` over **playback
+  semantics only** (§25), excluding `playlist_id`/`push_id` so a controller can
+  distinguish "same content / different generation" from a fork. Item order
+  matters; missing sha/duration normalize to empty; sha lower-cased. Its
+  `CacheHashTest` asserts the identical digest that the Python
+  `test_cache_hash.py` pins from `windows_player/tests/fixtures/playlist_canonical.json`.
+- **`CacheReferenceSnapshot.kt`** — resolves item id → physical `content_key`
+  and computes the **protection union** (§27): playing / active / prepared /
+  `last_task`-resume / inflight+`.part` / pin, plus **shared physical content**
+  referenced by any still-protected item. Playlist metadata history alone no
+  longer hard-pins an unreferenced blob (root-cause fix). `classifyItem` returns
+  a distinct `Kind`/reason with a defined precedence.
+- **`CacheCleanup.kt`** — one candidate planner for both `dry_run` (mutates
+  nothing) and commit; commit re-reads the adopted generation inside the cleanup
+  boundary and fails closed (`generation_mismatch` pre-plan, `generation_changed`
+  at delete). A committed destructive `request_id` is journaled in a bounded FIFO
+  (`JOURNAL_MAX = 128`, a `LinkedHashMap` with `removeEldestEntry`) so a repeat
+  replays the terminal result and never deletes twice. Structured per-item
+  `Deleted`/`Skipped`/`Failed` results, `freed_bytes` counted once per
+  `content_key`, `summary_after` — never an optimistic ACK.
+
+All pure JVM, **API 19-safe** (no modern-only filesystem APIs), so it unit-tests
+off-device. **Deliberate Phase B boundary (not done here, not user-visible):**
+inbound `cache_cleanup`/`cache_inventory` request routing in `PlayerService`,
+`status.cache_summary` emission, the broker/P2P return path, Flutter UI, and
+`hello.capabilities` advertisement of `cache_cleanup_v1` are all Phase B. Kotlin
+compilation and real-device verification still require exact-SHA GitHub Actions;
+this repo does not claim live cleanup is deployed.
+
 ## HMAC / canonical JSON alignment (the critical interop point)
 
 The signing string (§3) is
@@ -207,8 +253,14 @@ Standard single-module Gradle project (Gradle wrapper, AGP 8.6, Kotlin 1.9):
 ```bash
 ./gradlew assembleDebug      # → app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease    # → app/build/outputs/apk/release/app-release-unsigned.apk
-./gradlew testDebugUnitTest  # JVM unit tests (envelope/clock/range math)
+./gradlew testDebugUnitTest  # JVM unit tests (envelope/clock/range math, cache/*)
 ```
+
+> On an arm64 build host the Maven-distributed aapt2 is x86_64 and can't exec, so
+> `testDebugUnitTest` needs the SDK's arm64 aapt2. Supply it **environmentally**
+> (`~/.gradle/gradle.properties` or `-Pandroid.aapt2FromMavenOverride=<sdk>/build-tools/<ver>/aapt2`) —
+> it is intentionally **not** committed to `gradle.properties` because the absolute
+> path would break x86_64 CI and developer machines (see the note in that file).
 
 - `minSdk 19` (Android 4.4.2 — §6, fixes `INSTALL_FAILED_OLDER_SDK` on the
   target 1688 外贸盒), `targetSdk 34` (modern-OS runtime behavior), `compileSdk 35`.

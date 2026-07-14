@@ -1,5 +1,23 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.15.3 (Phase A cache-lifecycle core — protocol + core only, not wired):**
+> `protocol_spec.md` gains an **additive, legacy-safe** cache-lifecycle contract
+> (§25–§29): a canonical playback-only playlist hash, an optional
+> `status.cache_summary`, and the `cache_cleanup` / `cache_inventory` /
+> `structured_health` message shapes with new `hello.capabilities`
+> (`cache_cleanup_v1` etc.). Both players ship the **proven-safe cleanup core**
+> that backs it — Windows (`windows_player/cache_*.py`) and Android
+> (`android_apps/player/.../cache/`) are byte-for-byte equivalent and frozen
+> against one shared fixture: canonical hash, protection union (playing/active/
+> prepared/resume/inflight/pin/shared-blob), one planner for dry-run and commit,
+> generation fail-closed, bounded-FIFO `request_id` idempotency, and structured
+> per-item results. The player is the sole authority for physical deletion and
+> accepts item ids, never paths. **This is not live or user-visible:** request
+> routing, status emission, the broker/P2P return path, Flutter UI, and
+> capability advertisement are Phase B; Android compile/device verification
+> remain exact-SHA cloud-CI gates. Playlist/status compatibility is preserved —
+> old ends ignore the additive fields.
+
 > **v1.15.3:** The Flutter controller now reads the selected player's exact active playlist, current item and loop mode, shows/reorders/deletes/appends that ordered list, and applies it back to that device while preserving cache files and current-item identity during edits. Legacy players cannot inherit another device's stale draft. Android Player settings diagnostics also refresh once when the asynchronously started service becomes available, eliminating stale `service not ready` text while avoiding repeated root-daemon probes.
 
 > **v1.15.2:** Android Player diagnostic export now truncates an existing document selected for overwrite and visibly reports a malformed document-provider result with no destination Uri.

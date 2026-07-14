@@ -1,5 +1,15 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.15.3 Phase A — 缓存清理内核(仅内核,未接线):**新增经证明安全的缓存清理
+> 内核 `cache_hash.py` / `cache_refs.py` / `cache_cleanup.py`,与 Android
+> (`android_apps/player/.../cache/`) **协议等价、逐字节同构**(见
+> [`../protocol_spec.md`](../protocol_spec.md) §25–§29)。当前仅落地纯逻辑核心与测试:
+> canonical 节目单哈希、引用快照/保护并集、dry-run/commit 同一规划器、代次
+> fail-closed、`request_id` 幂等(有界 FIFO 日志,上限 128)、结构化逐项结果。
+> **这不是用户可见/已部署的行为:**请求路由、`status` 摘要发射、broker/P2P 回传、
+> Flutter UI、以及 `hello.capabilities` 能力声明都属 Phase B,尚未接线。不得据此
+> 声称清理已上线。
+
 > **v1.15.0:** playlist `replace` 回显控制端生成的唯一 `push_id`，使同一 `playlist_id` 重推也有明确任务边界；下载阶段 `status.cache` 最多 99%，仅在 SHA-256/尺寸校验和原子落盘完成后上报 `ready`(100%)。空 `replace` 清空活动列表、停止播放器并回到黑屏占位。
 
 Python + **mpv** player (被控端) for the LAN Media Wall. Connects to the broker
@@ -98,6 +108,50 @@ the `last_task` used for crash/reboot recovery.
   minimum this app hides the taskbar and keeps mpv fullscreen-topmost so the
   desktop is never exposed (§11).
 
+## Cache-lifecycle cleanup core (Phase A, §25–§29 — core only, not wired)
+
+Three pure modules implement the proven-safe cache cleanup contract. They are
+**byte-for-byte equivalent** to the Kotlin core in `android_apps/player`; both
+sides are frozen against the same fixture so the contract can't drift silently.
+They are **not** yet connected to any live request path — see the boundary note
+at the end.
+
+- **`cache_hash.py`** — `canonical_playlist_hash(playlist)` =
+  `sha256(canonical_playlist_string(...))` over **playback semantics only**
+  (§25). Excludes `playlist_id` and `push_id` so a controller can tell
+  "same content / different generation" from a genuine fork. Item order is part
+  of the hash; missing sha/duration normalize to empty, sha is lower-cased.
+  The frozen cross-language value lives in
+  `tests/fixtures/playlist_canonical.json` and both language test suites assert
+  the same digest — changing the rule is a protocol change requiring both
+  fixtures to move together.
+- **`cache_refs.py`** — `CacheReferenceSnapshot` resolves each item id to a
+  physical `content_key` and computes the **protection union** (§27): playing /
+  active / prepared / `last_task`-resume / inflight+`.part` / explicit pin, and
+  **shared physical content** referenced by any still-protected item. Playlist
+  *metadata* history alone no longer hard-pins an otherwise unreferenced blob
+  (the root-cause fix — metadata retention is decoupled from media references).
+  Skip reasons are distinct wire-facing constants with a defined precedence
+  (`PLAYING > ACTIVE > …`).
+- **`cache_cleanup.py`** — `CacheCleanup` runs one **candidate planner** for
+  both `dry_run` (reports candidates, mutates nothing) and commit. `commit`
+  re-reads the adopted generation *inside* the cleanup boundary: an
+  `expected_push_id` mismatch fails closed before planning
+  (`generation_mismatch`); a generation that moves between plan and delete
+  aborts deleting nothing stale (`generation_changed`). A committed destructive
+  `request_id` is journaled in a **bounded FIFO (max 128)** so a repeated
+  terminal request replays the original result (`idempotent_replay:true`) and
+  never deletes twice. Results are structured per-item
+  (`deleted` / `skipped` / `failed` with distinct reasons, `freed_bytes` counted
+  once per physical `content_key`, `summary_after`) — never an optimistic ACK.
+
+**Deliberate Phase B boundary (not done here, not user-visible):** inbound
+`cache_cleanup` / `cache_inventory` request routing, `status.cache_summary`
+emission, the broker/P2P return path, Flutter UI, and `hello.capabilities`
+advertisement of `cache_cleanup_v1` are all Phase B. This slice is the proven
+dual-language core and its safety semantics only; nothing about live cleanup is
+deployed.
+
 ## Tests
 
 ```powershell
@@ -109,7 +163,11 @@ replay/staleness/dedup, clock offset (min-rtt) + `play_at` folding, download
 Range math + sha256 + cache-state rendering, thumbnail scaling, and state
 persistence. `test_configure_and_barrier.py` covers the v1.4 `configure_device`
 targeting/persistence and the §21 prefetch barrier (defer → ready-on-cache →
-timeout). mpv/win32 paths are import-guarded so the suite runs on any OS.
+timeout). `test_cache_hash.py` / `test_cache_refs.py` / `test_cache_cleanup.py`
+cover the Phase A cleanup core above: the frozen canonical hash, the protection
+union (including shared-blob and metadata-only cases), dry-run vs commit,
+generation fail-closed, and `request_id` idempotency. mpv/win32 paths are
+import-guarded so the suite runs on any OS.
 
 ## Platform notes
 
