@@ -12,6 +12,7 @@ import os
 import ssl
 import sys
 import time
+from collections import OrderedDict
 from typing import Dict, List, Optional, Set
 
 import websockets
@@ -173,6 +174,11 @@ class Hub:
         self.controllers: Dict[str, ClientConn] = {}   # controller_id -> conn
         self._wall_dirty = True
         self._cooldowns: Dict[str, float] = {}          # ip -> until epoch s
+        # §27/§28 role-security req #6: results are UNICAST to the controller
+        # that initiated the request, never broadcast. Bounded FIFO map keyed by
+        # request_id -> initiating controller_id. A result for an unknown/expired
+        # request_id is dropped (not fanned to every controller).
+        self._cache_req_origin: "OrderedDict[str, str]" = OrderedDict()
         self.discovery: Optional[discovery_mod.Discovery] = None
         self.media: Optional[media_mod.MediaServer] = None
 
@@ -365,6 +371,12 @@ class Hub:
             "download_logs": self._on_route_to_players,
             "diagnostic_status": self._on_relay_to_controllers,
             "download_logs_result": self._on_relay_to_controllers,
+            # §27/§28 cache lifecycle: requests fan controller->player; results
+            # unicast player->initiating controller (role-safe, no broadcast).
+            "cache_cleanup": self._on_cache_request,
+            "cache_inventory": self._on_cache_request,
+            "cache_cleanup_result": self._on_cache_result,
+            "cache_inventory_result": self._on_cache_result,
             "ack": self._on_ack,
             "error": self._on_error,
         }.get(mtype)
@@ -745,6 +757,61 @@ class Hub:
             return
         fwd = self.make_env(env["type"], env["payload"], "all")
         await self.broadcast_controllers(fwd)
+
+    # ---- §27/§28 cache cleanup / inventory (role-safe, unicast result) ---
+    _CACHE_REQ_ORIGIN_MAX = 512  # bounded FIFO (idempotency/correlation req #5)
+
+    def _remember_cache_origin(self, request_id: str, controller_id: str) -> None:
+        if not request_id or not controller_id:
+            return
+        self._cache_req_origin[request_id] = controller_id
+        self._cache_req_origin.move_to_end(request_id)
+        while len(self._cache_req_origin) > self._CACHE_REQ_ORIGIN_MAX:
+            self._cache_req_origin.popitem(last=False)
+
+    async def _on_cache_request(self, conn: ClientConn, env: dict) -> None:
+        """controller->player cache_cleanup / cache_inventory. Records the
+        initiating controller so the terminal result can be unicast back to it,
+        then fans out to the addressed player(s). Player-forged requests are
+        rejected by the role guard."""
+        if conn.role != "controller":
+            return
+        p = env["payload"]
+        request_id = p.get("request_id")
+        if request_id:
+            self._remember_cache_origin(str(request_id), conn.ident or "")
+        to = env.get("to")
+        if not to or router.parse_addr(to)[0] not in ("all", "player", "group"):
+            if p.get("device_id"):
+                to = f"player:{p['device_id']}"
+            elif p.get("group_id"):
+                to = f"group:{p['group_id']}"
+            else:
+                to = "all"
+        fwd = self.make_env(env["type"], p, to)
+        await self.fanout_players(to, fwd)
+
+    async def _on_cache_result(self, conn: ClientConn, env: dict) -> None:
+        """player->controller cache_cleanup_result / cache_inventory_result.
+        UNICAST to the controller that initiated request_id (role-security
+        req #6 — direct results only to the initiator, never broadcast).
+        Controller-forged results are rejected; a result whose request_id has no
+        recorded origin (unknown/expired/late old session) is dropped."""
+        if conn.role != "player":
+            return
+        request_id = env["payload"].get("request_id")
+        controller_id = self._cache_req_origin.get(str(request_id)) \
+            if request_id else None
+        if controller_id is None:
+            return  # no known initiator → drop, do not broadcast
+        target = self.controllers.get(controller_id)
+        if target is None:
+            return  # initiating controller gone; nothing to deliver
+        fwd = self.make_env(env["type"], env["payload"], f"controller:{controller_id}")
+        try:
+            await target.send_env(fwd)
+        except Exception:
+            pass
 
     # ---- background loops ------------------------------------------------
     async def wall_loop(self) -> None:
