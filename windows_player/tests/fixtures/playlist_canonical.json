@@ -1,0 +1,31 @@
+{
+  "type": "playlist",
+  "playlist_id": "pl-frozen-001",
+  "push_id": "push-should-not-count",
+  "group_id": "lobby",
+  "sync": true,
+  "loop": true,
+  "loop_mode": "all",
+  "items": [
+    {
+      "item_id": "item-a",
+      "type": "video",
+      "name": "opening.mp4",
+      "url": "http://media.example/opening.mp4",
+      "size": 10485760,
+      "sha256": "AA11BB22CC33DD44EE55FF6600112233445566778899AABBCCDDEEFF0011AABB",
+      "duration_ms": 30000,
+      "loop": false
+    },
+    {
+      "item_id": "item-b",
+      "type": "image",
+      "name": "poster.png",
+      "url": "http://media.example/poster.png",
+      "size": 204800,
+      "sha256": "ff00ee11dd22cc33bb44aa5566778899001122334455667788990011223344ff",
+      "duration_ms": 8000,
+      "loop": true
+    }
+  ]
+}

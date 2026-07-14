@@ -718,3 +718,125 @@ force-stop App)→ 仅在 pm 回 `Success` 时 `RESTART_APP` 重新拉起 App。
 - P2P 协调端没有 broker 聚合层,但仍必须显式处理 `download_logs_result` / `diagnostic_status` 入站类型并调用控制端状态层回调;落入 unknown/default 等同丢包。
 - controller 必须按 `device_id` 维护 pending 请求并设置超时释放;player 必须在失败时也回 `ok:false,error:<reason>` 或写入本地日志,避免永久挂起。
 > 当前状态：legacy 更新激活与单解码器循环边界遮罩的机制实现已完成；云编译和 QZX 真机验证待完成。不得据此声称视觉故障已在真机解决。
+
+---
+
+# v1.15.3 增补 — 缓存生命周期契约(cache cleanup / inventory / canonical hash / structured health)
+
+> **纯加法。** `v` 仍声明为 `1`,实现可声明 minor=15、patch=3。所有字段可选;
+> 老控制端忽略未知字段,老播放端不支持时控制端**禁用清理并提示升级**,绝不用
+> 「发了没回应」冒充成功。新增能力经 `hello.capabilities` 声明:
+> `cache_cleanup_v1`、`cache_inventory_v1`、`group_playlist_hash_v1`、`structured_health_v1`。
+>
+> **删除权威**:只有播放端能决定物理删除。控制端**永不**传任意远程路径;删除按
+> **内容身份**(`content_key`)去重,由播放端本地把 item 身份解析为物理内容。
+
+## 25. canonical 语义节目单哈希 (`group_playlist_hash_v1`)
+
+`playlist_content_hash` = `sha256(canonical_playlist_string)`,canonical 输入**只含
+播放语义**、跨语言逐字节一致(Python `cache_hash.py` / Kotlin `CacheHash.kt` 同一实现,
+Dart 控制端对缺失 hash 的老设备用同一规则本地计算):
+
+```
+lmw-playlist-hash-v1\n
+loop_mode=<none|all|one>\n           # §6.3 单一折叠点:canonical loop_mode 优先,否则 legacy loop→all/none
+sync=<true|false>\n
+count=<N>\n
+item\turl=<url>\tsha256=<lowerhex|>\tdur=<ms|>\tloop=<true|false>\n   # 每 item 一行,保持有序
+...
+```
+
+- **排除** `playlist_id`(可复用)与 `push_id`(每次 replace 的代次身份)——因此控制端可
+  区分「同内容/异代次」与「分叉」。
+- sha256 大小写不敏感(规范化为小写);缺失 sha/duration 规范化为空串,不报错。
+- item 顺序参与哈希(顺序不同即分叉)。空列表也产生稳定哈希。
+
+冻结夹具 `windows_player/tests/fixtures/playlist_canonical.json` 的钉死值为
+`9a5fe39de03984139f34a1127fb7ba9edfbdd6fce582d3417e3e550a1ffec072`;Python 与 Kotlin
+两套测试断言同一值。规则变更即协议变更,两端夹具必须同步改。
+
+## 26. `status.cache_summary` (轻量缓存摘要,可选)
+
+`status.cache`(§5.1 的 `item_id→字符串` 进度 map)保持不变。额外可选加轻量摘要,
+供设备墙展示总量/可回收/受保护,不承载完整清单:
+
+```json
+"cache_summary": {
+  "ready_items": 5, "total_bytes": 734003200,
+  "reclaimable_items": 3, "reclaimable_bytes": 524288000,
+  "protected_items": 2, "inflight_items": 0,
+  "last_cleanup_at": 0, "last_cleanup_error": ""
+}
+```
+
+完整逐项清单不进周期性 status,按需用 §28 `cache_inventory` 拉取。
+
+## 27. `cache_cleanup` / `cache_cleanup_result` (`cache_cleanup_v1`)
+
+**方向**:`cache_cleanup` controller→(broker/P2P)→player;`cache_cleanup_result`
+player→(broker/P2P)→controller。这是**异步 I/O 命令**——播放端**不发**乐观通用 `ack`,
+完成后只回专用结构化结果(避免把「路由接受」冒充「文件已删」)。
+
+请求 `cache_cleanup.payload`:
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `request_id` | string | **幂等键**。已完成的销毁性 request_id 重复请求返回原终态结果,绝不二次删除。 |
+| `mode` | `"unreferenced"` \| `"selected"` | 全部未引用 / 指定若干。 |
+| `item_ids` | string[] | 仅 `selected`。**只接受 item ID,不接受路径。** |
+| `dry_run` | bool | true=仅规划,回候选,**不动磁盘/索引**。 |
+| `expected_push_id` | string | 可选;应用后清理时必填。与当前采纳代次不符→整单 `generation_mismatch`,不删任何文件。 |
+| `reason` | `manual`\|`after_playlist_replace`\|`quota` | 触发来源。 |
+
+结果 `cache_cleanup_result.payload`:
+
+```json
+{
+  "request_id":"...", "device_id":"...", "ok":true, "error":"",
+  "dry_run":false, "mode":"unreferenced",
+  "expected_push_id":"...", "observed_push_id":"...",
+  "deleted":[ {"item_id":"x","content_key":"sha256:...","bytes":1234} ],
+  "skipped":[ {"item_id":"y","reason":"active|prepared|playing|last_task|inflight|shared_content|not_found|pinned"} ],
+  "failed":[ {"item_id":"z","reason":"delete_failed"} ],
+  "freed_bytes":1234,
+  "summary_after":{"ready_items":2,"total_bytes":1000,"reclaimable_bytes":0}
+}
+```
+
+**保护并集(硬约束,两端等价)**:当前播放源、active 节目单、已 prepare 未切换代次、
+有效 `last_task`/恢复态、下载/校验中/`.part`、显式 pin,以及**被另一受保护 item 引用的
+共享物理内容**都不可删。历史节目单元数据**单独**不再永久固定媒体(根因修复:解耦
+playlist 元数据保留与媒体硬引用)。
+
+**代次失败关闭(fail-closed)**:`expected_push_id` 在**规划前**校验(不符→`generation_mismatch`);
+提交阶段在清理同步边界内**再次**读取当前代次,若已变化→`generation_changed`,**不删任何陈旧文件**。
+plan/dry-run 与 commit 用**同一候选规划器**。
+
+**幂等 + 有界日志**:`request_id` 的终态结果记入有界日志(FIFO 上限,实现内定,当前 128 条),
+重复请求原样返回、`idempotent_replay:true`;dry-run 非销毁、不记账。
+
+**错误区分**:`not_found`(文件已不在)、`delete_failed`(删除失败)、各保护原因彼此独立,
+不混为一类。`freed_bytes` 按物理 `content_key` 只计一次(多 item 共享同一 blob 不重复计)。
+
+**兼容 / 转发(Phase B 落地)**:broker 只允许 `cache_cleanup` controller→player、
+`cache_cleanup_result` player→controller,并做反伪造角色校验;P2P 显式处理两种入站类型。
+未支持 `cache_cleanup_v1` 的老播放端:控制端禁用清理按钮并提示升级。
+
+## 28. `cache_inventory` / `cache_inventory_result` (`cache_inventory_v1`,可选详情)
+
+用户打开设备缓存详情时才请求;回包每项含
+`item_id / content_key / bytes / state / protection_reasons / last_access_ms`。
+避免每 1–2s 状态帧传完整清单。方向与角色校验同 §27。
+
+## 29. 结构化健康 (`structured_health_v1`,可选)
+
+`status.health` 结构化上报,替代让控制端解析诊断文本:
+
+```json
+"health": {
+  "root_daemon": {"state":"ready|uid_missing|unreachable|not_supported","detail":"..."},
+  "transport": {"application_ready": true, "last_close_code": 1002, "last_close_reason":"..."}
+}
+```
+
+老设备无该字段时控制端降级为 legacy/incomplete,**不误判为一致或健康**。
