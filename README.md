@@ -1,6 +1,6 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
-> **v1.15.3:** Android Player settings diagnostics now refresh once when the asynchronously started service becomes available, eliminating stale `service not ready` text while avoiding repeated root-daemon probes.
+> **v1.15.3:** The Flutter controller now reads the selected player's exact active playlist, current item and loop mode, shows/reorders/deletes/appends that ordered list, and applies it back to that device while preserving cache files and current-item identity during edits. Legacy players cannot inherit another device's stale draft. Android Player settings diagnostics also refresh once when the asynchronously started service becomes available, eliminating stale `service not ready` text while avoiding repeated root-daemon probes.
 
 > **v1.15.2:** Android Player diagnostic export now truncates an existing document selected for overwrite and visibly reports a malformed document-provider result with no destination Uri.
 

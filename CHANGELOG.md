@@ -2,6 +2,7 @@
 
 ## [v1.15.3] — 2026-07-14
 
+- The Flutter controller now imports a selected player's exact active playlist, current item and loop mode into the editable draft. Both the orchestration pane and the per-device push dialog show the active item, support safe reorder/delete/append, preserve current-item identity while reordering, and apply the ordered list plus explicit loop mode back to that device without deleting cached media. Selecting a legacy player that does not report `active_playlist` clears the prior device draft instead of risking a stale cross-device apply; uploads cannot dismiss/dispose the dialog mid-flight.
 - Fixed stale Android Player settings diagnostics: if the settings Activity renders before `PlayerService.onCreate`, the one-second status loop now detects the service-availability edge and refreshes playback/cache/error/probe fields once. A live service no longer leaves the screen stuck on `service not ready`; root-daemon probes are not repeated every tick.
 
 ## [v1.15.2] — 2026-07-14
