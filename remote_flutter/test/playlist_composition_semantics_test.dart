@@ -14,7 +14,7 @@ void main() {
       playlistId: 'pl',
       groupId: 'default',
       sync: false,
-      loop: false,
+      loopMode: LoopMode.none,
       items: [item],
     );
     expect(payload['mode'], 'append');
@@ -25,7 +25,7 @@ void main() {
       playlistId: 'pl',
       groupId: 'default',
       sync: false,
-      loop: false,
+      loopMode: LoopMode.none,
       items: [item],
       mode: 'replace',
     );

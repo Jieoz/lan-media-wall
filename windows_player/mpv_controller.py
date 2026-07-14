@@ -233,6 +233,12 @@ class MpvController:
     def set_pause(self, paused: bool) -> None:
         self.set_property("pause", bool(paused))
 
+    def set_loop_file(self, loop: bool) -> None:
+        """§6.3 repeat-one: mpv loops the current file inside its own decoder
+        (`loop-file=inf`) — seamless, single decoder, no reload seam. Cleared to
+        `no` for the other loop modes so eof-driven advance still fires."""
+        self.set_property("loop-file", "inf" if loop else "no")
+
     def stop(self) -> None:
         # clears the playlist; with --idle/--force-window mpv shows black, not
         # the desktop (§11)

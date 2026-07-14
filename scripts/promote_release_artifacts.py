@@ -51,6 +51,12 @@ ARTIFACTS = (
         "Player-Windows-Setup",
         ".exe",
     ),
+    (
+        "lan-media-wall-controller-windows",
+        "*.zip",
+        "Controller-Windows-x64",
+        ".zip",
+    ),
 )
 
 
@@ -109,6 +115,33 @@ def _normalise_cert(value: str) -> str:
     return re.sub(r"[^0-9a-f]", "", value.lower())
 
 
+# Flutter `flutter build apk --split-per-abi` derives a per-ABI versionCode of
+# `abiOffset + baseBuild` so each split APK carries a distinct, monotonically
+# comparable code on the Play Store. These are Flutter's built-in offsets
+# (flutter.gradle: armeabi-v7a=1, arm64-v8a=2, x86_64=4, each *1000). The native
+# Android Player is NOT split-per-abi, so its APK uses the raw build number.
+# Real v1.14.13 CI artifacts confirmed this: player=61, controllers=1061/2061/4061.
+_ABI_VERSION_CODE_OFFSET = {
+    "armeabi-v7a": 1000,
+    "arm64-v8a": 2000,
+    "x86_64": 4000,
+}
+
+
+def _expected_version_code(apk_name: str, build: int) -> int:
+    """Expected versionCode for one APK, from its ABI marker in the filename.
+
+    Split controller APKs are named e.g. ``app-arm64-v8a-release.apk`` and get
+    the Flutter ABI offset; the non-split player APK (``app-release.apk``) has
+    no ABI marker and keeps the raw build number.
+    """
+    matched = [abi for abi in _ABI_VERSION_CODE_OFFSET if abi in apk_name]
+    if len(matched) > 1:
+        raise ValueError(f"{apk_name}: ambiguous ABI markers {sorted(matched)}")
+    offset = _ABI_VERSION_CODE_OFFSET[matched[0]] if matched else 0
+    return offset + build
+
+
 def verify_android_apks(
     source: Path,
     *,
@@ -131,15 +164,17 @@ def verify_android_apks(
     if not apks:
         raise ValueError("no Android APKs found for internal verification")
     for apk in apks:
+        expected_code = _expected_version_code(apk.name, build)
         badging = runner([aapt2, "dump", "badging", str(apk)], check=True,
                          text=True, capture_output=True).stdout
         metadata = re.search(
             r"^package:.*versionCode='(\d+)'.*versionName='([^']+)'", badging,
             re.MULTILINE,
         )
-        if not metadata or metadata.group(2) != version or int(metadata.group(1)) != build:
+        if not metadata or metadata.group(2) != version or int(metadata.group(1)) != expected_code:
             raise ValueError(
-                f"{apk}: versionName/versionCode mismatch; expected {version}/{build}"
+                f"{apk}: versionName/versionCode mismatch; "
+                f"expected {version}/{expected_code}"
             )
         certs = runner([apksigner, "verify", "--print-certs", str(apk)], check=True,
                        text=True, capture_output=True).stdout

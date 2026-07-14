@@ -51,6 +51,15 @@ class MediaStore(context: Context) {
         }
     }
 
+    /** Empty REPLACE invalidates this playlist identity as well as active state. */
+    fun deletePlaylist(playlistId: String) {
+        val order = recentIds().filterNot { it == playlistId }
+        prefs.edit()
+            .remove(playlistKey(playlistId))
+            .putString(KEY_RECENT_PLAYLISTS, order.joinToString(SEP))
+            .apply()
+    }
+
     private fun playlistKey(id: String) = "playlist:$id"
 
     /** Recorded playlist ids, most-recent-first. Empty when none stored yet. */

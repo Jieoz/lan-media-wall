@@ -26,6 +26,10 @@ package com.jieoz.lanmediawall.player.cache
  */
 object PlaylistOps {
 
+    /** Empty REPLACE is the wire-level CLEAR command; APPEND-empty is a no-op. */
+    fun isClear(mode: Mode, incoming: List<MediaItem>): Boolean =
+        mode == Mode.REPLACE && incoming.isEmpty()
+
     enum class Mode {
         /** Swap the active sequence for the incoming items (legacy default). */
         REPLACE,

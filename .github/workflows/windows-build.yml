@@ -242,3 +242,76 @@ jobs:
           name: lan-media-wall-player-windows-setup
           path: installer_out/lan-media-wall-player-setup.exe
           if-no-files-found: error
+
+  # The desktop controller is the shared Flutter controller, not the Python/mpv
+  # player above. Generate its platform scaffold in CI and publish a separate,
+  # self-contained immutable bundle.
+  controller:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.24.5
+          cache: true
+
+      - name: Generate Windows controller scaffold
+        working-directory: remote_flutter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "windows")) {
+            flutter create --platforms=windows --project-name remote_flutter .
+          }
+
+          $cmake = "windows/CMakeLists.txt"
+          $text = Get-Content $cmake -Raw
+          $text = $text -replace 'set\(BINARY_NAME "remote_flutter"\)', 'set(BINARY_NAME "lan-media-wall-controller")'
+          Set-Content -Path $cmake -Value $text -Encoding UTF8
+          if (-not (Select-String -Path $cmake -SimpleMatch 'set(BINARY_NAME "lan-media-wall-controller")')) {
+            throw "failed to set Windows controller binary identity"
+          }
+
+          $runner = "windows/runner/main.cpp"
+          $runnerText = Get-Content $runner -Raw
+          $runnerText = $runnerText -replace 'L"remote_flutter"', 'L"LAN Media Wall Controller"'
+          Set-Content -Path $runner -Value $runnerText -Encoding UTF8
+
+      - name: Resolve packages
+        working-directory: remote_flutter
+        run: flutter pub get
+
+      - name: Build Windows controller
+        working-directory: remote_flutter
+        run: >-
+          flutter build windows --release
+          --dart-define=LMW_DISABLE_SCANNER=true
+          --dart-define=LMW_DISABLE_QR=true
+          --dart-define=LMW_PRODUCT_NAME=LAN Media Wall Windows Controller
+
+      - name: Verify and package controller bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bundle = "remote_flutter/build/windows/x64/runner/Release"
+          $exe = Join-Path $bundle "lan-media-wall-controller.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Windows controller executable missing: $exe"
+          }
+          if (Test-Path "controller_out") { Remove-Item "controller_out" -Recurse -Force }
+          New-Item -ItemType Directory -Path "controller_out" | Out-Null
+          Compress-Archive -Path "$bundle/*" -DestinationPath "controller_out/lan-media-wall-controller-windows.zip" -CompressionLevel Optimal
+          if ((Get-Item "controller_out/lan-media-wall-controller-windows.zip").Length -le 0) {
+            throw "Windows controller archive is empty"
+          }
+
+      - name: Upload Windows controller artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-controller-windows
+          path: controller_out/lan-media-wall-controller-windows.zip
+          if-no-files-found: error

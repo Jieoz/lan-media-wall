@@ -4,7 +4,10 @@
 /// 入站数据（wall / status / thumb_meta）由对应 model 的 fromMap 解析。
 library;
 
+import 'loop_mode.dart';
 import 'remote_endpoint.dart';
+
+export 'loop_mode.dart' show LoopMode, LoopModeCodec;
 
 int _asInt(Object? v, [int def = 0]) =>
     v is num ? v.toInt() : (v is String ? int.tryParse(v) ?? def : def);
@@ -64,15 +67,20 @@ class ActivePlaylist {
   final String playlistId;
   final String groupId;
   final bool sync;
-  final bool loop;
+  final LoopMode loopMode;
   final List<MediaItem> items;
   const ActivePlaylist({required this.playlistId, required this.groupId,
-    required this.sync, required this.loop, required this.items});
+    required this.sync, required this.loopMode, required this.items});
+
+  /// Legacy accessor retained for callers that still think in booleans.
+  bool get loop => loopMode.legacyLoopBool;
+
   static ActivePlaylist? fromMap(Map<String, dynamic>? m) {
     if (m == null) return null;
     return ActivePlaylist(
       playlistId: _asStr(m['playlist_id']), groupId: _asStr(m['group_id']),
-      sync: _asBool(m['sync'], true), loop: _asBool(m['loop']),
+      sync: _asBool(m['sync'], true),
+      loopMode: LoopModeCodec.resolve(m), // §6.3 single fold point
       items: ((m['items'] as List?) ?? const []).whereType<Map>()
           .map((e) => MediaItem.fromMap(e.cast<String, dynamic>())).toList(),
     );
@@ -128,6 +136,9 @@ class DeviceStatus {
   final String state; // playing|paused|idle|buffering|downloading
   final CurrentItem? current;
   final String? playlistId;
+  /// Per-replace identity echoed by upgraded players after command adoption.
+  /// Unlike playlistId, this changes even when a playlist ID is reused.
+  final String? pushId;
   final ActivePlaylist? activePlaylist;
   /// §6.3 被控端在有序 active_playlist 中的当前位置与长度（播放器 additive 上报）。
   /// 老端不上报时为 null，UI 防御式处理。
@@ -157,6 +168,7 @@ class DeviceStatus {
     this.state = 'idle',
     this.current,
     this.playlistId,
+    this.pushId,
     this.activePlaylist,
     this.currentIndex,
     this.playlistCount,
@@ -185,6 +197,7 @@ class DeviceStatus {
       current:
           CurrentItem.fromMap((m['current'] as Map?)?.cast<String, dynamic>()),
       playlistId: m['playlist_id'] as String?,
+      pushId: m['push_id'] as String?,
       activePlaylist: ActivePlaylist.fromMap(
           (m['active_playlist'] as Map?)?.cast<String, dynamic>()),
       currentIndex: m['current_index'] == null ? null : _asInt(m['current_index']),
@@ -228,6 +241,7 @@ class DeviceStatus {
         state: state ?? this.state,
         current: current,
         playlistId: playlistId,
+        pushId: pushId,
         activePlaylist: activePlaylist,
         currentIndex: currentIndex,
         playlistCount: playlistCount,
@@ -414,20 +428,26 @@ class Commands {
   /// playlist 下发（§6.3）。[mode] 显式区分 append（控制端普通编排默认：按 item_id
   /// 去重合并到当前有序列表尾部，保留当前播放位置）与 replace（显式整列替换并从头播）。
   /// 老遥控端不带 mode 时播放器仍默认 replace（线协议向后兼容）。
+  /// [loopMode] is canonical (§6.3). During the compatibility window we also
+  /// emit the legacy boolean `loop = (mode != none)` so un-upgraded players
+  /// still wrap a looping list.
   static Map<String, dynamic> playlist({
     required String playlistId,
     required String groupId,
     required bool sync,
-    required bool loop,
+    required LoopMode loopMode,
     required List<MediaItem> items,
     String mode = 'append',
+    String? pushId,
   }) =>
       {
         'playlist_id': playlistId,
         'group_id': groupId,
         'sync': sync,
-        'loop': loop,
+        'loop_mode': loopMode.wire,
+        'loop': loopMode.legacyLoopBool,
         'mode': mode,
+        if (pushId != null && pushId.isNotEmpty) 'push_id': pushId,
         'items': items.map((e) => e.toMap()).toList(),
       };
 
@@ -440,6 +460,7 @@ class Commands {
     int startIndex = 0,
     int seekMs = 0,
     String? prepareId,
+    String? pushId,
     bool prefetch = false,
     int? barrierTimeoutMs,
     String? deviceId,
@@ -450,6 +471,7 @@ class Commands {
         'start_index': startIndex,
         'seek_ms': seekMs,
         if (prepareId != null && prepareId.isNotEmpty) 'prepare_id': prepareId,
+        if (pushId != null && pushId.isNotEmpty) 'push_id': pushId,
         if (prefetch) 'prefetch': true,
         if (barrierTimeoutMs != null) 'barrier_timeout_ms': barrierTimeoutMs,
         // §9.4b 单台推送：带 device_id 时 broker 只把这一台纳入 ready 会话并单发
@@ -464,6 +486,7 @@ class Commands {
     required int playAtMs,
     int startIndex = 0,
     int seekMs = 0,
+    String? pushId,
   }) =>
       {
         'playlist_id': playlistId,
@@ -471,6 +494,7 @@ class Commands {
         'start_index': startIndex,
         'seek_ms': seekMs,
         'play_at': playAtMs,
+        if (pushId != null && pushId.isNotEmpty) 'push_id': pushId,
       };
 
   /// time_sync_ack（§8.1）。p2p 模式下遥控端兼任主时钟，回应 player 的 time_sync。

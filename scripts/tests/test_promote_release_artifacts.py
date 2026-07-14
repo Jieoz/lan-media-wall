@@ -27,6 +27,7 @@ def _complete_artifacts(root: Path) -> None:
     _write(root, "lan-media-wall-controller-android-release/app-armeabi-v7a-release.apk", b"armv7")
     _write(root, "lan-media-wall-controller-android-release/app-x86_64-release.apk", b"x86")
     _write(root, "lan-media-wall-player-windows-setup/lan-media-wall-player-setup.exe", b"windows-player")
+    _write(root, "lan-media-wall-controller-windows/lan-media-wall-controller-windows-x64.zip", b"windows-controller")
 
 
 def test_validate_tag_matches_pubspec_version(tmp_path: Path) -> None:
@@ -39,7 +40,7 @@ def test_validate_tag_matches_pubspec_version(tmp_path: Path) -> None:
         MODULE.validate_tag("v1.13.9", pubspec)
 
 
-def test_promote_maps_exact_eight_assets_and_writes_checksums(tmp_path: Path) -> None:
+def test_promote_maps_exact_nine_assets_and_writes_checksums(tmp_path: Path) -> None:
     source = tmp_path / "artifacts"
     output = tmp_path / "release"
     _complete_artifacts(source)
@@ -53,12 +54,13 @@ def test_promote_maps_exact_eight_assets_and_writes_checksums(tmp_path: Path) ->
         "LANMediaWall-v1.13.10-Controller-ARM64-v8a.apk",
         "LANMediaWall-v1.13.10-Controller-ARMv7.apk",
         "LANMediaWall-v1.13.10-Controller-x86_64.apk",
+        "LANMediaWall-v1.13.10-Controller-Windows-x64.zip",
         "LANMediaWall-v1.13.10-Player-Android.apk",
         "LANMediaWall-v1.13.10-Player-Windows-Setup.exe",
         "LANMediaWall-v1.13.10-QZX-Update-Tools.zip",
     ])
     checksums = (output / "SHA256SUMS").read_text(encoding="ascii").splitlines()
-    assert len(checksums) == 8
+    assert len(checksums) == 9
     assert all("  LANMediaWall-v1.13.10-" in line for line in checksums)
 
 

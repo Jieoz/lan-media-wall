@@ -24,6 +24,8 @@ import config as config_mod
 import auth as auth_mod
 import topology as topology_mod
 import pairing as pairing_mod
+import playlist_ops as playlist_ops
+from loop_mode import LoopMode, resolve_loop_mode
 from clock import ClockSync, now_ms
 from downloader import Downloader
 from versioning import APP_VERSION
@@ -116,6 +118,9 @@ class Player:
         self._errors: List[str] = []
 
         self._play_task: Optional[asyncio.Task] = None
+        self._barrier_task: Optional[asyncio.Task] = None
+        self._resume_task: Optional[asyncio.Task] = None
+        self._restore_task: Optional[Any] = None
         # §6.3 carousel: pending "hold this image for duration_ms, then advance"
         # timer. Cancelled by any new prepare/play_at/advance/stop.
         self._dwell_task: Optional[asyncio.Task] = None
@@ -314,7 +319,10 @@ class Player:
         log.warning("mpv restarted (#%s) — resuming last task",
                     getattr(self.watchdog, "restarts", "?"))
         if self.loop is not None:
-            asyncio.run_coroutine_threadsafe(self._resume_last(), self.loop)
+            if self._restore_task and not self._restore_task.done():
+                self._restore_task.cancel()
+            self._restore_task = asyncio.run_coroutine_threadsafe(
+                self._resume_last(), self.loop)
         else:
             self._apply_idle_screen()
 
@@ -375,6 +383,13 @@ class Player:
             "state": self._effective_state(snap),
             "current": current,
             "playlist_id": self.playlist.get("playlist_id") if self.playlist else None,
+            # Per-replace identity; playlist_id itself may be reused.
+            "push_id": self.playlist.get("push_id") if self.playlist else None,
+            # §6.3a additive: position in the ordered active playlist + its
+            # length (old controllers ignore unknown fields).
+            "current_index": self.index if self.playlist else None,
+            "playlist_count": len(self.playlist.get("items", [])) if self.playlist else 0,
+            "loop_mode": resolve_loop_mode(self.playlist).value if self.playlist else None,
             "volume": int(snap.get("volume", self.volume) if snap else self.volume),
             "muted": bool(snap.get("muted", self.muted) if snap else self.muted),
             "audio_master": self.audio_master,
@@ -490,19 +505,59 @@ class Player:
 
     # --- §6.3 playlist -----------------------------------------------
     async def _h_playlist(self, payload, env) -> None:
-        self.playlist = payload
-        self.index = 0
-        self.state.store_playlist(payload)
-        # eagerly prefetch everything referenced
-        items = payload.get("items", [])
-        if items:
+        mode = playlist_ops.normalize_mode(payload.get("mode"))
+        items = payload.get("items", []) or []
+        if mode == playlist_ops.APPEND:
+            # §6.3a merge onto the tail, de-duped by item_id; existing indices
+            # never shift so current_index stays valid. Empty append = no-op.
+            if not items:
+                return
+            if not self.playlist:
+                # nothing active to append to → treat as a fresh replace
+                self.playlist = dict(payload)
+                self.index = 0
+            else:
+                merged = playlist_ops.merge_append(
+                    self.playlist.get("items", []), items)
+                self.playlist = {**self.playlist, "items": merged}
+            self.state.store_playlist(self.playlist)
             self.downloader.prefetch(items)
+            return
+        # replace (default). An empty replace is the CLEAR signal (§6.3a):
+        # clear active playlist + current state, enter idle/black, but never
+        # delete cached media inventory.
+        if not items:
+            await self._clear_active_playlist(str(payload.get("playlist_id") or ""))
+            return
+        self._cancel_session_tasks()
+        self.playlist = dict(payload)
+        self.index = 0
+        self.state.store_playlist(self.playlist)
+        self.downloader.prefetch(items)
         # sync=false → broker drives single-box play_at=now separately; we just
         # store. sync=true → wait for prepare/play_at.
 
+    async def _clear_active_playlist(self, playlist_id: str) -> None:
+        """§6.3a empty-replace CLEAR: stop playback, drop the active playlist and
+        current index/task, show the idle black/placeholder — cache inventory on
+        disk is deliberately left intact."""
+        active_playlist_id = (self.playlist or {}).get("playlist_id")
+        self._cancel_session_tasks()
+        await self._mpv("stop")
+        self._apply_idle_screen()
+        self.play_state = "idle"
+        for pid in {active_playlist_id, playlist_id} - {None, ""}:
+            self.state.delete_playlist(str(pid))
+        self.playlist = None
+        self.index = 0
+        self._persist_last_task(None, 0, 0)
+
     # --- §9.1 prepare -------------------------------------------------
     async def _h_prepare(self, payload, env) -> None:
+        if self._barrier_task and not self._barrier_task.done():
+            self._barrier_task.cancel()
         pid = payload.get("playlist_id")
+        push_id = payload.get("push_id")
         prepare_id = payload.get("prepare_id")
         group_id = payload.get("group_id")
         start_index = int(payload.get("start_index", 0))
@@ -512,6 +567,8 @@ class Player:
         prefetch_barrier = bool(payload.get("prefetch", False))
         barrier_timeout_ms = int(payload.get("barrier_timeout_ms", 120000))
         pl = self._resolve_playlist(pid)
+        if not pl or not push_id or pl.get("push_id") != push_id:
+            return
         ready = False
         self._cancel_dwell()  # §6.3: a new session voids any pending dwell
         if pl is not None:
@@ -587,11 +644,12 @@ class Player:
     # --- §9.2 play_at (the sync-critical path) -----------------------
     async def _h_play_at(self, payload, env) -> None:
         pid = payload.get("playlist_id")
+        push_id = payload.get("push_id")
         start_index = int(payload.get("start_index", self.index))
         seek_ms = int(payload.get("seek_ms", 0))
         play_at = int(payload.get("play_at", 0))
         pl = self._resolve_playlist(pid)
-        if pl is None:
+        if not pl or not push_id or pl.get("push_id") != push_id:
             return
         items = pl.get("items", [])
         if not (0 <= start_index < len(items)):
@@ -628,6 +686,9 @@ class Player:
         # video: ensure file is loaded & paused at seek (idempotent if prepare
         # did it), then unpause at the exact local instant.
         await self._mpv("play_paused", path, seek_ms=seek_ms)
+        # §6.3 ONE: seamless in-decoder repeat; other modes advance on eof.
+        await self._mpv("set_loop_file",
+                        resolve_loop_mode(self.playlist) is LoopMode.ONE)
         await self._await_local(self.clock.to_local(play_at))
         await self._mpv("set_pause", False)
         self.play_state = "playing"
@@ -652,26 +713,41 @@ class Player:
     async def _h_pause(self, payload, env) -> None:
         if not self._targets_me(payload):
             return
+        if self._resume_task and not self._resume_task.done():
+            self._resume_task.cancel()
         await self._mpv("set_pause", True)
         self.play_state = "paused"
 
     async def _h_resume(self, payload, env) -> None:
         if not self._targets_me(payload):
             return
+        if self._resume_task and not self._resume_task.done():
+            self._resume_task.cancel()
         play_at = payload.get("play_at")
         if play_at:
-            local_target = self.clock.to_local(int(play_at))
-            delay = max(0, local_target - now_ms())
-            await asyncio.sleep(delay / 1000.0)
+            self._resume_task = asyncio.create_task(
+                self._scheduled_resume(self.clock.to_local(int(play_at))))
+            return
         await self._mpv("set_pause", False)
         self.play_state = "playing"
+
+    async def _scheduled_resume(self, local_target: int) -> None:
+        await self._await_local(local_target)
+        await self._mpv("set_pause", False)
+        self.play_state = "playing"
+
+    def _cancel_session_tasks(self) -> None:
+        current = asyncio.current_task()
+        for task in (self._play_task, self._barrier_task, self._resume_task,
+                     self._restore_task):
+            if task is not None and task is not current and not task.done():
+                task.cancel()
+        self._cancel_dwell()
 
     async def _h_stop(self, payload, env) -> None:
         if not self._targets_me(payload):
             return
-        if self._play_task and not self._play_task.done():
-            self._play_task.cancel()
-        self._cancel_dwell()
+        self._cancel_session_tasks()
         await self._mpv("stop")
         self._apply_idle_screen()
         self.play_state = "idle"
@@ -680,27 +756,39 @@ class Player:
     async def _h_next(self, payload, env) -> None:
         if not self._targets_me(payload):
             return
-        await self._advance(+1)
+        await self._advance(+1, explicit=True)
 
     async def _h_prev(self, payload, env) -> None:
         if not self._targets_me(payload):
             return
-        await self._advance(-1)
+        await self._advance(-1, explicit=True)
 
-    async def _advance(self, delta: int) -> None:
+    async def _advance(self, delta: int, explicit: bool = False) -> None:
+        """§6.3 progression. `explicit` distinguishes a user prev/next from an
+        automatic EOF/dwell completion. LoopMode:
+          - NONE: completion holds; explicit prev/next clamps at the ends.
+          - ALL : both wrap around the whole list.
+          - ONE : completion repeats the current item (seamless, no move);
+                  explicit prev/next still navigates with wrap.
+        """
         if not self.playlist:
             return
         items = self.playlist.get("items", [])
         if not items:
             return
         self._cancel_dwell()  # §6.3: never let dwell timers stack
-        loop = bool(self.playlist.get("loop", False))
-        new_index = self.index + delta
-        if new_index < 0 or new_index >= len(items):
-            if loop:
-                new_index %= len(items)
-            else:
-                return
+        mode = resolve_loop_mode(self.playlist)
+        # ONE, on automatic completion, re-shows the current item seamlessly.
+        if mode is LoopMode.ONE and not explicit:
+            new_index = self.index
+        else:
+            wrap = mode is LoopMode.ALL or (mode is LoopMode.ONE and explicit)
+            new_index = self.index + delta
+            if new_index < 0 or new_index >= len(items):
+                if wrap:
+                    new_index %= len(items)
+                else:
+                    return  # NONE clamps at the boundary
         self.index = new_index
         item = items[new_index]
         path = self.downloader.ready_path(item["item_id"]) or item.get("url")
@@ -714,6 +802,9 @@ class Player:
             self._arm_dwell(item)
         else:
             await self._mpv("loadfile", str(path), "replace")
+            # §6.3 ONE: let mpv loop the file inside its own decoder (seamless,
+            # no reload/seam, single decoder). Other modes advance on eof.
+            await self._mpv("set_loop_file", mode is LoopMode.ONE)
             await self._mpv("set_pause", False)
             self.play_state = "playing"
         self._persist_last_task(self.playlist.get("playlist_id"),
@@ -833,7 +924,7 @@ class Player:
             return self.playlist
         if pid and pid in self.state.playlists:
             return self.state.playlists[pid]
-        return self.playlist  # best effort
+        return None
 
     def _current_item(self) -> Optional[Dict[str, Any]]:
         if not self.playlist:
@@ -884,6 +975,8 @@ class Player:
             self._arm_dwell(item)
             return
         await self._mpv("loadfile", str(path), "replace")
+        await self._mpv("set_loop_file",
+                        resolve_loop_mode(self.playlist) is LoopMode.ONE)
         await self._mpv("seek_abs_ms", int(task.get("seek_ms", 0)))
         await self._mpv("set_pause", False)
         self.play_state = "playing"

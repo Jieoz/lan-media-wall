@@ -221,7 +221,7 @@ void main() {
         playlistId: 'pl-1',
         groupId: 'lobby',
         sync: true,
-        loop: false,
+        loopMode: LoopMode.one,
         items: const [
           MediaItem(itemId: 'a', type: 'video', name: 'n', url: 'u'),
         ],
@@ -229,7 +229,30 @@ void main() {
       expect(p['playlist_id'], 'pl-1');
       expect(p['group_id'], 'lobby');
       expect(p['sync'], isTrue);
+      // §6.3 canonical + legacy-compat projection both emitted
+      expect(p['loop_mode'], 'one');
+      expect(p['loop'], isTrue);
       expect((p['items'] as List).length, 1);
+    });
+
+    test('playlist/status round-trip per-replace push_id', () {
+      final p = Commands.playlist(
+        playlistId: 'same-id',
+        groupId: 'lobby',
+        sync: true,
+        loopMode: LoopMode.all,
+        items: const [],
+        mode: 'replace',
+        pushId: 'push-2',
+      );
+      expect(p['push_id'], 'push-2');
+      final d = DeviceStatus.fromMap({
+        'device_id': 'd1',
+        'playlist_id': 'same-id',
+        'push_id': 'push-2',
+      });
+      expect(d.pushId, 'push-2');
+      expect(d.copyWith(online: false).pushId, 'push-2');
     });
 
     test('prepare 默认 start_index/seek_ms', () {
@@ -238,6 +261,15 @@ void main() {
       expect(p['seek_ms'], 0);
       expect(p.containsKey('prefetch'), isFalse);
       expect(p.containsKey('barrier_timeout_ms'), isFalse);
+    });
+
+    test('prepare/play_at carry the replace push_id', () {
+      final prepare = Commands.prepare(
+          playlistId: 'pl-1', groupId: 'g', pushId: 'push-7');
+      final playAt = Commands.playAt(
+          playlistId: 'pl-1', groupId: 'g', playAtMs: 42, pushId: 'push-7');
+      expect(prepare['push_id'], 'push-7');
+      expect(playAt['push_id'], 'push-7');
     });
 
     test('prepare 可携带预缓存栅栏参数', () {

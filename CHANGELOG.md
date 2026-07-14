@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.15.0] — 2026-07-14
+
+- Playlist editing/control now spans add/append, whole-list replace, delete-one, clear-all, arbitrary reorder/up-down and prev/next, driven from one tested `PlaylistDraft`; broker and P2P converge on a single semantic handler.
+- Looping is an explicit three-mode `LoopMode {none, all, one}` on a new canonical wire field `loop_mode`, with one legacy fold point per language (`loop_mode` preferred; legacy `loop:true ⇒ all`, absent/false ⇒ none) and dual emission during the compatibility window. `none` holds at completion and clamps prev/next, `all` wraps, `one` repeats the current item seamlessly through the existing single-decoder/OEM-continuous route (no second decoder, no seam) while explicit prev/next still navigates with wrap.
+- An empty replace truly clears the target's ACTIVE playlist — stops playback, enters the idle/black safe state, clears current-index/task persistence — while preserving cached media inventory; empty append stays a harmless no-op.
+- Real media-push progress is now a truthful shared state machine (`MediaProgressMachine`) consumed identically by P2P and broker at the controller: progress is monotonic 0..100, keyed device+item+generation, reset per push job, and NEVER shows 100 before the player's checksum + atomic finalize + `ready` handshake (both Android and Windows producers cap `downloading` at 99 pre-finalize). Every non-empty replace carries a unique `push_id`, echoed by upgraded players after adopting that exact command; this releases the new-job stale-ready barrier even when the same `playlist_id` is reused, while an old status snapshot remains held at 0. Aggregation is restricted to the command's expected item set, so unrelated historical cache inventory cannot pollute percent/completion/error counts. A device that errors or drops offline mid-job is surfaced as a frozen failure, not a live bar that would read as ongoing success. UI cadence is bounded by the player's 1.5-second status/wall-snapshot cadence.
+- Windows desktop CONTROLLER artifact adapts `remote_flutter` with a platform capability that removes the QR/camera scan path on Windows (Android keeps scan), without forking the controller codebase or repurposing the Windows Player.
+
 ## [v1.14.13] — 2026-07-13
 
 - Disabled `FlutterActivity` Android instance/navigation restoration through a repository-owned `MainActivity` template that CI installs after `flutter create`; real process restarts now enter `ResponsiveShell`, while an ordinary pause/resume leaves a live settings dialog alone.

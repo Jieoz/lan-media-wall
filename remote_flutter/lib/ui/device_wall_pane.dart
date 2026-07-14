@@ -1110,7 +1110,7 @@ Future<void> _pushContentToDeviceDialog(
     BuildContext context, WallState state, WallDevice device) async {
   final items = <MediaItem>[];
   var uploading = false;
-  var loop = true;
+  var loopMode = LoopMode.all;
   var uploadHint = '';
   final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
   final groupId = device.status?.groupId ?? '';
@@ -1219,12 +1219,22 @@ Future<void> _pushContentToDeviceDialog(
                         ),
                       );
                     }),
-                  SwitchListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('循环'),
-                    value: loop,
-                    onChanged: (v) => setLocal(() => loop = v),
+                  DropdownButtonFormField<LoopMode>(
+                    isDense: true,
+                    decoration: const InputDecoration(
+                        labelText: '循环模式', border: InputBorder.none,
+                        contentPadding: EdgeInsets.zero),
+                    value: loopMode,
+                    items: const [
+                      DropdownMenuItem(
+                          value: LoopMode.none, child: Text('不循环')),
+                      DropdownMenuItem(
+                          value: LoopMode.all, child: Text('整列循环')),
+                      DropdownMenuItem(
+                          value: LoopMode.one, child: Text('单项循环')),
+                    ],
+                    onChanged: (v) =>
+                        setLocal(() => loopMode = v ?? LoopMode.all),
                   ),
                 ],
               ),
@@ -1248,7 +1258,7 @@ Future<void> _pushContentToDeviceDialog(
                           playlistId: pid,
                           groupId: groupId,
                           sync: false,
-                          loop: loop,
+                          loopMode: loopMode,
                           items: items,
                           mode: 'replace',
                           deviceId: device.deviceId,

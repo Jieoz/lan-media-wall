@@ -20,8 +20,15 @@ class PlaylistDraft extends ChangeNotifier {
   /// 组内同步起播(§21)。默认开。
   bool sync = true;
 
-  /// 整列循环。默认开。
-  bool loop = true;
+  /// 循环模式(§6.3)。默认整列循环(all),兼容旧「loop 开」语义。
+  LoopMode loopMode = LoopMode.all;
+
+  /// 设置循环模式(变化才通知)。
+  void setLoopMode(LoopMode mode) {
+    if (loopMode == mode) return;
+    loopMode = mode;
+    notifyListeners();
+  }
 
   /// 只读有序视图:外部 `add`/`removeAt` 抛 [UnsupportedError],避免绕过通知。
   List<MediaItem> get items => List.unmodifiable(_items);
@@ -78,7 +85,7 @@ class PlaylistDraft extends ChangeNotifier {
     playlistId = active.playlistId;
     groupId = active.groupId.isEmpty ? null : active.groupId;
     sync = active.sync;
-    loop = active.loop;
+    loopMode = active.loopMode;
     _items
       ..clear()
       ..addAll(active.items);

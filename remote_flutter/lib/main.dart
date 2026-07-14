@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'platform/platform_capabilities.dart';
 import 'state/wall_state.dart';
 import 'ui/responsive_shell.dart';
 
@@ -19,7 +20,7 @@ class MediaWallApp extends StatelessWidget {
     return ChangeNotifierProvider<WallState>(
       create: (_) => WallState()..init(),
       child: MaterialApp(
-        title: 'LAN Media Wall',
+        title: controllerProductName,
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(

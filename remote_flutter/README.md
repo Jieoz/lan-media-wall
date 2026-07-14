@@ -1,5 +1,7 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.15.0 媒体推送进度：**Broker 与 P2P 在 `WallState` 汇入同一任务状态机；下载中最多显示 99%，只有校验、原子落盘并由播放器上报 `ready` 后才是 100%。每次非空 `replace` 使用唯一 `push_id`，播放器采纳后回显，避免复用 `playlist_id` 时继承旧完成状态。聚合仅计算本次任务预期条目，不把设备历史缓存库存算入；命令投递失败不会创建幽灵 0% 任务，空 `replace` 清空后历史 cache 也不会恢复进度条。
+
 > **v1.14.13:** Android 冷重启不再恢复 FlutterActivity 的 instance/navigation state：仓库保存定制 `MainActivity.kt`，CI 在 `flutter create` 后按确定路径安装并逐字节核验，因此进程被杀或真正重启总是从 `ResponsiveShell` 主界面开始，不会复活设置对话框；普通前后台切换不重建 Activity，已打开的对话框继续保留。严格 Range 现在也拒绝重复物理 `Range` header，统一空体 `416`。release 构建与晋级从仓库内公开的 canonical 证书指纹（可由仓库变量覆盖）解析同一个期望 signer，并逐个核验 APK 包内 versionName/versionCode 与 signer。`WallState.init()` 在每个异步边界检查析构状态，快速卸载时不再在 `dispose()` 后分配链路、启动发现或通知已销毁的状态对象。
 
 > **v1.14.12:** P2P 本地媒体服务现在只接受 `GET/HEAD`（其他方法返回 `405` + `Allow: GET, HEAD`），严格支持单段 `N-M` / `N-` / `-N` Range；malformed、multi-range、空文件 Range 与越界统一返回空体 `416` + `Content-Range: bytes */total`。成功 `206/Content-Range` 只在拿到 stream permit 后写入，满载 `503` 仅含空体、`Retry-After: 1`，与播放器有界重试/Range 续传契约一致。gate 具备运行时参数校验及 close/generation 语义，stop 会立即解除 waiter，restart 使用全新 gate；服务不会在首项 ready/play_at 后关闭，而是保守保持到 `WallState.dispose`，因此后续列表项和新上传仍可下载。HTTP loopback 集成测试覆盖 Range/HEAD/405、并发上限/FIFO 排队/503 headers、客户端断开 permit、stop waiter 与 stop→restart。
@@ -23,7 +25,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.14.13+61`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.15.0+62`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >

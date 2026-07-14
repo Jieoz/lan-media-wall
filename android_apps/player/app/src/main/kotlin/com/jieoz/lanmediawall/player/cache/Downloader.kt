@@ -66,7 +66,11 @@ class CacheEntry(val itemId: String) {
 
     fun statusValue(): String = when (state) {
         "ready" -> "ready"
-        "downloading" -> "downloading:$progress%"
+        // §6.4 truthfulness (E0001): the last chunk makes progress hit 100 while
+        // still downloading (verify + atomic publish come after), so the
+        // DOWNLOADING projection is capped at 99. 100 appears only as "ready",
+        // after sha256 verify + atomic rename — never before completion.
+        "downloading" -> "downloading:${if (progress >= 100) 99 else maxOf(0, progress)}%"
         "verifying" -> "verifying"
         "retrying" -> "retrying"
         "error" -> if (error.isNotEmpty()) "error:$error" else "error"

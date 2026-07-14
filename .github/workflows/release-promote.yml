@@ -140,7 +140,8 @@ jobs:
             --run "windows-build.yml=$WINDOWS_RUN_ID" \
             --run "broker-build.yml=$BROKER_RUN_ID"
           (cd release && sha256sum --check SHA256SUMS)
-          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 10
+          # Nine promoted binaries + SHA256SUMS + RELEASE_PROVENANCE.json.
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 11
           ls -la release
 
       - name: Publish verified assets without rebuilding

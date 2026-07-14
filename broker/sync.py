@@ -36,6 +36,7 @@ class SyncSession:
     session_id: str
     group_id: str
     playlist_id: str
+    push_id: str
     start_index: int
     seek_ms: int
     expected: Set[str]
@@ -76,7 +77,7 @@ class SyncManager:
         self._by_group: Dict[str, str] = {}
 
     def start(self, session_id: str, group_id: str, playlist_id: str,
-              expected: Set[str], *, start_index: int = 0, seek_ms: int = 0,
+              expected: Set[str], *, push_id: str = "", start_index: int = 0, seek_ms: int = 0,
               now_ms: Optional[int] = None,
               timeout_ms: Optional[int] = None) -> SyncSession:
         now_ms = now_ms if now_ms is not None else server_now_ms()
@@ -84,6 +85,7 @@ class SyncManager:
             session_id=session_id,
             group_id=group_id,
             playlist_id=playlist_id,
+            push_id=push_id,
             start_index=start_index,
             seek_ms=seek_ms,
             expected=set(expected),
@@ -95,6 +97,11 @@ class SyncManager:
         self._sessions[session_id] = session
         self._by_group[group_id] = session_id
         return session
+
+    def cancel_group(self, group_id: str) -> None:
+        sid = self._by_group.pop(group_id, None)
+        if sid is not None:
+            self._sessions.pop(sid, None)
 
     def find_for_group(self, group_id: str) -> Optional[SyncSession]:
         sid = self._by_group.get(group_id)

@@ -354,9 +354,9 @@ void main() {
         link.sent.clear();
       }
 
-      final delivered = coord.send('pause', to: 'group:lobby');
+      final deliveredTargets = coord.sendTargets('pause', to: 'group:lobby');
 
-      expect(delivered, 1);
+      expect(deliveredTargets, {'a'});
       expect(
           links['ha']!.sent.where((s) => _parse(s).type == 'pause'), hasLength(1));
       expect(

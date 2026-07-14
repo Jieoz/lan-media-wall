@@ -549,9 +549,10 @@ class P2pCoordinator {
 
   /// 把一条命令按 `to` 地址在客户端侧扇出（group→逐成员；player→单条；all→全体）。
   /// payload 由调用方按 §6/§9 构造（与 broker 模式同一套 [Commands]）。
-  /// 返回成功写入活连接的目标数；本地组管理命令返回 1。该值不是设备执行 ACK。
-  int send(String type, {required String to, Map<String, dynamic> payload = const {}}) {
-    if (_handleLocalGroupCommand(type, payload)) return 1;
+  /// 返回成功写入活连接的精确设备集合；不是设备执行 ACK。
+  Set<String> sendTargets(String type,
+      {required String to, Map<String, dynamic> payload = const {}}) {
+    if (_handleLocalGroupCommand(type, payload)) return const {'broker'};
     final devices = aggregator.snapshot(serverTime: clock.serverTime()).devices;
     final targets = GroupExpander.expand(
       to,
@@ -561,18 +562,21 @@ class P2pCoordinator {
     if (targets.isEmpty) {
       _log('send($type) 无目标（to=$to, connected=${connectedIds.toList()}, '
           'devices=${devices.map((d) => "${d.deviceId}@grp=\"${d.groupId}\"").toList()}）');
-      return 0;
+      return const {};
     }
-    var delivered = 0;
+    final delivered = <String>{};
     for (final id in targets) {
-      if (_sendTo(id, type, to: 'player:$id', payload: payload)) delivered++;
+      if (_sendTo(id, type, to: 'player:$id', payload: payload)) delivered.add(id);
     }
     // 扇出结果汇总:delivered 是「写入活连接」的目标数,不是设备执行 ACK。若
     // delivered<targets,说明部分目标连接已断 —— 和「推送成功但黑屏」是两回事,日志里区分开。
-    _log('send($type) 扇出 delivered=$delivered/${targets.length} '
+    _log('send($type) 扇出 delivered=${delivered.length}/${targets.length} '
         '${_payloadDigest(type, payload)}');
     return delivered;
   }
+
+  int send(String type, {required String to, Map<String, dynamic> payload = const {}}) =>
+      sendTargets(type, to: to, payload: payload).length;
 
   bool _handleLocalGroupCommand(String type, Map<String, dynamic> payload) {
     switch (type) {
@@ -665,6 +669,7 @@ class P2pCoordinator {
     bool prefetchBarrier = false,
     int barrierTimeoutMs = 120000,
     String? deviceId,
+    String pushId = '',
   }) {
     final prepareId = uuid4();
     final devices =
@@ -691,6 +696,7 @@ class P2pCoordinator {
       prepareId: prepareId,
       groupId: groupId,
       playlistId: playlistId,
+      pushId: pushId,
       targets: targets,
       startIndex: startIndex,
       seekMs: seekMs,
@@ -703,6 +709,7 @@ class P2pCoordinator {
       startIndex: startIndex,
       seekMs: seekMs,
       prepareId: prepareId,
+      pushId: pushId,
       prefetch: prefetchBarrier,
       barrierTimeoutMs: prefetchBarrier ? barrierTimeoutMs : null,
     );
@@ -712,6 +719,8 @@ class P2pCoordinator {
     _log('p2p prepare $prepareId → ${targets.length} 台');
     return prepareId;
   }
+
+  void cancelSyncForTargets(Set<String> targets) => handshake.cancelForTargets(targets);
 
   void _emitWall() {
     onWall?.call(aggregator.snapshot(serverTime: clock.serverTime()));

@@ -487,12 +487,13 @@ class Hub:
         sync_flag = True if target_device else (meta["sync"] if meta else True)
         start_index = p.get("start_index", 0)
         seek_ms = p.get("seek_ms", 0)
+        push_id = p.get("push_id", "")
 
         if not sync_flag or not members:
             # sync=false -> play immediately on each member, no handshake.
             await self._emit_play_at(group_id, playlist_id, start_index,
                                      seek_ms, clock.server_time_ms(),
-                                     list(members))
+                                     list(members), push_id)
             return
 
         # §21.2 prefetch barrier: when the controller flags this prepare as a
@@ -504,6 +505,7 @@ class Hub:
                       if barrier else None)
         # Fan the prepare out to members and open a ready-collection session.
         self.sync.start(env["msg_id"], group_id, playlist_id, members,
+                        push_id=push_id,
                         start_index=start_index, seek_ms=seek_ms,
                         timeout_ms=timeout_ms)
         # §9.4b 单台推送：只 fan 给这一台（player:<id>），不广播整组。
@@ -527,17 +529,18 @@ class Hub:
             play_at = self.sync.complete(session)
             await self._emit_play_at(session.group_id, session.playlist_id,
                                      session.start_index, session.seek_ms,
-                                     play_at, sorted(session.ready))
+                                     play_at, sorted(session.ready), session.push_id)
 
     async def _emit_play_at(self, group_id: str, playlist_id, start_index: int,
                             seek_ms: int, play_at: int,
-                            targets: List[str]) -> None:
+                            targets: List[str], push_id: str = "") -> None:
         payload = {
             "playlist_id": playlist_id,
             "group_id": group_id,
             "start_index": start_index,
             "seek_ms": seek_ms,
             "play_at": play_at,
+            "push_id": push_id,
         }
         # Address whoever is ready; for an empty/all case use the group.
         if targets:
@@ -562,7 +565,7 @@ class Hub:
             play_at = self.sync.complete(session)
             await self._emit_play_at(session.group_id, session.playlist_id,
                                      session.start_index, session.seek_ms,
-                                     play_at, ready)
+                                     play_at, ready, session.push_id)
 
     # ---- media / routing -------------------------------------------------
     async def _on_playlist(self, conn: ClientConn, env: dict) -> None:
@@ -571,6 +574,8 @@ class Hub:
         p = env["payload"]
         group_id = p.get("group_id")
         if group_id:
+            if p.get("mode", "replace") == "replace":
+                self.sync.cancel_group(group_id)
             self.reg.set_group_meta(
                 group_id,
                 playlist_id=p.get("playlist_id"),

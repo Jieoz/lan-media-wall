@@ -11,6 +11,15 @@ This implements the broker-side responsibilities of
 §19 / media library §20 / prefetch barrier §21). That spec is the contract —
 field names and semantics here follow it exactly.
 
+## v1.15.0 — playlist/loop parity contract
+
+The broker continues to forward playlist payloads without rewriting their
+`mode`, canonical `loop_mode`, compatibility `loop`, or per-replace `push_id`.
+`tests/test_playlist_loopmode_parity.py` locks that controller → broker → player
+contract so Broker and P2P retain identical replace/append and three-mode loop
+semantics. Media progress itself is derived by the controller from player
+`status.cache`; the broker only preserves and aggregates those status fields.
+
 ## Modules
 
 | File | Responsibility |

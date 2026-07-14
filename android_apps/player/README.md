@@ -1,5 +1,7 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.15.0 推送任务边界：**每次 `playlist mode=replace` 采纳后在 `status.push_id` 回显控制端生成的唯一任务标识，不能再用可复用的 `playlist_id` 误认新任务。下载阶段进度封顶 99%，仅校验并原子落盘成功后进入 `ready`(100%)。空 `replace` 是明确的「清空并停播」：取消 prepare/dwell/定时起播，停止解码器、清活动列表和恢复任务，并显示 idle 画面；缓存文件本身仍保留。
+
 > **v1.14.12 P2P 调度与恢复：**下载器保持单台 2 个 active worker、最多 64 个 pending，但不再使用普通 FIFO：`playlist/cache_prefetch` 进入后台队列，当前 `prepare` 项进入前台并可提升已排队的同 item；同 item 去重。控制端过载返回的 `429/503` 会按有上限的 `Retry-After`/指数退避重试，保留 `.part` 后继续 Range 续传；stop 会取消排队任务和活动 OkHttp call。prepare generation 隔离保证旧 waiter 不能 prime 解码器或发送过期 `ready`。
 
 > **v1.14.11 批量 P2P 传输边界：**单台播放端最多并发下载 2 项，等待队列最多 64 项；超限项目通过 `status.cache[item_id]=error:queue-full` 明确上报，不再用无界线程池放大网络、内存和闪存争用。Range 断点续传、SHA-256 校验和缓存播放合同不变。
@@ -21,7 +23,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.14.13 / versionCode 61`** — derived from
+> **Current build: `versionName 1.15.0 / versionCode 62`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

@@ -1,5 +1,7 @@
 package com.jieoz.lanmediawall.player.media
 
+import com.jieoz.lanmediawall.player.cache.LoopMode
+
 /**
  * §6.3/§loop black-frame policy — PURE, unit-tested, no Android / no I/O.
  *
@@ -47,13 +49,31 @@ object TransitionPolicy {
     }
 
     /**
+     * §6.3 three-mode loop → kernel strategy.
+     *
      * @param itemCount items in the active playlist
-     * @param loop      playlist loop flag
-     * A single-item looping playlist uses OEM continuous looping; anything else
-     * advances on end-of-stream (a multi-item REPEAT_ONE would freeze on item 0).
+     * @param loopMode  the resolved loop mode
+     *
+     * - ONE  → [LoopStrategy.OEM_CONTINUOUS]: the current item repeats seamlessly
+     *          inside the single decoder (setLooping / REPEAT_MODE_ONE), with NO
+     *          teardown and NO second decoder, REGARDLESS of item count. An
+     *          explicit prev/next is a normal advance handled by the caller.
+     * - ALL / NONE → [LoopStrategy.ADVANCE_ON_END]: reach end-of-stream and let
+     *          the caller advance (ALL wraps, NONE stops). A multi-item REPEAT_ONE
+     *          would freeze on the current item, which is exactly ONE's intent but
+     *          wrong for ALL/NONE.
+     *
+     * Backward-compat: a legacy single-item loop=true folds to ALL here, and a
+     * 1-item ALL still loops seamlessly because it is promoted below.
      */
-    fun loopStrategy(itemCount: Int, loop: Boolean): LoopStrategy =
-        if (loop && itemCount == 1) LoopStrategy.OEM_CONTINUOUS else LoopStrategy.ADVANCE_ON_END
+    fun loopStrategy(itemCount: Int, loopMode: LoopMode): LoopStrategy = when (loopMode) {
+        LoopMode.ONE -> LoopStrategy.OEM_CONTINUOUS
+        // A single-item ALL is behaviourally identical to ONE — keep the seamless
+        // OEM path so today's "loop a single MP4" stays seam-free.
+        LoopMode.ALL -> if (itemCount <= 1) LoopStrategy.OEM_CONTINUOUS
+                        else LoopStrategy.ADVANCE_ON_END
+        LoopMode.NONE -> LoopStrategy.ADVANCE_ON_END
+    }
 
     /**
      * @param androidSdk           Build.VERSION.SDK_INT

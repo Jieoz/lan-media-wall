@@ -1,5 +1,7 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.15.0:** playlist `replace` 回显控制端生成的唯一 `push_id`，使同一 `playlist_id` 重推也有明确任务边界；下载阶段 `status.cache` 最多 99%，仅在 SHA-256/尺寸校验和原子落盘完成后上报 `ready`(100%)。空 `replace` 清空活动列表、停止播放器并回到黑屏占位。
+
 Python + **mpv** player (被控端) for the LAN Media Wall. Connects to the broker
 over WebSocket, executes synchronized playback, and reports status. Implements
 the player side of [`../protocol_spec.md`](../protocol_spec.md) v1.
@@ -11,7 +13,7 @@ the player side of [`../protocol_spec.md`](../protocol_spec.md) v1.
 | §1 | WS connect, exp-backoff reconnect (1→30s), re-hello + re-sync on reconnect | `websocket_client.py` |
 | §2/§3 | Signed envelopes, HMAC-SHA256 verify, ts-window + msg_id dedup | `envelope.py` |
 | §4 | `hello` with persistent `device_id`, first-boot `device_name`, ip/screen/caps/group | `main.py`, `config.py` |
-| §5 | `status` every 1–2s (state/current/pos/dur/vol/mute/audio_master/cache/offset) | `main.py` |
+| §5 | `status` every 1–2s (state/current/pos/dur/vol/mute/audio_master/cache/offset/`push_id`) | `main.py` |
 | §6.2 | `cache_prefetch` → resumable HTTP-Range download + sha256 verify | `downloader.py` |
 | §6.3 | `playlist` store + eager prefetch | `main.py` |
 | §6.4 | ~5s frame screenshot → ≤320px JPEG → `thumb_meta` + binary frame | `thumbnailer.py` |

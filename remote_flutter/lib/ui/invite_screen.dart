@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../platform/platform_capabilities.dart';
 import '../protocol/auth_mode.dart';
 import '../state/wall_state.dart';
+import 'scan_page.dart';
 
 /// 邀请设备 / 添加页（protocol_spec.md §15）：由当前连接信息**生成** `lmw://pair?...`
 /// 配对 URI 并渲染成二维码，供被控端扫码免手输入组。
@@ -58,10 +59,10 @@ class _InviteScreenState extends State<InviteScreen> {
   }
 
   /// 打开真·摄像头扫码页（§15 扫码入口）；扫到 `lmw://pair?...` 后复用 [_consume]。
+  /// 仅在支持摄像头扫码的平台可达（Windows 桌面控制端不含此路径）。
   Future<void> _scan(WallState state) async {
-    final raw = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(builder: (_) => const _ScanPage()),
-    );
+    if (!scanToAddSupported) return;
+    final raw = await launchScanToAdd(context);
     if (!mounted || raw == null || raw.trim().isEmpty) return;
     _consume(state, raw.trim());
   }
@@ -95,6 +96,7 @@ class _InviteScreenState extends State<InviteScreen> {
         children: [
           _AddDeviceSection(
             controller: _enroll,
+            showScan: scanToAddSupported,
             onAdd: () => _addFromEnroll(state),
             onScan: () => _scan(state),
             onPaste: () async {
@@ -149,32 +151,46 @@ class _InviteScreenState extends State<InviteScreen> {
               ),
           ],
           const SizedBox(height: 20),
-          if (canRenderQr)
-            Center(
-              child: Column(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    color: Colors.white,
-                    child: QrImageView(
-                      data: uriStr,
-                      version: QrVersions.auto,
-                      size: 240,
-                      gapless: true,
+          // QR display is a capability, not a given: the Windows controller
+          // builds with LMW_DISABLE_QR=true and must never generate or show a
+          // QR ("no QR" hard requirement). Those builds fall through to the
+          // copyable pairing URI below.
+          if (qrInviteDisplaySupported) ...[
+            if (canRenderQr)
+              Center(
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      color: Colors.white,
+                      child: QrImageView(
+                        data: uriStr,
+                        version: QrVersions.auto,
+                        size: 240,
+                        gapless: true,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text('扫码即可入组（${state.authMode.label}模式）',
-                      style: Theme.of(context).textTheme.bodySmall),
-                ],
+                    const SizedBox(height: 8),
+                    Text('扫码即可入组（${state.authMode.label}模式）',
+                        style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              )
+            else
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Text(
+                  '请先填入协调端地址（host）以生成二维码。\n'
+                  'p2p 模式下填本机在局域网中的 IP。',
+                  textAlign: TextAlign.center,
+                ),
               ),
-            )
-          else
+          ] else
             const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
+              padding: EdgeInsets.symmetric(vertical: 16),
               child: Text(
-                '请先填入协调端地址（host）以生成二维码。\n'
-                'p2p 模式下填本机在局域网中的 IP。',
+                '本机为桌面控制端（无二维码）。请复制下方配对 URI，'
+                '在被控端粘贴入组，或直接手填其 host/id。',
                 textAlign: TextAlign.center,
               ),
             ),
@@ -200,11 +216,13 @@ class _InviteScreenState extends State<InviteScreen> {
 class _AddDeviceSection extends StatelessWidget {
   const _AddDeviceSection({
     required this.controller,
+    required this.showScan,
     required this.onAdd,
     required this.onScan,
     required this.onPaste,
   });
   final TextEditingController controller;
+  final bool showScan;
   final VoidCallback onAdd;
   final VoidCallback onScan;
   final VoidCallback onPaste;
@@ -232,16 +250,19 @@ class _AddDeviceSection extends StatelessWidget {
               style: TextStyle(fontSize: 12),
             ),
             const SizedBox(height: 8),
-            // 入口一:真·摄像头扫码（§15）。醒目主按钮。
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.icon(
-                icon: const Icon(Icons.qr_code_scanner),
-                label: const Text('扫码添加'),
-                onPressed: onScan,
+            // 入口一:真·摄像头扫码（§15）。仅移动端可用;Windows 桌面控制端不含摄像头
+            // 扫码能力(硬约束),此按钮不渲染,只保留粘贴/手填入组。
+            if (showScan) ...[
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.icon(
+                  icon: const Icon(Icons.qr_code_scanner),
+                  label: const Text('扫码添加'),
+                  onPressed: onScan,
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
+            ],
             // 入口二:粘贴 lmw:// 链接兜底。
             TextField(
               controller: controller,
@@ -289,85 +310,6 @@ class _ModeBanner extends StatelessWidget {
         leading: Icon(icon),
         title: Text('鉴权模式：${mode.label}'),
         subtitle: Text(desc),
-      ),
-    );
-  }
-}
-
-/// 真·摄像头扫码页（§15 扫码入口）：用 mobile_scanner 打开后置摄像头，扫到第一个
-/// 含 `lmw://pair` 的二维码即 pop 回其原始文本，交由 [_InviteScreenState._consume]
-/// 复用与「粘贴/发现」完全相同的入组路径。摄像头权限由 CI 注入的 CAMERA 声明支撑
-/// （见 .github/workflows/flutter-build.yml），运行时由 mobile_scanner 触发授权弹窗。
-class _ScanPage extends StatefulWidget {
-  const _ScanPage();
-
-  @override
-  State<_ScanPage> createState() => _ScanPageState();
-}
-
-class _ScanPageState extends State<_ScanPage> {
-  final MobileScannerController _controller = MobileScannerController();
-  bool _handled = false;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _onDetect(BarcodeCapture capture) {
-    if (_handled) return;
-    for (final b in capture.barcodes) {
-      final raw = b.rawValue?.trim();
-      if (raw == null || raw.isEmpty) continue;
-      // 只接受配对 URI，避免误扫其它二维码。大小写无关地匹配 scheme。
-      if (raw.toLowerCase().startsWith('lmw://pair')) {
-        _handled = true;
-        Navigator.of(context).pop(raw);
-        return;
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('扫描设备二维码'),
-        actions: [
-          IconButton(
-            tooltip: '手电筒',
-            icon: const Icon(Icons.flash_on),
-            onPressed: () => _controller.toggleTorch(),
-          ),
-          IconButton(
-            tooltip: '切换摄像头',
-            icon: const Icon(Icons.cameraswitch),
-            onPressed: () => _controller.switchCamera(),
-          ),
-        ],
-      ),
-      body: Stack(
-        alignment: Alignment.center,
-        children: [
-          MobileScanner(controller: _controller, onDetect: _onDetect),
-          // 取景提示框 + 文案。
-          Container(
-            width: 240,
-            height: 240,
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.white70, width: 2),
-              borderRadius: BorderRadius.circular(12),
-            ),
-          ),
-          const Positioned(
-            bottom: 40,
-            child: Text(
-              '对准被控端屏幕上的 lmw:// 配对二维码',
-              style: TextStyle(color: Colors.white, fontSize: 14),
-            ),
-          ),
-        ],
       ),
     );
   }

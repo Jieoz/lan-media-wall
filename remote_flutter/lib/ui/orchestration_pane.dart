@@ -145,7 +145,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 .firstOrNull;
             final group = d?.status?.groupId ?? _groupId ?? '';
             state.sendPlaylist(playlistId: _draft.playlistId ?? _newPlaylistId(),
-              groupId: group, sync: _draft.sync, loop: _draft.loop,
+              groupId: group, sync: _draft.sync, loopMode: _draft.loopMode,
               items: _draft.items, mode: 'replace', deviceId: _deviceId);
             _toast('已更新 ${d?.deviceName ?? _deviceId} 的播放列表；未删除缓存文件');
           },
@@ -160,25 +160,44 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
     if (g == null) return const SizedBox.shrink();
     final members = state.membersOf(g.groupId);
     if (members.isEmpty) return const SizedBox.shrink();
-    // 用各台 status.cache 估算就绪度:所有条目 ready 视为该台就绪。
-    var ready = 0;
-    for (final m in members) {
-      final c = m.cache;
-      if (c.isNotEmpty && c.values.every((v) => v == 'ready')) ready++;
-    }
-    final frac = members.isEmpty ? 0.0 : ready / members.length;
+    // §6.4 真实字节级进度:由共享进度状态机聚合(P2P 与 broker 同源喂入),
+    // 而非仅 ready/total 的粗粒度。栏体现整批 0..100 的单调进度;完成度仍以
+    // 「全员每项 ready」为准(percent 在 finalize 前被封顶 <100,§21 栅栏语义不变)。
+    final batch = state.batchProgress(members.map((m) => m.deviceId));
+    final frac = batch.totalDevices == 0 ? 0.0 : batch.percent / 100.0;
+    final allReady = batch.completeDevices == members.length;
+    // §6.4/E0002 risk 3: a device that errored (checksum/download failure) or
+    // dropped offline mid-job is surfaced as a FAILURE, not a live bar — a job
+    // frozen at a high percent must never read as ongoing success.
+    final hasError = batch.errorDevices > 0;
+    final theme = Theme.of(context);
     return _Section(
-      title: '预缓存就绪 $ready/${members.length}',
+      title: hasError
+          ? '预缓存中断 · ${batch.errorDevices} 台失败/掉线 · 就绪 '
+              '${batch.completeDevices}/${members.length}'
+          : '预缓存进度 ${batch.percent}% · 就绪 '
+              '${batch.completeDevices}/${members.length}',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          LinearProgressIndicator(value: frac),
+          LinearProgressIndicator(
+            // A failed job shows a frozen determinate bar tinted with the error
+            // color, not an animated one that would imply progress is ongoing.
+            value: frac,
+            color: hasError ? theme.colorScheme.error : null,
+          ),
           const SizedBox(height: 6),
           Text(
-            ready == members.length
-                ? '全员就绪,可一键同步起播(将从头统一开始)'
-                : '等待各台下载+校验完成;全员就绪后才统一起播(§21 栅栏)',
-            style: Theme.of(context).textTheme.bodySmall,
+            hasError
+                ? '部分设备下载失败或中途掉线,已停止在中断处(未显示为成功)。'
+                    '请检查设备连接后重试推送。'
+                : allReady
+                    ? '全员就绪,可一键同步起播(将从头统一开始)'
+                    : '等待各台下载+校验完成;全员就绪后才统一起播(§21 栅栏)。'
+                        '进度条为真实字节级聚合,校验/落盘前不显示 100%',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: hasError ? theme.colorScheme.error : null,
+            ),
           ),
         ],
       ),
@@ -275,12 +294,25 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 ),
               ),
               Expanded(
-                child: SwitchListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('循环'),
-                  value: _draft.loop,
-                  onChanged: (v) => setState(() => _draft.loop = v),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: DropdownButtonFormField<LoopMode>(
+                    isDense: true,
+                    decoration: const InputDecoration(
+                      labelText: '循环模式', contentPadding: EdgeInsets.zero,
+                      border: InputBorder.none),
+                    value: _draft.loopMode,
+                    items: const [
+                      DropdownMenuItem(
+                        value: LoopMode.none, child: Text('不循环')),
+                      DropdownMenuItem(
+                        value: LoopMode.all, child: Text('整列循环')),
+                      DropdownMenuItem(
+                        value: LoopMode.one, child: Text('单项循环')),
+                    ],
+                    onChanged: (v) => setState(
+                        () => _draft.setLoopMode(v ?? LoopMode.all)),
+                  ),
                 ),
               ),
             ],
@@ -303,6 +335,13 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 icon: const Icon(Icons.playlist_add),
                 label: const Text('编排/添加项目到当前列表'),
                 onPressed: _canSend ? () => _doAppend(state) : null,
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.stop_circle_outlined),
+                label: const Text('清空并停播 (保留缓存)'),
+                onPressed: _groupId == null
+                    ? null
+                    : () => _doClearRemote(state),
               ),
             ],
           ),
@@ -436,6 +475,25 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
     _toast('已清空编辑列表(未改动任何设备)');
   }
 
+  /// §6.3a 清空被控端 ACTIVE 播放列表:下发空列表 replace。播放器据此停播、回到
+  /// 黑屏/占位安全态、清当前索引与任务持久化,但**不删除已缓存的媒体文件**。
+  void _doClearRemote(WallState state) {
+    try {
+      state.sendPlaylist(
+        playlistId: _draft.playlistId ?? _newPlaylistId(),
+        groupId: _groupId!,
+        sync: _draft.sync,
+        loopMode: _draft.loopMode,
+        items: const [],
+        mode: 'replace',
+        deviceId: _deviceId,
+      );
+      _toast('已清空${_deviceId == null ? "整组" : "该设备"}播放列表并回到黑屏;缓存文件保留');
+    } catch (e) {
+      _toast('清空失败: $e');
+    }
+  }
+
   void _doPrefetch(WallState state) {
     try {
       final pid = _newPlaylistId();
@@ -444,7 +502,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         playlistId: pid,
         groupId: _groupId!,
         sync: _draft.sync,
-        loop: _draft.loop,
+        loopMode: _draft.loopMode,
         items: items,
         mode: 'replace',
       );
@@ -463,7 +521,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         playlistId: pid,
         groupId: _groupId!,
         sync: _draft.sync,
-        loop: _draft.loop,
+        loopMode: _draft.loopMode,
         items: items,
         mode: 'replace',
       );
@@ -486,7 +544,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         playlistId: _draft.playlistId ?? _newPlaylistId(),
         groupId: _groupId!,
         sync: _draft.sync,
-        loop: _draft.loop,
+        loopMode: _draft.loopMode,
         items: items,
         mode: 'append',
         deviceId: _deviceId,

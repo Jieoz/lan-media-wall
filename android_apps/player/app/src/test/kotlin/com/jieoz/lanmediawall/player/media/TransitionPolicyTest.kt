@@ -1,37 +1,55 @@
 package com.jieoz.lanmediawall.player.media
 
+import com.jieoz.lanmediawall.player.cache.LoopMode
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * §6.3/§loop black-frame policy contract. Pins the two decisions: single-item
- * loops use OEM continuous looping (no seam), and the single-VDEC API19 target
- * swaps immediately (honest brief black gap) rather than holding the last frame
- * with a second decoder that could regress the verified-smooth playback.
+ * §6.3/§loop black-frame policy contract. Pins the three-mode decisions:
+ * ONE (and a degenerate single-item ALL) use OEM continuous looping (no seam);
+ * multi-item ALL / NONE advance on end; and the single-VDEC API19 target swaps
+ * immediately (honest brief black gap) rather than holding the last frame with
+ * a second decoder that could regress the verified-smooth playback.
  */
 class TransitionPolicyTest {
 
-    // --- loop strategy ----------------------------------------------------
+    // --- loop strategy (§6.3 three-mode) ---------------------------------
 
-    @Test fun `single-item looping playlist uses OEM continuous looping`() {
+    @Test fun `ONE repeats current item via OEM continuous regardless of count`() {
         assertEquals(
             TransitionPolicy.LoopStrategy.OEM_CONTINUOUS,
-            TransitionPolicy.loopStrategy(itemCount = 1, loop = true),
+            TransitionPolicy.loopStrategy(itemCount = 1, loopMode = LoopMode.ONE),
+        )
+        assertEquals(
+            TransitionPolicy.LoopStrategy.OEM_CONTINUOUS,
+            TransitionPolicy.loopStrategy(itemCount = 5, loopMode = LoopMode.ONE),
         )
     }
 
-    @Test fun `multi-item loop advances on end not REPEAT_ONE`() {
-        // REPEAT_ONE on a multi-item playlist would freeze on item 0.
+    @Test fun `single-item ALL still loops seamlessly via OEM continuous`() {
+        // Preserves today's "loop a single MP4" seam-free behaviour.
         assertEquals(
-            TransitionPolicy.LoopStrategy.ADVANCE_ON_END,
-            TransitionPolicy.loopStrategy(itemCount = 3, loop = true),
+            TransitionPolicy.LoopStrategy.OEM_CONTINUOUS,
+            TransitionPolicy.loopStrategy(itemCount = 1, loopMode = LoopMode.ALL),
         )
     }
 
-    @Test fun `single item without loop still advances on end`() {
+    @Test fun `multi-item ALL advances on end not REPEAT_ONE`() {
+        // REPEAT_ONE on a multi-item playlist would freeze on the current item.
         assertEquals(
             TransitionPolicy.LoopStrategy.ADVANCE_ON_END,
-            TransitionPolicy.loopStrategy(itemCount = 1, loop = false),
+            TransitionPolicy.loopStrategy(itemCount = 3, loopMode = LoopMode.ALL),
+        )
+    }
+
+    @Test fun `NONE advances on end so playback can stop at completion`() {
+        assertEquals(
+            TransitionPolicy.LoopStrategy.ADVANCE_ON_END,
+            TransitionPolicy.loopStrategy(itemCount = 1, loopMode = LoopMode.NONE),
+        )
+        assertEquals(
+            TransitionPolicy.LoopStrategy.ADVANCE_ON_END,
+            TransitionPolicy.loopStrategy(itemCount = 3, loopMode = LoopMode.NONE),
         )
     }
 

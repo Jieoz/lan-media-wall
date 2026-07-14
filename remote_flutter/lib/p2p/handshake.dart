@@ -11,6 +11,7 @@ class HandshakeSession {
     required this.prepareId,
     required this.groupId,
     required this.playlistId,
+    this.pushId = '',
     required Set<String> targets,
     this.startIndex = 0,
     this.seekMs = 0,
@@ -21,6 +22,7 @@ class HandshakeSession {
   final String prepareId;
   final String groupId;
   final String playlistId;
+  final String pushId;
 
   /// 目标被控端 device_id 集合。
   final Set<String> targets;
@@ -74,6 +76,7 @@ class HandshakeSession {
   /// 构造 `play_at` payload（§9.2）。`play_at` = [controllerNow] + [bufferMs]。
   Map<String, dynamic> playAtPayload(int controllerNow) => {
         'playlist_id': playlistId,
+        'push_id': pushId,
         'group_id': groupId,
         'start_index': startIndex,
         'seek_ms': seekMs,
@@ -120,6 +123,7 @@ class HandshakeOrchestrator {
     required String prepareId,
     required String groupId,
     required String playlistId,
+    String pushId = '',
     required Set<String> targets,
     int startIndex = 0,
     int seekMs = 0,
@@ -130,6 +134,7 @@ class HandshakeOrchestrator {
       prepareId: prepareId,
       groupId: groupId,
       playlistId: playlistId,
+      pushId: pushId,
       targets: targets,
       startIndex: startIndex,
       seekMs: seekMs,
@@ -210,6 +215,16 @@ class HandshakeOrchestrator {
   void cancel(String prepareId) {
     _timers.remove(prepareId)?.cancel();
     _sessions.remove(prepareId);
+  }
+
+  void cancelForTargets(Set<String> targets) {
+    final ids = _sessions.entries
+        .where((entry) => entry.value.targets.any(targets.contains))
+        .map((entry) => entry.key)
+        .toList();
+    for (final id in ids) {
+      cancel(id);
+    }
   }
 
   void dispose() {

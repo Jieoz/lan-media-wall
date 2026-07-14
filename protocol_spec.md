@@ -161,6 +161,35 @@ player 据此精确门控缩略图采集(§6.4)，无需轮询。`thumbnail.alwa
 
 ## 6. 媒体与缓存
 
+### 6.0 媒体推送进度语义 (media-push progress, [v1.15])
+
+进度**不是独立的线协议帧**：它搭载在每台 player 的 `status.cache = {item_id: 值}` 上，
+值形如 `"pending" | "downloading:NN%" | "verifying" | "retrying"(仅 Android) | "ready" | "error[:原因]"`。
+P2P 与 broker 两条链路都最终汇入 controller 的同一状态机(`MediaProgressMachine`),因此进度
+消费/UI 与传输无关。该状态机强制以下**真实性不变量**:
+
+- **单调 0..100**:同一 job(generation)内百分比只增不减;NaN/负数/越界一律夹到 0..100。
+- **finalize 前永不 100**:`downloading`/`verifying` 一律封顶 **99**;只有 player 完成 sha256 校验 +
+  原子落盘后回的 `ready` 才是 **100**。两端生产者(Android/Windows)也在源头把 `downloading` 的
+  最后一块从 100 夹到 99——100 只随 `ready` 出现,controller 因此**绝不会在完成 ACK 前看到 100**。
+- **按 job 复位**:每次 replace 推送为一个新 job,controller 递增该设备的 generation,状态机据此把
+  相关 item 的进度重置为 0/pending。
+- **新 job 陈旧 ready 屏障**:递增 generation 后,下一帧墙快照可能仍带**推送前**的旧 `ready`。状态机
+  为「上一代已 ready/近终态」的 item 设 stale-guard。每次非空 `replace` 都生成不可复用的 `push_id`,
+  player 采纳命令后在 `status.push_id` 原样回显；只有匹配本 job 的 `push_id`,或收到真正重新下载的
+  `downloading:<100`,才释放屏障。`playlist_id` 可被同 ID 重推复用,不能作为采纳证明。这样可避免
+  「新任务还没开始就先显示 100」。
+- **预期条目隔离**:显式 push job 只聚合本次命令的 item 集合；player 上报的整机历史 cache inventory
+  中无关的旧 ready/error 条目不会加入本次均值、完成数或错误数。
+- **陈旧/乱序丢弃**:generation 早于当前记录的帧直接丢弃;同代内会导致回退的乱序帧忽略(保留已见最大值)。
+- **失败/掉线不伪装成功**:设备中途 `error` 或 `online=false` 时,其在途 item 冻结为 interrupted(失败)
+  终态,UI 呈现为失败而非停在高百分比的活动条。空 replace(清空)取消并丢弃该设备的进度记录。
+
+**已记录的真实局限**:`status.cache` 线协议**不携带 per-item generation**,player 也不回显 job 令牌。
+generation 由 controller 侧按推送 job 分配,状态机据此在**本地**复位/取代旧代并丢弃更早代的帧;它无法
+区分被 player 合并成同一 cache 条目的两次 job。更新频率受 player 状态/墙快照节流(聚合后约 1s 一帧)约束,
+不做逐 item 增量的额外节流(墙快照对象每帧都因 state/last_seen 等变化而必须发布,再加进度节流栅栏无意义)。
+
 ### 6.1 媒体单元 (media item)
 ```json
 {"item_id":"a1","type":"video|image","name":"promo.mp4",
@@ -187,7 +216,9 @@ device; removing a playlist item does not delete its cached media file.
   "playlist_id":"pl-lobby-1",
   "group_id":"lobby",
   "sync":true,                 // true=组内同步同一内容; false=各自独立(每台一组时即“各播各的”)
-  "loop":true,
+  "push_id":"e3b0c442…",       // §6.3b 每次非空 replace 生成的不可复用推送身份;player 采纳后在 status.push_id 原样回显。playlist_id 可复用,不能作采纳证明
+  "loop":true,                 // §6.3b 兼容投影,= (loop_mode != "none"); 老 player 靠它决定是否循环
+  "loop_mode":"all",           // §6.3b 规范字段 "none"|"all"|"one"; 存在且合法时始终优先,缺省/未知回退按 loop 折叠(true→all, false→none)
   "mode":"replace",            // §6.3a replace(默认)=整列替换并从头播; append=按 item_id 去重合并到当前有序列表尾部,保留当前播放位置。缺省/未知一律按 replace(向后兼容:老遥控端不带 mode)
   "items":[ {/*media item*/}, … ]   // 长度 1 即“单文件”;>1 即“轮播”
 }}
@@ -207,6 +238,32 @@ device; removing a playlist item does not delete its cached media file.
 
 `status` 额外上报(additive,老遥控端忽略未知字段):`current_index`(在有序
 active_playlist 中的当前位置)、`playlist_count`(序列长度)。
+
+#### 6.3b `push_id` 采纳身份 + `loop_mode` 三态循环 [v1.15]
+
+两个 additive 字段,老端忽略未知字段即退化为旧行为。
+
+**`push_id`(推送采纳身份)** —— 每次非空 `replace` 推送,发送端生成一个**不可复用**的
+`push_id`(随机/内容无关),随 `playlist`、`prepare`、`play_at` 帧一起下发。语义:
+
+- player **采纳**该命令后,在 `status.push_id` 原样回显,作为唯一的采纳 ACK;
+- player 端 `prepare`/`play_at` 硬校验:`push_id` 缺失或与当前 job 不符则**整帧丢弃**
+  (不回 `ready`、不起播),避免旧代/重复帧驱动新任务;
+- controller 端进度状态机(§6.0)只有收到匹配的 `push_id` 回显、或看到真正重新下载的
+  `downloading:<100`(仅限**完全不带** `push_id` 的老 player 兜底),才释放「新 job 陈旧
+  ready 屏障」;
+- `playlist_id` 可被同 ID 重推复用,因此**不能**作为采纳证明——采纳只认 `push_id`。
+
+**`loop_mode`(三态循环)** —— 规范字段,取值 `"none" | "all" | "one"`:
+
+- `none`:播完停/保持在末帧;显式 prev/next 在两端 clamp。
+- `all`:播完与 prev/next 都在整列范围内**回绕**。
+- `one`:当前项播完**无缝重复**;显式 prev/next 仍可导航(带回绕)。
+
+兼容窗口内发送端**同时**发 `loop_mode`(规范)与 `loop = (loop_mode != "none")`(兼容投影)。
+单一折叠点(三端一致):`loop_mode` 存在且合法时始终优先;缺失/未知字符串则回退按老布尔
+`loop` 折叠(`true→all`,`false`/缺省`→none`)。未升级的老 player 只认 `loop`,故 `one`
+在老端**收窄为 `all`**——是无害放宽,绝不比现状更差。
 
 ### 6.4 缩略图 (player→broker→controller，设备墙预览)
 - player 每 ~5s 截当前帧，缩放为 ≤320px 宽的 JPEG。

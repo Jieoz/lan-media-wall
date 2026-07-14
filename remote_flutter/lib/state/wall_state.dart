@@ -14,6 +14,7 @@ import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../protocol/pair_uri.dart';
 import '../protocol/remote_endpoint.dart';
+import 'media_progress.dart';
 
 /// 持久化键。
 class _Keys {
@@ -129,6 +130,23 @@ class WallState extends ChangeNotifier {
 
   WallSnapshot _wall = const WallSnapshot();
   final Map<String, Uint8List> _thumbs = {};
+
+  /// §6.4 the ONE shared media-push progress state machine (E0001). Fed by
+  /// [_onWall] for BOTH transports (P2P and broker converge there), so progress
+  /// consumption/UI is transport-agnostic. Keyed device+item+generation with
+  /// monotonic 0..100 and never-100-before-`ready` guarantees.
+  final MediaProgressMachine _progress = MediaProgressMachine();
+
+  /// deviceId → controller-assigned push-job generation. Bumped by [_beginPushJob]
+  /// whenever a fresh push (replace playlist / local media) starts, so progress
+  /// resets per job. Absent → generation 0 (passive tracking of ambient status).
+  final Map<String, int> _pushGeneration = {};
+
+  /// deviceId → controller-generated identity of its current replace job.
+  /// The player echoes this only after adopting that exact command; playlist_id
+  /// is reusable and therefore cannot be used as an adoption acknowledgement.
+  final Map<String, String> _jobPushId = {};
+  int _nextPushId = 0;
   final List<AnnounceInfo> _discovered = [];
   final List<String> _log = [];
   ConnState _conn = ConnState.disconnected;
@@ -163,6 +181,75 @@ class WallState extends ChangeNotifier {
   WallSnapshot get wall => _wall;
   List<WallGroup> get groups => _wall.groups;
   List<DeviceStatus> get devices => _wall.devices;
+
+  /// §6.4 current push-job generation for a device (0 when none started).
+  int pushGenerationOf(String deviceId) => _pushGeneration[deviceId] ?? 0;
+
+  /// §6.4 aggregated progress for one device's active push job, or null.
+  DeviceJobProgress? deviceProgress(String deviceId) =>
+      _progress.deviceJob(deviceId, pushGenerationOf(deviceId));
+
+  /// §6.4 the shared progress machine (read-only use by UI/tests).
+  MediaProgressMachine get progress => _progress;
+
+  /// §6.4 fan-out progress across [deviceIds] for their own job generations.
+  ({int percent, int completeDevices, int totalDevices, int errorDevices})
+      batchProgress(Iterable<String> deviceIds) =>
+          _progress.batchProgress(deviceIds, pushGenerationOf);
+
+  /// §6.4/E0002 mark the start of a fresh push job for these devices, bumping
+  /// each one's generation AND seeding the progress machine with the job's
+  /// [expectedItems] so a re-push neither inherits stale percents nor lets a
+  /// pre-command snapshot's old `ready` instantly report 100 (the stale guard
+  /// in [MediaProgressMachine.beginJob] holds until the device adopts the job).
+  /// [pushId] is remembered so [_onWall] can confirm adoption and release
+  /// the guard for cached-instant re-pushes.
+  void _beginPushJob(
+    Iterable<String> deviceIds,
+    Iterable<String> expectedItems, {
+    required String pushId,
+  }) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final items = expectedItems.toList(growable: false);
+    for (final id in deviceIds) {
+      if (id.isEmpty) continue;
+      final gen = (_pushGeneration[id] ?? 0) + 1;
+      _pushGeneration[id] = gen;
+      _jobPushId[id] = pushId;
+      _progress.beginJob(id, gen, items, now: now);
+    }
+  }
+
+  void _clearPushJob(Iterable<String> deviceIds) {
+    for (final id in deviceIds) {
+      _progress.resetDevice(id);
+      _pushGeneration.remove(id);
+      _jobPushId.remove(id);
+    }
+  }
+
+  /// §6.4/E0004 test seam: drive a fresh push job exactly as [sendPlaylist]'s
+  /// replace branch does, without the network `_send` (which needs live links).
+  /// Lets a WallState-level regression prove the REAL edge-triggered adoption in
+  /// [_onWall] — not a hand-called [MediaProgressMachine.confirmJobStarted].
+  @visibleForTesting
+  void debugBeginPushJob(
+    Iterable<String> deviceIds,
+    Iterable<String> expectedItems, {
+    required String pushId,
+  }) =>
+      _beginPushJob(deviceIds, expectedItems, pushId: pushId);
+
+  /// §6.4/E0004 test seam: feed a wall snapshot through the identical ingestion
+  /// path a broker/P2P frame takes ([_onWall]), so tests exercise the true
+  /// pushId-adoption / stale-guard / interrupt logic rather than re-simulating it.
+  @visibleForTesting
+  void debugIngestWall(WallSnapshot snap) => _onWall(snap);
+
+  @visibleForTesting
+  void debugClearPushJob(Iterable<String> deviceIds) =>
+      _clearPushJob(deviceIds);
+
   List<AnnounceInfo> get discovered => List.unmodifiable(_discovered);
   ConnState get conn => _conn;
   AuthMode get authMode => _authMode;
@@ -561,6 +648,12 @@ class WallState extends ChangeNotifier {
     _thumbs.remove(resolved);
     _p2p.forgetDevice(deviceId);
     if (resolved != deviceId) _p2p.forgetDevice(resolved);
+    _progress.forgetDevice(deviceId);
+    if (resolved != deviceId) _progress.forgetDevice(resolved);
+    _pushGeneration.remove(deviceId);
+    _pushGeneration.remove(resolved);
+    _jobPushId.remove(deviceId);
+    _jobPushId.remove(resolved);
     _pushLog('已从控制端移除设备 $resolved');
     _evaluateTopology();
     notifyListeners();
@@ -579,13 +672,69 @@ class WallState extends ChangeNotifier {
   // ---- 入站回调 ----
   void _onWall(WallSnapshot snap) {
     _wall = snap;
+    final now = DateTime.now().millisecondsSinceEpoch;
     for (final device in snap.devices) {
       final state = device.updateState;
       if (state != null && state.isNotEmpty) {
         _updateStatus[device.deviceId] = state;
         _updateDetail[device.deviceId] = device.updateDetail ?? '';
       }
+      final hasActiveJob = _pushGeneration.containsKey(device.deviceId);
+      final gen = pushGenerationOf(device.deviceId);
+      // Only the per-replace push_id is an adoption ACK. playlist_id can be
+      // reused, so equality there is not an edge and may describe the old job.
+      final jobPushId = _jobPushId[device.deviceId];
+      final devicePushId = device.pushId;
+      final reportsPushId = devicePushId != null && devicePushId.isNotEmpty;
+      final expectsPushId = jobPushId != null && jobPushId.isNotEmpty;
+      final adopted = expectsPushId && devicePushId == jobPushId;
+      if (adopted) {
+        _progress.confirmJobStarted(device.deviceId, gen);
+      }
+      // E0004 defect 1: a status frame that reports a DIFFERENT non-empty
+      // push_id belongs to the old (or another) job — it is not this job's
+      // progress. Reject the whole frame rather than feeding its cache under the
+      // current generation. Otherwise a lingering `push-old` frame carrying
+      // `downloading:<100` would trip the machine's legacy fresh-evidence
+      // fallback, release the stale guard, and let the dead job's downloading /
+      // error / ready pollute the new job. The wire already carries push_id, so
+      // adoption is decided here explicitly — never guessed from a download %.
+      final foreignPushFrame = expectsPushId && reportsPushId && !adopted;
+      // §6.4/E0002 a device that dropped offline mid-job must not keep a live
+      // bar at a high percent reading as success → freeze its in-flight items
+      // into an interrupted (failed) terminal state.
+      if (hasActiveJob && !device.online) {
+        _progress.interruptDevice(device.deviceId, gen, now: now);
+      }
+      // §6.4 feed the ONE shared progress machine from every device's status
+      // cache. Both P2P (WallAggregator.snapshot→onWall) and broker (link
+      // onWall) reach here, so progress consumption is transport-agnostic. The
+      // machine enforces monotonic 0..100, reset-per-generation, stale-drop, and
+      // never-100-before-`ready`. Cache is an inventory, not a push job: before
+      // this controller successfully sends replace (or after CLEAR), ignore it.
+      //
+      // Skip ingest when the frame is foreign (E0004 defect 1) OR the device is
+      // offline (E0002 risk 3): an offline snapshot still carries the
+      // pre-disconnect cache inventory, and after interruptDevice() has frozen
+      // the job as failed we must not re-ingest that stale inventory in the same
+      // frame — a lingering `ready` there would otherwise contradict the freeze.
+      if (hasActiveJob && device.online && !foreignPushFrame) {
+        _progress.ingestDeviceCache(
+          device.deviceId,
+          device.cache,
+          gen,
+          now: now,
+        );
+      }
     }
+    // §6.4/E0002 NOTE on update cadence: we notify once per wall snapshot. There
+    // is no separate progress-revision throttle because the WallSnapshot object
+    // itself changes every frame (state/last_seen/etc.) and must be published
+    // regardless of whether progress moved — a revision gate here would coalesce
+    // nothing. Update frequency is therefore bounded by the player status/wall
+    // snapshot cadence, not by per-item progress deltas. The machine still
+    // suppresses genuine no-op progress mutations internally (its `changed`
+    // flag / revision), so no redundant progress recomputation occurs.
     notifyListeners();
   }
 
@@ -807,12 +956,22 @@ class WallState extends ChangeNotifier {
     return 'broker';
   }
 
-  int _send(String type, Map<String, dynamic> payload,
+  Set<String>? _send(String type, Map<String, dynamic> payload,
       {String? groupId, String? deviceId}) {
+    // Transport links are allocated in init(). A command issued before init()
+    // (or after dispose released them) cannot possibly be delivered — fail with
+    // a clean StateError like the other undeliverable paths below, rather than
+    // leaking a LateInitializationError from the uninitialized _broker/_p2p.
+    // Critically this happens BEFORE any generation/progress mutation, so a
+    // failed delivery never leaves a ghost push generation behind.
+    if (!_linksReady) {
+      throw StateError('链路未就绪（init 未完成或已析构），命令未投递（目标: '
+          '${_to(groupId: groupId, deviceId: deviceId)}）');
+    }
     final to = _to(groupId: groupId, deviceId: deviceId);
     if (isP2p) {
-      final delivered = _p2p.send(type, to: to, payload: payload);
-      if (delivered == 0) {
+      final delivered = _p2p.sendTargets(type, to: to, payload: payload);
+      if (delivered.isEmpty) {
         throw StateError('没有可投递的已连接设备（目标: $to）');
       }
       return delivered;
@@ -820,7 +979,8 @@ class WallState extends ChangeNotifier {
     if (!_broker.send(type, to: to, payload: payload)) {
       throw StateError('broker 未连接，命令未投递（目标: $to）');
     }
-    return 1;
+    // Broker acceptance cannot identify downstream recipients.
+    return null;
   }
 
   // ---- 出站命令(供 UI 调用) ----
@@ -836,24 +996,59 @@ class WallState extends ChangeNotifier {
     required String playlistId,
     required String groupId,
     required bool sync,
-    required bool loop,
+    required LoopMode loopMode,
     required List<MediaItem> items,
     String mode = 'append',
     String? deviceId,
   }) {
-    _send(
+    String? pushId;
+    final affected = deviceId != null && deviceId.isNotEmpty
+        ? <String>[deviceId]
+        : _wall.devices
+            .where((d) => d.groupId == groupId)
+            .map((d) => d.deviceId)
+            .toList();
+    // Generate the wire identity now, but do not mutate local progress until
+    // _send confirms that the command was actually delivered.
+    if (mode == 'replace' && items.isNotEmpty) {
+      pushId = '${controllerId}-${++_nextPushId}-${DateTime.now().microsecondsSinceEpoch}';
+    }
+    final deliveredTargets = _send(
       'playlist',
       Commands.playlist(
         playlistId: playlistId,
         groupId: groupId,
         sync: sync,
-        loop: loop,
+        loopMode: loopMode,
         items: items,
         mode: mode,
+        pushId: pushId,
       ),
       groupId: groupId,
       deviceId: deviceId,
     );
+    // P2P commits only exact successful recipients. Broker acceptance has no
+    // per-device result, so it uses the addressed target set.
+    final committed = deliveredTargets ?? affected.toSet();
+    if (mode == 'replace' && isP2p) {
+      _p2p.cancelSyncForTargets(committed);
+    }
+    if (mode == 'replace' && items.isNotEmpty) {
+      _beginPushJob(
+        committed,
+        items.map((it) => it.itemId),
+        pushId: pushId!,
+      );
+    } else if (mode == 'replace' && items.isEmpty) {
+      // CLEAR ends the job identity too. Later cache snapshots are inventory,
+      // not a new task, and therefore cannot resurrect the cleared progress.
+      _clearPushJob(committed);
+    }
+  }
+
+  String? _pushIdForDeviceIds(Iterable<String> deviceIds) {
+    final ids = deviceIds.map((id) => _jobPushId[id]).whereType<String>().toSet();
+    return ids.length == 1 ? ids.single : null;
   }
 
   /// 一键同步播放(§9.1)：
@@ -865,12 +1060,18 @@ class WallState extends ChangeNotifier {
     int startIndex = 0,
     int seekMs = 0,
   }) {
+    final targets = _wall.devices
+        .where((d) => d.groupId == groupId)
+        .map((d) => d.deviceId);
+    final pushId = _pushIdForDeviceIds(targets);
+    if (pushId == null) throw StateError('当前播放任务缺少唯一 push_id');
     if (isP2p) {
       _p2p.startSync(
         playlistId: playlistId,
         groupId: groupId,
         startIndex: startIndex,
         seekMs: seekMs,
+        pushId: pushId,
       );
       return;
     }
@@ -881,6 +1082,7 @@ class WallState extends ChangeNotifier {
         groupId: groupId,
         startIndex: startIndex,
         seekMs: seekMs,
+        pushId: pushId,
       ),
       groupId: groupId,
     );
@@ -1146,6 +1348,11 @@ class WallState extends ChangeNotifier {
     int seekMs = 0,
     String? deviceId,
   }) {
+    final targetIds = deviceId != null && deviceId.isNotEmpty
+        ? <String>[deviceId]
+        : _wall.devices.where((d) => d.groupId == groupId).map((d) => d.deviceId);
+    final pushId = _pushIdForDeviceIds(targetIds);
+    if (pushId == null) throw StateError('当前播放任务缺少唯一 push_id');
     if (isP2p) {
       // p2p 下由协调端本地编排;用长栅栏超时(120s)等各台缓存+校验完成再回 ready(§21.3)。
       _p2p.startSync(
@@ -1157,6 +1364,7 @@ class WallState extends ChangeNotifier {
         prefetchBarrier: true,
         barrierTimeoutMs: 120000,
         deviceId: deviceId,
+        pushId: pushId,
       );
       return;
     }
@@ -1169,6 +1377,7 @@ class WallState extends ChangeNotifier {
           startIndex: startIndex,
           seekMs: seekMs,
           deviceId: deviceId,
+          pushId: pushId,
         ),
         'prefetch': true, // §21.2 走长栅栏超时,等全员缓存就绪
       },

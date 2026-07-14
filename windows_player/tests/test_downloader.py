@@ -30,6 +30,35 @@ def test_parse_content_range_total():
     assert D.parse_content_range_total("garbage") is None
 
 
+def test_status_value_never_reports_100_before_ready():
+    """§6.4 (E0001) truthfulness: the last chunk drives progress to 100 while the
+    state is still `downloading` (verify + atomic publish happen after). The wire
+    projection MUST cap that at 99 — 100 appears only as `ready`, so the
+    controller never sees completion before the checksum/atomic finalize."""
+    e = D.CacheEntry(item_id="a")
+    e.state = "downloading"
+    e.progress = 45
+    assert e.status_value() == "downloading:45%"
+    # final chunk: bytes complete but not verified/published yet
+    e.progress = 100
+    assert e.status_value() == "downloading:99%", "must not show 100 pre-finalize"
+    # verify phase carries no percent
+    e.state = "verifying"
+    assert e.status_value() == "verifying"
+    # only the atomic-published, checksum-verified item is ready==100
+    e.state = "ready"
+    e.progress = 100
+    assert e.status_value() == "ready"
+
+
+def test_status_value_downloading_floors_negative():
+    """Defensive: a bogus negative progress never renders a negative percent."""
+    e = D.CacheEntry(item_id="a")
+    e.state = "downloading"
+    e.progress = -3
+    assert e.status_value() == "downloading:0%"
+
+
 def test_expected_total_206_with_content_range():
     # resume from 1024; partial body of 500; content-range says full is 99999
     assert D.expected_total(1024, 206, 500, 99999) == 99999

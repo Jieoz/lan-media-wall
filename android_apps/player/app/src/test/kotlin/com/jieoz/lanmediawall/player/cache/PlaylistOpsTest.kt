@@ -16,7 +16,7 @@ class PlaylistOpsTest {
 
     private fun playlist(id: String, items: List<MediaItem>): Playlist =
         Playlist(
-            playlistId = id, groupId = null, sync = true, loop = false,
+            playlistId = id, groupId = null, sync = true, loopMode = LoopMode.NONE,
             items = items,
             raw = Json.parse("""{"playlist_id":"$id","items":[]}"""),
         ).withItems(items)
@@ -81,6 +81,13 @@ class PlaylistOpsTest {
         assertEquals(PlaylistOps.Mode.REPLACE, PlaylistOps.Mode.parse("bogus"))
         assertEquals(PlaylistOps.Mode.APPEND, PlaylistOps.Mode.parse("append"))
         assertEquals(PlaylistOps.Mode.APPEND, PlaylistOps.Mode.parse("APPEND"))
+    }
+
+    @Test fun `only empty replace is the clear-and-stop command`() {
+        val a = item("a")
+        assertEquals(true, PlaylistOps.isClear(PlaylistOps.Mode.REPLACE, emptyList()))
+        assertEquals(false, PlaylistOps.isClear(PlaylistOps.Mode.APPEND, emptyList()))
+        assertEquals(false, PlaylistOps.isClear(PlaylistOps.Mode.REPLACE, listOf(a)))
     }
 
     @Test fun `two distinct items make prev-next reach distinct targets`() {

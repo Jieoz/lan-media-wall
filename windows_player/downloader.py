@@ -91,11 +91,20 @@ class CacheEntry:
     path: Optional[Path] = None
 
     def status_value(self) -> str:
-        """Render to the status.cache string form (§5.1)."""
+        """Render to the status.cache string form (§5.1 / §6.4).
+
+        Truthfulness invariant (E0001): the wire string is the ONLY completion
+        signal the controller can see, and it must NEVER report 100 before the
+        atomic finalize + checksum. The last chunk makes ``progress`` reach 100
+        while ``state`` is still ``downloading`` (verify+``part.replace`` happen
+        after), so the DOWNLOADING projection is capped at 99. 100 appears only
+        as ``ready`` — after sha256 verify and the atomic publish.
+        """
         if self.state == "ready":
             return "ready"
         if self.state == "downloading":
-            return f"downloading:{self.progress}%"
+            pct = 99 if self.progress >= 100 else max(0, self.progress)
+            return f"downloading:{pct}%"
         if self.state == "verifying":
             return "verifying"
         if self.state == "error":

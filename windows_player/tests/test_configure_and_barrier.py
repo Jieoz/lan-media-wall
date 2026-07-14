@@ -111,8 +111,10 @@ class _FakeDownloader:
         self._ready.add(item_id)
 
 
-def _seed_playlist(p, item_id="v1", type_="video"):
-    pl = {"playlist_id": "pl1", "items": [
+def _seed_playlist(p, item_id="v1", type_="video", push_id="push-1"):
+    # §6.3b: the resolved playlist carries the push_id the controller assigned;
+    # prepare/play_at only act when the payload echoes this exact push_id.
+    pl = {"playlist_id": "pl1", "push_id": push_id, "items": [
         {"item_id": item_id, "type": type_, "url": "http://x/%s" % item_id}]}
     p._resolve_playlist = lambda pid: pl if pid == "pl1" else None  # type: ignore
 
@@ -126,8 +128,8 @@ def test_barrier_defers_then_ready_when_cache_completes(tmp_path):
     async def scenario():
         # start barrier prepare; item not cached → must NOT answer immediately
         await p._h_prepare(
-            {"playlist_id": "pl1", "start_index": 0, "prefetch": True,
-             "barrier_timeout_ms": 5000}, {})
+            {"playlist_id": "pl1", "push_id": "push-1", "start_index": 0,
+             "prefetch": True, "barrier_timeout_ms": 5000}, {})
         await asyncio.sleep(0.1)
         assert p.ws.sent == [], "barrier must defer ready until cache ready"
         assert dl.prefetched, "should have kicked a prefetch"
@@ -150,8 +152,8 @@ def test_barrier_times_out_to_not_ready(tmp_path):
 
     async def scenario():
         await p._h_prepare(
-            {"playlist_id": "pl1", "start_index": 0, "prefetch": True,
-             "barrier_timeout_ms": 50}, {})  # never marked ready
+            {"playlist_id": "pl1", "push_id": "push-1", "start_index": 0,
+             "prefetch": True, "barrier_timeout_ms": 50}, {})  # never marked ready
         await asyncio.wait_for(p._barrier_task, timeout=3)
 
     _run(scenario())
@@ -167,7 +169,7 @@ def test_non_barrier_prepare_reports_not_ready_immediately(tmp_path):
     _seed_playlist(p)
 
     _run(p._h_prepare(
-        {"playlist_id": "pl1", "start_index": 0}, {}))  # no prefetch flag
+        {"playlist_id": "pl1", "push_id": "push-1", "start_index": 0}, {}))  # no prefetch flag
     readies = [pl for (t, pl) in p.ws.sent if t == "ready"]
     assert len(readies) == 1
     assert readies[0]["ready"] is False  # legacy behavior preserved
@@ -181,6 +183,7 @@ def test_prepare_ready_echoes_p2p_session_identity(tmp_path):
 
     _run(p._h_prepare({
         "playlist_id": "pl1",
+        "push_id": "push-1",
         "prepare_id": "prep-42",
         "group_id": "lobby",
         "start_index": 0,
@@ -190,6 +193,59 @@ def test_prepare_ready_echoes_p2p_session_identity(tmp_path):
     assert len(readies) == 1
     assert readies[0]["prepare_id"] == "prep-42"
     assert readies[0]["group_id"] == "lobby"
+
+
+# ---- §6.3b push_id adoption gate (player half) ---------------------
+
+def test_prepare_rejects_wrong_push_id(tmp_path):
+    """§6.3b: a prepare whose push_id does not match the resolved playlist's
+    assigned push_id is a stale/foreign session — the player must ignore it
+    entirely (no prefetch, no ready), never adopting a superseded push."""
+    p = _player(tmp_path)
+    dl = _FakeDownloader()
+    p.downloader = dl  # type: ignore[assignment]
+    _seed_playlist(p, push_id="push-current")
+
+    _run(p._h_prepare(
+        {"playlist_id": "pl1", "push_id": "push-stale", "start_index": 0}, {}))
+
+    assert p.ws.sent == [], "prepare with mismatched push_id must be ignored"
+    assert dl.prefetched == [], "must not prefetch for a stale push_id"
+
+
+def test_prepare_rejects_missing_push_id(tmp_path):
+    """§6.3b: a prepare with no push_id predates the adoption contract and is
+    rejected fail-closed — the player never acts on an unidentified push."""
+    p = _player(tmp_path)
+    dl = _FakeDownloader()
+    p.downloader = dl  # type: ignore[assignment]
+    _seed_playlist(p, push_id="push-current")
+
+    _run(p._h_prepare({"playlist_id": "pl1", "start_index": 0}, {}))
+
+    assert p.ws.sent == [], "prepare without push_id must be ignored"
+    assert dl.prefetched == [], "must not prefetch without a push_id"
+
+
+def test_play_at_rejects_wrong_push_id(tmp_path):
+    """§6.3b: the sync-critical play_at must also refuse a mismatched push_id,
+    so a superseded controller session can never drive playback."""
+    p = _player(tmp_path)
+    dl = _FakeDownloader()
+    p.downloader = dl  # type: ignore[assignment]
+    _seed_playlist(p, push_id="push-current")
+    dl.mark("v1")
+    before_index = p.index
+
+    _run(p._h_play_at({
+        "playlist_id": "pl1",
+        "push_id": "push-stale",
+        "start_index": 0,
+        "play_at": 0,
+    }, {}))
+
+    assert p.index == before_index, "play_at with wrong push_id must not advance"
+    assert not p._mpv_calls, "play_at with wrong push_id must not touch mpv"
 
 
 def test_debug_snapshot_returns_diagnostic_status(tmp_path):

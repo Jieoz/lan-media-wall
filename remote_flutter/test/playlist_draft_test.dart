@@ -54,7 +54,7 @@ void main() {
         playlistId: 'pl-live',
         groupId: 'lobby',
         sync: false,
-        loop: true,
+        loopMode: LoopMode.all,
         items: [_c, _a],
       );
 
@@ -63,7 +63,7 @@ void main() {
       expect(draft.playlistId, 'pl-live');
       expect(draft.groupId, 'lobby');
       expect(draft.sync, isFalse);
-      expect(draft.loop, isTrue);
+      expect(draft.loopMode, LoopMode.all);
       expect(draft.items.map((item) => item.itemId), ['c', 'a']);
     });
 

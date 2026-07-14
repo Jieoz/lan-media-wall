@@ -280,3 +280,7 @@ class PersistentState:
         if pid:
             self.playlists[pid] = playlist
             self.save()
+
+    def delete_playlist(self, playlist_id: str) -> None:
+        if self.playlists.pop(playlist_id, None) is not None:
+            self.save()

@@ -48,10 +48,14 @@ data class Playlist(
     val playlistId: String,
     val groupId: String?,
     val sync: Boolean,
-    val loop: Boolean,
+    /** §6.3 canonical loop mode (folds loop_mode + legacy loop). */
+    val loopMode: LoopMode,
     val items: List<MediaItem>,
     val raw: Json,
 ) {
+    val pushId: String? get() = raw["push_id"].asString()
+    /** Legacy accessor retained for callers still thinking in booleans. */
+    val loop: Boolean get() = loopMode.legacyLoopBool
     /**
      * Return a copy whose [items] are [newItems], with [raw] rebuilt so the
      * merged sequence persists verbatim (§6.3 append). Reuses each item's own
@@ -75,7 +79,7 @@ data class Playlist(
                 playlistId = pid,
                 groupId = node["group_id"].asString(),
                 sync = node["sync"].asBoolOrNull() ?: true,
-                loop = node["loop"].asBoolOrNull() ?: false,
+                loopMode = LoopMode.resolve(node), // §6.3 single fold point
                 items = items,
                 raw = node,
             )

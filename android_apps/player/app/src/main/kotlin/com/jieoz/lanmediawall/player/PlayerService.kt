@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import com.jieoz.lanmediawall.player.cache.Downloader
 import java.io.File
 import com.jieoz.lanmediawall.player.cache.LastTask
+import com.jieoz.lanmediawall.player.cache.LoopMode
 import com.jieoz.lanmediawall.player.cache.MediaItem
 import com.jieoz.lanmediawall.player.cache.MediaStore
 import com.jieoz.lanmediawall.player.cache.Playlist
@@ -103,6 +104,7 @@ class PlayerService : Service() {
     /** Generation guard + job handle prevent stale prepare waiters from priming. */
     private val prepareGeneration = PrepareGeneration()
     private val prepareWaiter = AtomicReference<Job?>(null)
+    private val restoreTask = AtomicReference<Job?>(null)
     /** §6.3 carousel: pending "hold this image for duration_ms, then advance"
      *  timer. Cancelled by any new prepare/play_at/advance/stop. */
     private val dwellTimer = AtomicReference<Job?>(null)
@@ -500,6 +502,9 @@ class PlayerService : Service() {
             put("state", effectiveState())
             put("current", currentJson)
             put("playlist_id", playlist?.playlistId)
+            // Per-replace command identity: unlike playlist_id, this is never
+            // reused and therefore proves that this exact job was adopted.
+            put("push_id", playlist?.raw?.get("push_id")?.asString())
             put("active_playlist", playlist?.raw ?: Json.Null)
             // §6.3: the current position WITHIN the ordered active playlist, so a
             // controller shows/scrubs the real item instead of guessing. Additive
@@ -672,6 +677,13 @@ class PlayerService : Service() {
     private fun hPlaylist(payload: Json.Obj) {
         val incoming = Playlist.fromJson(payload) ?: return
         val mode = PlaylistOps.Mode.parse(payload["mode"].asString())
+        // §6.3a: empty REPLACE means "clear and stop". Persisting an empty
+        // playlist alone is insufficient because the old decoder/timer/frame
+        // would keep running.
+        if (PlaylistOps.isClear(mode, incoming.items)) {
+            clearActivePlaylist(incoming.playlistId)
+            return
+        }
         val prev = playlist
         // APPEND merges onto the current sequence but keeps the current playlist's
         // identity so navigation/persistence stay coherent; REPLACE adopts the
@@ -689,6 +701,11 @@ class PlayerService : Service() {
             )
             pl = incoming.withItems(merged.items)
             newIndex = merged.index
+            scheduledStart.getAndSet(null)?.cancel()
+            restoreTask.getAndSet(null)?.cancel()
+            prepareGeneration.cancel()
+            prepareWaiter.getAndSet(null)?.cancel()
+            dwellTimer.getAndSet(null)?.cancel()
         }
         playlist = pl
         index = newIndex
@@ -704,6 +721,27 @@ class PlayerService : Service() {
         // 旧媒体,给真实颗粒腾余量(prefetch 内部还会做配额 LRU + 写前探针)。
         reclaimOrphans(pl)
         if (pl.items.isNotEmpty()) downloader.prefetch(pl.items)
+    }
+
+    private fun clearActivePlaylist(playlistId: String) {
+        val activePlaylistId = playlist?.playlistId
+        scheduledStart.getAndSet(null)?.cancel()
+        restoreTask.getAndSet(null)?.cancel()
+        prepareGeneration.cancel()
+        prepareWaiter.getAndSet(null)?.cancel()
+        dwellTimer.getAndSet(null)?.cancel()
+        controllerRef?.stop()
+        // Invalidate the definition too: a delayed prepare/play_at for the same
+        // id must not resurrect content after CLEAR.
+        activePlaylistId?.let { mediaStore.deletePlaylist(it) }
+        if (playlistId != activePlaylistId) mediaStore.deletePlaylist(playlistId)
+        playlist = null
+        index = 0
+        playState = "idle"
+        persistLastTaskNull()
+        updateCacheProtection(null)
+        logEvent("playlist mode=replace id=$playlistId items=0 cleared=true")
+        MainActivity.instance?.showIdle()
     }
 
     /**
@@ -753,6 +791,7 @@ class PlayerService : Service() {
         val pid = payload["playlist_id"].asString()
         val groupId = payload["group_id"].asString()
         val prepareId = payload["prepare_id"].asString()
+        val pushId = payload["push_id"].asString()
         val startIndex = payload["start_index"].asIntOrNull() ?: 0
         val seekMs = payload["seek_ms"].asLongOrNull() ?: 0L
         // §21 预缓存栅栏:prefetch=true 表示"缓存好再回 ready"。未缓存时不立刻回
@@ -760,11 +799,12 @@ class PlayerService : Service() {
         val prefetchBarrier = payload["prefetch"].asBoolOrNull() ?: false
         val barrierTimeoutMs = payload["barrier_timeout_ms"].asLongOrNull() ?: 120000L
         val pl = resolvePlaylist(pid)
+        if (pl == null || pushId.isNullOrEmpty() || pl.pushId != pushId) return
         var ready = false
         dwellTimer.getAndSet(null)?.cancel() // §6.3: a new session voids any dwell
         prepareWaiter.getAndSet(null)?.cancel() // stale prepare cannot prime/send ready
         val generation = prepareGeneration.replace()
-        if (pl != null && startIndex in pl.items.indices) {
+        if (startIndex in pl.items.indices) {
             val item = pl.items[startIndex]
             playlist = pl
             index = startIndex
@@ -847,10 +887,12 @@ class PlayerService : Service() {
     // --- §9.2 play_at (sync-critical path) ---------------------------
     private fun hPlayAt(payload: Json.Obj) {
         val pid = payload["playlist_id"].asString()
+        val pushId = payload["push_id"].asString()
         val startIndex = payload["start_index"].asIntOrNull() ?: index
         val seekMs = payload["seek_ms"].asLongOrNull() ?: 0L
         val playAt = payload["play_at"].asLongOrNull() ?: 0L
         val pl = resolvePlaylist(pid) ?: return
+        if (pushId.isNullOrEmpty() || pl.pushId != pushId) return
         if (startIndex !in pl.items.indices) return
         playlist = pl
         index = startIndex
@@ -919,6 +961,7 @@ class PlayerService : Service() {
     // --- §9.3 controls -----------------------------------------------
     private fun hPause(payload: Json.Obj) {
         if (!targetsMe(payload)) return
+        scheduledStart.getAndSet(null)?.cancel()
         controllerRef?.pause()
         playState = "paused"
     }
@@ -928,14 +971,16 @@ class PlayerService : Service() {
         val playAt = payload["play_at"].asLongOrNull()
         if (playAt != null && playAt > 0) {
             val localTarget = clock.toLocal(playAt)
-            scope.launch {
+            val job = scope.launch {
                 val delayMs = (localTarget - System.currentTimeMillis()).coerceAtLeast(0)
                 delay(delayMs)
                 controllerRef?.play()
                 playState = "playing"
                 MainActivity.instance?.hideIdle()
             }
+            scheduledStart.getAndSet(job)?.cancel()
         } else {
+            scheduledStart.getAndSet(null)?.cancel()
             controllerRef?.play()
             playState = "playing"
             MainActivity.instance?.hideIdle()
@@ -956,7 +1001,7 @@ class PlayerService : Service() {
 
     private fun hAdvance(payload: Json.Obj, delta: Int) {
         if (!targetsMe(payload)) return
-        advance(delta)
+        advance(delta, explicit = true)  // §6.3 explicit prev/next navigates even in ONE
     }
 
     /** §9.4 restart：只重启播放 App，绝不整机 reboot（§restart-semantics）。
@@ -1174,15 +1219,22 @@ class PlayerService : Service() {
      * an image is shown + its dwell armed; a video is loaded and auto-advances
      * on end. Any pending dwell is cancelled first so timers never stack.
      */
-    private fun advance(delta: Int) {
+    private fun advance(delta: Int, explicit: Boolean = false) {
         val pl = playlist ?: return
         if (pl.items.isEmpty()) return
         val oldItemId = pl.items.getOrNull(index)?.itemId
         dwellTimer.getAndSet(null)?.cancel()
-        var newIndex = index + delta
+        // §6.3 three-mode progression. ONE on an automatic (EOF/dwell) completion
+        // holds the current item — the seamless repeat happens inside the decoder
+        // (OEM_CONTINUOUS), so an auto-advance is a no-op re-show. An explicit
+        // prev/next in ONE still navigates (with wrap). ALL wraps; NONE clamps.
+        var newIndex = if (pl.loopMode == LoopMode.ONE && !explicit) index
+                       else index + delta
         if (newIndex < 0 || newIndex >= pl.items.size) {
-            if (pl.loop) newIndex = ((newIndex % pl.items.size) + pl.items.size) % pl.items.size
-            else return
+            val wrap = pl.loopMode == LoopMode.ALL ||
+                (pl.loopMode == LoopMode.ONE && explicit)
+            if (wrap) newIndex = ((newIndex % pl.items.size) + pl.items.size) % pl.items.size
+            else return  // NONE clamps at the boundary
         }
         index = newIndex
         val item = pl.items[newIndex]
@@ -1203,7 +1255,7 @@ class PlayerService : Service() {
             val held = oldItemId?.let { ctl?.cachedThumbnail(it)?.second }
             val overlay = ctl?.showTransitionFrame(held) == true
             logEvent("transition to=${item.itemId} idx=$newIndex strategy=$strat " +
-                "overlay_cached=$overlay loop_strategy=${TransitionPolicy.loopStrategy(pl.items.size, pl.loop)}")
+                "overlay_cached=$overlay loop_strategy=${TransitionPolicy.loopStrategy(pl.items.size, pl.loopMode)}")
             ctl?.loadAndPlay(source, 0, singleLoop(pl), preserveOverlay = overlay)
         }
         playState = "playing"
@@ -1233,7 +1285,7 @@ class PlayerService : Service() {
      *  so no black seam. A multi-item loop must reach end-of-stream so we can
      *  advance + wrap. Single source of truth: [TransitionPolicy.loopStrategy]. */
     private fun singleLoop(pl: Playlist): Boolean =
-        TransitionPolicy.loopStrategy(pl.items.size, pl.loop) ==
+        TransitionPolicy.loopStrategy(pl.items.size, pl.loopMode) ==
             TransitionPolicy.LoopStrategy.OEM_CONTINUOUS
 
     private fun hSetVolume(payload: Json.Obj) {
@@ -1458,8 +1510,7 @@ class PlayerService : Service() {
     private fun resolvePlaylist(pid: String?): Playlist? {
         val current = playlist
         if (current != null && current.playlistId == pid) return current
-        if (pid != null) mediaStore.loadPlaylist(pid)?.let { return it }
-        return current
+        return if (pid != null) mediaStore.loadPlaylist(pid) else null
     }
 
     private fun currentItem(): MediaItem? {
@@ -1559,7 +1610,9 @@ class PlayerService : Service() {
     /** Called by MainActivity after PlayerController + surfaces are ready. */
     fun onPlayerUiReady() {
         wireController()
-        scope.launch { resumeLast() }
+        restoreTask.getAndSet(null)?.cancel()
+        val job = scope.launch { resumeLast() }
+        restoreTask.set(job)
     }
 
     /**
