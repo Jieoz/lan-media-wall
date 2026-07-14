@@ -291,7 +291,7 @@ jobs:
           flutter build windows --release
           --dart-define=LMW_DISABLE_SCANNER=true
           --dart-define=LMW_DISABLE_QR=true
-          --dart-define=LMW_PRODUCT_NAME=LAN Media Wall Windows Controller
+          "--dart-define=LMW_PRODUCT_NAME=LAN Media Wall Windows Controller"
 
       - name: Verify and package controller bundle
         shell: pwsh

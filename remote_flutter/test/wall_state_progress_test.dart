@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:remote_flutter/protocol/messages.dart';
-import 'package:remote_flutter/state/media_progress.dart';
 import 'package:remote_flutter/state/wall_state.dart';
 
 /// §6.4/E0004 WallState-level regressions for the media-push progress barrier.
