@@ -1,6 +1,8 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
-> **v1.16.0：**本次为播放端 Phase A 缓存清理内核 + 协议合同(仅内核,未接线)统一晋级,**控制端本身无功能改动**;版本随全端单一真相源 `pubspec.yaml` 同步递增。Phase B(请求路由、状态发射、broker/P2P 回传、Flutter UI、能力声明)尚未接线,控制端不呈现任何缓存清理入口。
+> **v1.17.0 Phase B 缓存清理接线(已发布):**控制端把 broker 与 P2P 两条 `cache_cleanup_result` / `cache_inventory_result` 接收路径**汇入同一个 `CacheOpsReducer`**(`lib/state/cache_ops.dart`),按 `request_id + device_id` 键做设备隔离、幂等去重、陈旧/迟到结果拒绝、超时收割与互不混淆的终态(成功/部分/失败/超时/不支持/离线/代次冲突)。设备详情弹窗新增独立的**「缓存管理」**入口(`lib/ui/cache_management.dart`):清单 → 演练(dry-run,零删除) → 显式确认 → 提交,展示总量/可回收/受保护/下载中摘要与逐项保护原因,提供每台设备终态与重试;真实删除必须过一道确认对话框并只按演练回来的候选 `item_id` 下发。能力真值:目标未广告 `cache_cleanup_v1` / `cache_inventory_v1` 直接置 `unsupported`,绝不「发了没回」冒充支持。播放列表行删除仍只是「移出列表」,不动缓存。窄屏(320)不溢出。不含 Phase C 组实时编排;正式字节由 exact-SHA 云 CI + release-promote 门禁。
+
+> **v1.16.0：**本次为播放端 Phase A 缓存清理内核 + 协议合同(仅内核,未接线)统一晋级,**控制端本身无功能改动**;版本随全端单一真相源 `pubspec.yaml` 同步递增。Phase B(请求路由、状态发射、broker/P2P 回传、Flutter UI、能力声明)在上面的候选条目落地。
 
 > **v1.15.3：**控制端选择在线设备后，会把该机上报的有序 `active_playlist`、当前播放项和循环模式完整载入同一个 `PlaylistDraft`。编排栏与设备卡推送弹窗都能标记当前项、上移/下移、删除、追加并整列应用；重排按 `item_id` 跟踪当前媒体，删除节目项不删缓存。旧版设备未上报活动列表时会清空上一台草稿，避免跨设备误发；上传期间禁止关闭弹窗，避免异步回调访问已销毁状态。版本同时包含 Android Player 设置页诊断刷新修复。
 
@@ -33,7 +35,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.16.0+66`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.17.0+67`(`pubspec.yaml`)。CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >

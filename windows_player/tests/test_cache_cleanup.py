@@ -14,6 +14,7 @@ Behaviour matrix (mirrored by Kotlin CacheCleanupTest.kt):
 """
 import os
 import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -102,7 +103,21 @@ class FakeBackend:
 
 
 def cleanup(backend):
-    return C.CacheCleanup(backend)
+    core = C.CacheCleanup(backend)
+
+    class ValidRequestAdapter:
+        def run(self, request):
+            # Existing planner/protection tests exercise a valid destructive
+            # selected commit under the new wire contract.
+            if not request.dry_run:
+                if request.mode == "unreferenced":
+                    request.mode = "selected"
+                    request.item_ids = [it["item_id"] for it in backend.inventory()]
+                if request.expected_push_id is None:
+                    request.expected_push_id = backend.current_push_id()
+            return core.run(request)
+
+    return ValidRequestAdapter()
 
 
 def req(request_id="r1", mode="unreferenced", item_ids=None, dry_run=False,
@@ -110,6 +125,24 @@ def req(request_id="r1", mode="unreferenced", item_ids=None, dry_run=False,
     return C.CleanupRequest(request_id=request_id, mode=mode,
                             item_ids=item_ids, dry_run=dry_run,
                             expected_push_id=expected_push_id, reason=reason)
+
+
+def test_direct_broad_commit_is_rejected_by_core():
+    a = item("a", "AA")
+    be = FakeBackend([a])
+    res = C.CacheCleanup(be).run(req(mode="unreferenced", dry_run=False))
+    assert res["ok"] is False and res["error"] == C.INVALID_REQUEST
+    assert be.deleted_keys == []
+
+
+def test_selected_commit_requires_nonempty_ids_and_generation():
+    a = item("a", "AA")
+    for ids, generation in [([], "push-1"), (["a"], None)]:
+        be = FakeBackend([a])
+        res = C.CacheCleanup(be).run(
+            req(mode="selected", item_ids=ids, expected_push_id=generation))
+        assert res["ok"] is False and res["error"] == C.INVALID_REQUEST
+        assert be.deleted_keys == []
 
 
 # --- protection matrix ---------------------------------------------------
@@ -292,6 +325,54 @@ def test_delete_failure_reports_delete_failed():
     assert res["deleted"] == []
 
 
+# --- receive-loop latency: scan must not hold the generation lock --------
+def test_scan_does_not_hold_generation_lock_for_its_whole_duration():
+    """Design req. 10 + fail-closed §4.2: the SHARED generation lock (also held
+    by playlist handlers) must NOT be occupied for the whole O(N) scan/plan. It
+    is legitimately held only for the pre-delete generation re-check + the
+    delete hand-off. This observes behaviour, not the private lock field: while a
+    cleanup is blocked mid-scan, a playlist-handler-equivalent MUST still be able
+    to take the generation lock promptly."""
+    gen_lock = threading.RLock()
+    scanning = threading.Event()   # set once we are inside the (blocked) scan
+    release_scan = threading.Event()
+
+    a, h = item("a", "AA"), item("h", "HH")
+
+    class BlockingScanBackend(FakeBackend):
+        def build_snapshot(self):
+            scanning.set()
+            # simulate a slow scan; a correct design is NOT holding gen_lock here
+            release_scan.wait(2.0)
+            return super().build_snapshot()
+
+    be = BlockingScanBackend([a, h])
+    core = C.CacheCleanup(be, lock=gen_lock)
+
+    result_box = {}
+
+    def worker():
+        result_box["res"] = core.run(req(
+            mode="selected", item_ids=["a", "h"], expected_push_id="push-1"))
+
+    t = threading.Thread(target=worker)
+    t.start()
+    assert scanning.wait(2.0), "scan never started"
+
+    # A concurrent playlist handler must be able to grab the generation lock
+    # while the cleanup is parked mid-scan. With the old design (whole run under
+    # gen_lock) this acquire blocks and times out.
+    got = gen_lock.acquire(timeout=1.0)
+    if got:
+        gen_lock.release()
+    release_scan.set()
+    t.join(3.0)
+    assert got, "generation lock was held for the entire scan (receive-loop stall)"
+    # fail-closed semantics intact: the unprotected blobs still delete on commit.
+    assert result_box["res"]["ok"] is True
+    assert set(be.deleted_keys) == {content_key_of(a), content_key_of(h)}
+
+
 # --- generation protection ----------------------------------------------
 def test_expected_push_mismatch_fails_closed():
     a = item("a", "AA")
@@ -300,6 +381,41 @@ def test_expected_push_mismatch_fails_closed():
     assert res["ok"] is False
     assert res["error"] == C.GENERATION_MISMATCH
     assert be.deleted_keys == []  # nothing deleted
+
+
+def test_idle_device_destructive_commit_is_forbidden_fail_closed():
+    """Phase B limitation, made EXPLICIT: an IDLE device has NO adopted
+    generation — ``current_push_id()`` is None. A destructive commit requires a
+    NON-EMPTY ``expected_push_id`` (else invalid_request); that non-empty token
+    can never equal the idle None, so the pre-plan guard fails closed with
+    ``generation_mismatch`` and deletes nothing. We do NOT invent a sentinel or
+    weaken the contract: destructive cleanup on an idle device is simply not
+    possible in Phase B (no established generation-token mechanism for idle)."""
+    a = item("a", "AA")
+    be = FakeBackend([a], push_id=None)  # idle: no active playlist/generation
+
+    # (1) a destructive commit that OMITS the generation is invalid_request —
+    # the empty-generation path is never even planned.
+    res_missing = C.CacheCleanup(be).run(
+        req(mode="selected", item_ids=["a"], expected_push_id=None))
+    assert res_missing["ok"] is False
+    assert res_missing["error"] == C.INVALID_REQUEST
+    assert be.deleted_keys == []
+
+    # (2) supplying ANY non-empty generation on an idle device fails closed:
+    # non-empty token != idle None → generation_mismatch, nothing deleted.
+    res_supplied = C.CacheCleanup(be).run(
+        req(mode="selected", item_ids=["a"], expected_push_id="push-anything"))
+    assert res_supplied["ok"] is False
+    assert res_supplied["error"] == C.GENERATION_MISMATCH
+    assert res_supplied["observed_push_id"] is None
+    assert be.deleted_keys == []
+
+    # (3) a dry-run is still fine on idle (non-destructive, no generation needed).
+    res_dry = C.CacheCleanup(be).run(req(mode="selected", item_ids=["a"],
+                                         dry_run=True))
+    assert res_dry["ok"] is True and res_dry["dry_run"] is True
+    assert be.deleted_keys == []
 
 
 def test_generation_change_between_plan_and_commit_aborts():

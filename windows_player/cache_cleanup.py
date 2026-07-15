@@ -22,6 +22,7 @@ and so Android's ``CacheCleanup.kt`` can mirror the exact algorithm.
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ GENERATION_MISMATCH = "generation_mismatch"
 GENERATION_CHANGED = "generation_changed"
 # per-item failure reason
 DELETE_FAILED = "delete_failed"
+INVALID_REQUEST = "invalid_request"
 
 _JOURNAL_MAX = 128  # bounded idempotency journal (design req. 7)
 
@@ -46,6 +48,18 @@ class CleanupRequest:
     dry_run: bool = False
     expected_push_id: Optional[str] = None
     reason: str = "manual"              # manual | after_playlist_replace | quota
+    target: str = "all"
+
+
+def operation_fingerprint(request_type: str, target: str, mode: str,
+                          dry_run: bool, item_ids: Optional[List[str]],
+                          expected_push_id: Optional[str], reason: str) -> str:
+    """SHA-256 of a cross-platform, unambiguous length-prefixed field stream."""
+    fields = [request_type, target, mode, "true" if dry_run else "false",
+              *(item_ids or []), expected_push_id or "", reason]
+    canonical = "".join(
+        f"{len(str(value).encode('utf-8'))}:{value}" for value in fields)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -72,12 +86,34 @@ class CacheCleanup:
 
     def __init__(self, backend: Any, *, lock: Optional[threading.RLock] = None):
         self._be = backend
-        self._lock = lock or threading.RLock()
+        # generation lock: SHARED with the player's playlist handlers. Held ONLY
+        # for the fast generation validation + delete hand-off, NEVER for the
+        # O(N) scan/plan — so the receive loop and playback transitions are not
+        # stalled for a whole cleanup (design req. 10).
+        self._gen_lock = lock or threading.RLock()
+        # transaction lock: PRIVATE. Serializes cleanup runs against each other
+        # and guards the idempotency journal, without blocking playlist handlers.
+        self._txn_lock = threading.RLock()
         self._journal: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
     # --- public entrypoint -------------------------------------------
     def run(self, request: CleanupRequest) -> Dict[str, Any]:
-        with self._lock:
+        # Serialize cleanups + protect the journal WITHOUT holding the shared
+        # generation lock across the scan. The generation lock is taken only in
+        # the tight critical sections below (_observe_generation / _commit_locked).
+        with self._txn_lock:
+            if not request.request_id or request.mode not in ("selected", "unreferenced"):
+                return self._abort(request, INVALID_REQUEST,
+                                   self._observe_generation())
+            if not request.dry_run and (
+                    request.mode != "selected" or
+                    not isinstance(request.item_ids, list) or
+                    not request.item_ids or
+                    not all(isinstance(i, str) and i for i in request.item_ids) or
+                    not isinstance(request.expected_push_id, str) or
+                    not request.expected_push_id):
+                return self._abort(request, INVALID_REQUEST,
+                                   self._observe_generation())
             # idempotency: a committed request_id replays its terminal result.
             prior = self._journal.get(request.request_id)
             if prior is not None:
@@ -85,13 +121,16 @@ class CacheCleanup:
                 replay["idempotent_replay"] = True
                 return replay
 
-            observed_push = self._be.current_push_id()
+            observed_push = self._observe_generation()
 
             # fail-closed generation guard (pre-plan)
             if request.expected_push_id is not None and \
                     request.expected_push_id != observed_push:
                 return self._abort(request, GENERATION_MISMATCH, observed_push)
 
+            # SCAN/PLAN OUTSIDE the generation lock — this is the long part. A
+            # generation move that races the scan is caught fail-closed by the
+            # re-check inside _commit_locked() before any physical delete.
             snapshot = self._be.build_snapshot()
             plan = self._plan(request, snapshot)
 
@@ -101,8 +140,20 @@ class CacheCleanup:
                                     deleted=self._planned_as_deleted(plan),
                                     failed=[], dry_run=True, committed=False)
 
-            # RE-validate generation under the lock, just before deleting. If the
-            # adopted generation moved since we read it, abort deleting nothing.
+            return self._commit_locked(request, plan, observed_push)
+
+    def _observe_generation(self) -> Optional[str]:
+        with self._gen_lock:
+            return self._be.current_push_id()
+
+    def _commit_locked(self, request: CleanupRequest, plan: _Plan,
+                       observed_push: Optional[str]) -> Dict[str, Any]:
+        """Generation-critical section: RE-validate the adopted generation and
+        perform every physical delete while holding the generation lock, so no
+        playlist swap can slip a newly-protected blob under us mid-batch. If the
+        generation moved since the pre-plan read, abort deleting NOTHING
+        (fail-closed). Held only for the fast re-check + deletes, not the scan."""
+        with self._gen_lock:
             recheck = self._be.current_push_id()
             if recheck != observed_push or (
                     request.expected_push_id is not None
@@ -187,6 +238,9 @@ class CacheCleanup:
         freed = sum(d["bytes"] for d in deleted)
         return {
             "request_id": request.request_id,
+            "operation_fingerprint": operation_fingerprint(
+                "cache_cleanup", request.target, request.mode, request.dry_run,
+                request.item_ids, request.expected_push_id, request.reason),
             "ok": True,
             "error": "",
             "dry_run": dry_run,
@@ -205,6 +259,9 @@ class CacheCleanup:
                observed_push: Optional[str]) -> Dict[str, Any]:
         result = {
             "request_id": request.request_id,
+            "operation_fingerprint": operation_fingerprint(
+                "cache_cleanup", request.target, request.mode, request.dry_run,
+                request.item_ids, request.expected_push_id, request.reason),
             "ok": False,
             "error": error,
             "dry_run": request.dry_run,

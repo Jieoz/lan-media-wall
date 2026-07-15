@@ -58,6 +58,7 @@ class Device:
             "last_ip": self.last_ip,
             "online": self.online,
             "last_seen": self.last_seen,
+            "capabilities": list(self.capabilities),
         })
         return d
 

@@ -1,5 +1,7 @@
 package com.jieoz.lanmediawall.player.cache
 
+import java.security.MessageDigest
+
 /**
  * CacheCleanup — proven-safe cache cleanup core (design §3.2 / §4.2).
  *
@@ -24,8 +26,17 @@ package com.jieoz.lanmediawall.player.cache
  */
 class CacheCleanup(
     private val backend: Backend,
+    // generation lock: SHARED with the player's playlist handlers. Held ONLY for
+    // the fast generation validation + delete hand-off, NEVER for the O(N)
+    // scan/plan — so the receive loop and playback transitions are not stalled
+    // for a whole cleanup (design req. 10).
+    private val genLock: Any = Any(),
 ) {
-    private val lock = Any()
+    // transaction lock: PRIVATE. Serializes cleanup runs against each other and
+    // guards the idempotency journal, without blocking playlist handlers on the
+    // generation lock for the scan duration.
+    private val txnLock = Any()
+
     // bounded idempotency journal (design req. 7), insertion-ordered.
     private val journal = object : LinkedHashMap<String, CleanupResult>(
         16, 0.75f, false) {
@@ -57,6 +68,7 @@ class CacheCleanup(
         val dryRun: Boolean = false,
         val expectedPushId: String? = null,
         val reason: String = "manual",
+        val target: String = "all",
     )
 
     data class Deleted(val itemId: String, val contentKey: String, val bytes: Long)
@@ -65,6 +77,7 @@ class CacheCleanup(
 
     data class CleanupResult(
         val requestId: String,
+        val operationFingerprint: String,
         val ok: Boolean,
         val error: String,
         val dryRun: Boolean,
@@ -94,16 +107,31 @@ class CacheCleanup(
 
     // --- public entrypoint ------------------------------------------
     fun run(request: Request): CleanupResult {
-        synchronized(lock) {
+        // Serialize cleanups + protect the journal WITHOUT holding the shared
+        // generation lock across the scan. The generation lock is taken only in
+        // the tight critical sections (observeGeneration / commitLocked).
+        synchronized(txnLock) {
+            if (request.requestId.isBlank() ||
+                request.mode !in setOf("selected", "unreferenced")) {
+                return abort(request, INVALID_REQUEST, observeGeneration())
+            }
+            if (!request.dryRun && (request.mode != "selected" ||
+                request.itemIds.isNullOrEmpty() || request.itemIds.any { it.isEmpty() } ||
+                request.expectedPushId.isNullOrEmpty())) {
+                return abort(request, INVALID_REQUEST, observeGeneration())
+            }
             journal[request.requestId]?.let { return it.copy(idempotentReplay = true) }
 
-            val observed = backend.currentPushId()
+            val observed = observeGeneration()
 
             // fail-closed generation guard (pre-plan)
             if (request.expectedPushId != null && request.expectedPushId != observed) {
                 return abort(request, GENERATION_MISMATCH, observed)
             }
 
+            // SCAN/PLAN OUTSIDE the generation lock — the long part. A generation
+            // move that races the scan is caught fail-closed by the re-check in
+            // commitLocked() before any physical delete.
             val snapshot = backend.buildSnapshot()
             val plan = plan(request, snapshot)
 
@@ -113,7 +141,23 @@ class CacheCleanup(
                     dryRun = true)
             }
 
-            // re-validate generation under lock, right before deleting.
+            return commitLocked(request, plan, observed)
+        }
+    }
+
+    private fun observeGeneration(): String? =
+        synchronized(genLock) { backend.currentPushId() }
+
+    /**
+     * Generation-critical section: RE-validate the adopted generation and
+     * perform every physical delete while holding the generation lock, so no
+     * playlist swap can slip a newly-protected blob under us mid-batch. If the
+     * generation moved since the pre-plan read, abort deleting NOTHING
+     * (fail-closed). Held only for the fast re-check + deletes, not the scan.
+     */
+    private fun commitLocked(request: Request, plan: Plan,
+                             observed: String?): CleanupResult {
+        synchronized(genLock) {
             val recheck = backend.currentPushId()
             if (recheck != observed ||
                 (request.expectedPushId != null && request.expectedPushId != recheck)) {
@@ -198,7 +242,9 @@ class CacheCleanup(
                        dryRun: Boolean): CleanupResult {
         val freed = deleted.sumOf { it.bytes }
         return CleanupResult(
-            requestId = request.requestId, ok = true, error = "",
+            requestId = request.requestId,
+            operationFingerprint = operationFingerprint(request),
+            ok = true, error = "",
             dryRun = dryRun, mode = request.mode, reason = request.reason,
             expectedPushId = request.expectedPushId, observedPushId = observed,
             deleted = deleted, skipped = ArrayList(plan.skipped), failed = failed,
@@ -209,7 +255,9 @@ class CacheCleanup(
     private fun abort(request: Request, error: String,
                      observed: String?): CleanupResult {
         val result = CleanupResult(
-            requestId = request.requestId, ok = false, error = error,
+            requestId = request.requestId,
+            operationFingerprint = operationFingerprint(request),
+            ok = false, error = error,
             dryRun = request.dryRun, mode = request.mode, reason = request.reason,
             expectedPushId = request.expectedPushId, observedPushId = observed,
             deleted = emptyList(), skipped = emptyList(), failed = emptyList(),
@@ -220,9 +268,42 @@ class CacheCleanup(
     }
 
     companion object {
+        /**
+         * Payload-derived fingerprint target, byte-identical to the broker
+         * (`_cleanup_fingerprint`) and Windows (`_h_cache_cleanup`):
+         * `device:<deviceId>` when the request is device-addressed, else
+         * `group:<groupId>` when group-addressed, else `all`. Empty strings are
+         * treated as absent (mirrors Python truthiness of the payload fields) so
+         * a GROUP-addressed request produces a matching `group:` fingerprint the
+         * broker's result gate accepts — never a spurious `device:` target.
+         */
+        fun targetFor(deviceId: String?, groupId: String?): String = when {
+            !deviceId.isNullOrEmpty() -> "device:$deviceId"
+            !groupId.isNullOrEmpty() -> "group:$groupId"
+            else -> "all"
+        }
+
+        fun operationFingerprint(request: Request): String {
+            val fields = ArrayList<String>()
+            fields.add("cache_cleanup")
+            fields.add(request.target)
+            fields.add(request.mode)
+            fields.add(if (request.dryRun) "true" else "false")
+            fields.addAll(request.itemIds ?: emptyList())
+            fields.add(request.expectedPushId ?: "")
+            fields.add(request.reason)
+            val canonical = fields.joinToString("") { value ->
+                "${value.toByteArray(Charsets.UTF_8).size}:$value"
+            }
+            return MessageDigest.getInstance("SHA-256")
+                .digest(canonical.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
+
         const val GENERATION_MISMATCH = "generation_mismatch"
         const val GENERATION_CHANGED = "generation_changed"
         const val DELETE_FAILED = "delete_failed"
+        const val INVALID_REQUEST = "invalid_request"
         private const val JOURNAL_MAX = 128
     }
 }

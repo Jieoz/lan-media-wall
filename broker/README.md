@@ -11,6 +11,21 @@ This implements the broker-side responsibilities of
 §19 / media library §20 / prefetch barrier §21). That spec is the contract —
 field names and semantics here follow it exactly.
 
+
+## v1.17.0 — cache cleanup / inventory routing
+
+Phase B routes the cache-lifecycle control plane through the broker without
+letting either role forge the other side:
+
+- controller→player only: `cache_cleanup`, `cache_inventory`
+- player→controller only: `cache_cleanup_result`, `cache_inventory_result`
+- results are **unicast** back to the initiating controller (not broadcast)
+- controller-forged results and player-forged requests are rejected
+- fingerprint gate stays byte-aligned with player/controller (`device:<id>` /
+  `group:<gid>` / `all`)
+
+`tests/test_cache_cleanup_routing.py` locks both directions and the unicast path.
+
 ## v1.15.0 — playlist/loop parity contract
 
 The broker continues to forward playlist payloads without rewriting their

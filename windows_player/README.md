@@ -1,5 +1,10 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.17.0 Phase B — 缓存清理已接线:**入站 `cache_cleanup` / `cache_inventory`
+> 已接到 live adapter,发射 `status.cache_summary`,并在 `hello.capabilities`
+> 广告能力位。删除仍只在播放端发生(item id,代次 fail-closed,受保护不删)。
+> Phase A 纯内核与跨语言夹具保持不变。
+>
 > **v1.16.0 Phase A — 缓存清理内核(仅内核,未接线):**新增经证明安全的缓存清理
 > 内核 `cache_hash.py` / `cache_refs.py` / `cache_cleanup.py`,与 Android
 > (`android_apps/player/.../cache/`) **协议等价、逐字节同构**(见
@@ -111,13 +116,12 @@ the `last_task` used for crash/reboot recovery.
   minimum this app hides the taskbar and keeps mpv fullscreen-topmost so the
   desktop is never exposed (§11).
 
-## Cache-lifecycle cleanup core (Phase A, §25–§29 — core only, not wired)
+## Cache-lifecycle cleanup (Phase A core + Phase B live wiring, §25–§29)
 
 Three pure modules implement the proven-safe cache cleanup contract. They are
 **byte-for-byte equivalent** to the Kotlin core in `android_apps/player`; both
 sides are frozen against the same fixture so the contract can't drift silently.
-They are **not** yet connected to any live request path — see the boundary note
-at the end.
+Phase B connects them to the live request path; safety semantics are unchanged.
 
 - **`cache_hash.py`** — `canonical_playlist_hash(playlist)` =
   `sha256(canonical_playlist_string(...))` over **playback semantics only**
@@ -147,13 +151,25 @@ at the end.
   never deletes twice. Results are structured per-item
   (`deleted` / `skipped` / `failed` with distinct reasons, `freed_bytes` counted
   once per physical `content_key`, `summary_after`) — never an optimistic ACK.
+  **Locking:** the SHARED generation lock (also held by playlist handlers) is
+  taken only for the fast generation re-check + the delete hand-off, **never**
+  for the O(N) scan/plan — a private transaction lock serializes cleanups and
+  guards the journal, so a running cleanup never stalls the receive loop or
+  playback transitions for the whole scan (design req. 10). The pre-delete
+  re-check under the generation lock keeps deletes fail-closed regardless.
+- **Idle device (Phase B limitation, by design):** an idle player has **no
+  adopted generation** (`current_push_id()` is `None`). A destructive commit
+  requires a **non-empty** `expected_push_id`; a non-empty token can never equal
+  the idle `None`, so it fails closed with `generation_mismatch` and deletes
+  nothing. This is deliberate: Phase B has no generation-token mechanism for an
+  idle device, so **destructive cleanup on an idle device is not possible** — no
+  sentinel is invented and the non-empty-generation safety contract is not
+  weakened. A `dry_run` (non-destructive) still works on an idle device.
 
-**Deliberate Phase B boundary (not done here, not user-visible):** inbound
-`cache_cleanup` / `cache_inventory` request routing, `status.cache_summary`
-emission, the broker/P2P return path, Flutter UI, and `hello.capabilities`
-advertisement of `cache_cleanup_v1` are all Phase B. This slice is the proven
-dual-language core and its safety semantics only; nothing about live cleanup is
-deployed.
+**Phase B (live):** inbound request routing, `status.cache_summary` emission,
+terminal result frames, and capability advertisement are wired. Safety contracts
+(item-id only, generation fail-closed, protected union, idempotent journal)
+remain identical to Phase A.
 
 ## Tests
 

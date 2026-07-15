@@ -9,6 +9,7 @@ import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
+import 'cache_management.dart';
 import 'device_wall_layout.dart';
 import 'invite_screen.dart';
 
@@ -675,6 +676,15 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                       onPressed: () {
                         Navigator.pop(ctx);
                         _pushContentToDeviceDialog(context, state, device);
+                      },
+                    ),
+                    // §27/§28 设备缓存管理:清单/演练/确认清理,与「推送内容」独立。
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.sd_storage),
+                      label: const Text('缓存管理'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        showCacheManagementDialog(context, state, device);
                       },
                     ),
                     // §23 单台推送升级:复用 _remoteUpdateDialog,目标预锁定该台。
