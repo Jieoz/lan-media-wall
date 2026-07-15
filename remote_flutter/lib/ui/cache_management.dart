@@ -1,3 +1,5 @@
+library;
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -19,7 +21,6 @@ import '../state/wall_state.dart';
 ///
 /// 本文件把「展示」与「链路」拆开:[CacheManagementView] 是有状态容器(持 dry-run 候选、
 /// 监听 [WallState] 通知),[CacheOpResultTile] 是纯展示,便于 widget 测试无需网络。
-library;
 
 /// 一个缓存操作终态的视觉呈现(图标 + 颜色 + 标签)。终态互不混淆(设计合同 §27)。
 class CacheOpVisual {
