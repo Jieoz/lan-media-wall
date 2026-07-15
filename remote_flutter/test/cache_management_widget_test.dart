@@ -183,8 +183,8 @@ void main() {
       await t.pumpWidget(_host(
           CacheManagementView(state: ws, deviceId: 'd1', deviceName: 'D1')));
       expect(find.text('请先演练'), findsOneWidget);
-      // FilledButton.icon keeps label under the button; prefer widgetWithText.
-      final commit = find.widgetWithText(FilledButton, '请先演练');
+      // Stable key — FilledButton.icon label ancestry is flaky across Flutter SDKs.
+      final commit = find.byKey(const Key('cache-commit-cleanup'));
       expect(commit, findsOneWidget);
       expect(t.widget<FilledButton>(commit).onPressed, isNull);
       expect(ws.cacheOperations.where((o) => o.kind == 'cleanup'), isEmpty);

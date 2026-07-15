@@ -474,6 +474,7 @@ class _CacheManagementViewState extends State<CacheManagementView> {
           label: const Text('演练(不删除)'),
         ),
         FilledButton.icon(
+          key: const Key('cache-commit-cleanup'),
           onPressed: (_supportsCleanup && !busy && _dryRunCandidates.isNotEmpty)
               ? _commitCleanup
               : null,
