@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config as C  # noqa: E402
 import main as M  # noqa: E402
+from cache_live import LiveCacheBackend  # noqa: E402
 from downloader import CacheEntry  # noqa: E402
 
 
@@ -88,7 +89,7 @@ def test_cache_cleanup_is_not_in_generic_ack_set(tmp_path):
                        {"msg_id": "m1"}))
     kinds = [k for k, _ in p.ws.sent]
     assert "ack" not in kinds
-    assert kinds == ["cache_cleanup_result"]
+    assert kinds == []  # broad destructive commit is rejected before execution
 
 
 def test_target_mismatch_does_no_work_and_stays_silent(tmp_path):
@@ -125,9 +126,11 @@ def test_commit_deletes_unreferenced_and_prunes_index(tmp_path):
     p = _player(tmp_path)
     a = _item("a")
     path = _cache_file(p, a)
+    p.playlist = _playlist("PL", "push-1", [])
     _run(p._on_message("cache_cleanup",
                        {"device_id": p.device_id, "request_id": "r1",
-                        "mode": "unreferenced"},
+                        "mode": "selected", "item_ids": ["a"],
+                        "expected_push_id": "push-1"},
                        {"msg_id": "m1"}))
     kind, payload = p.ws.sent[0]
     assert kind == "cache_cleanup_result"
@@ -137,6 +140,25 @@ def test_commit_deletes_unreferenced_and_prunes_index(tmp_path):
     assert payload["freed_bytes"] == 1000
     assert not path.exists(), "commit must delete the reclaimable blob"
     assert "a" not in p.downloader._entries, "index pruned"
+
+
+def test_live_backend_rejects_path_outside_cache_root(tmp_path):
+    p = _player(tmp_path)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"do-not-delete")
+    be = LiveCacheBackend(p)
+    be._key_to_path["path:outside"] = str(outside)
+    assert be.size_of("path:outside") is None
+    assert be.delete("path:outside") is False
+    assert outside.read_bytes() == b"do-not-delete"
+
+
+def test_live_backend_reports_disappeared_blob_as_delete_failure(tmp_path):
+    p = _player(tmp_path)
+    path = p.downloader.cache_dir / "raced.bin"
+    be = LiveCacheBackend(p)
+    be._key_to_path["path:raced"] = str(path)
+    assert be.delete("path:raced") is False
 
 
 # --- protection via live player state -----------------------------------
@@ -153,15 +175,13 @@ def test_active_generation_and_playing_protected_leftover_reclaimed(tmp_path):
     p.play_state = "playing"
     _run(p._on_message("cache_cleanup",
                        {"device_id": p.device_id, "request_id": "r1",
-                        "mode": "unreferenced"},
+                        "mode": "selected", "item_ids": ["c"],
+                        "expected_push_id": "push-1"},
                        {"msg_id": "m1"}))
     _, payload = p.ws.sent[0]
     assert pa.exists(), "playing item protected"
     assert pb.exists(), "active-generation item protected"
     assert not pc.exists(), "leftover item reclaimed"
-    reasons = {s["item_id"]: s["reason"] for s in payload["skipped"]}
-    assert reasons.get("a") == "playing"
-    assert reasons.get("b") == "active"
     assert [d["item_id"] for d in payload["deleted"]] == ["c"]
 
 
@@ -172,9 +192,11 @@ def test_last_task_item_is_protected(tmp_path):
     pl = _playlist("PL", "push-1", [a])
     p.state.store_playlist(pl)
     p.state.set_last_task({"playlist_id": "PL", "index": 0, "seek_ms": 0})
+    p.playlist = _playlist("CURRENT", "push-1", [])
     _run(p._on_message("cache_cleanup",
                        {"device_id": p.device_id, "request_id": "r1",
-                        "mode": "unreferenced"},
+                        "mode": "selected", "item_ids": ["a"],
+                        "expected_push_id": "push-1"},
                        {"msg_id": "m1"}))
     _, payload = p.ws.sent[0]
     assert pa.exists(), "last_task item protected"
@@ -248,3 +270,5 @@ def test_status_includes_cache_summary(tmp_path):
     kinds = {k: v for k, v in p.ws.sent}
     assert "cache_summary" in kinds["status"]
     assert kinds["status"]["cache_summary"]["ready_items"] == 1
+    assert "cache_cleanup_v1" in kinds["status"]["capabilities"]
+    assert "cache_inventory_v1" in kinds["status"]["capabilities"]

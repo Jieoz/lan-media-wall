@@ -157,6 +157,78 @@ class Downloader(
     }
 
     /**
+     * §27/§28 cache inventory: item_id -> on-disk path for every READY entry.
+     * Mirrors windows_player/downloader.py `ready_paths()`. Pure read of the
+     * in-memory index; the LiveCacheBackend uses it to enumerate what is
+     * physically present so cleanup plans against the REAL cache, not metadata.
+     */
+    fun readyPaths(): Map<String, File> {
+        val out = LinkedHashMap<String, File>()
+        for ((id, e) in entries) {
+            val p = e.path
+            if (e.state == "ready" && p != null) out[id] = p
+        }
+        return out
+    }
+
+    /** True only for paths canonically contained by this downloader's cache root. */
+    fun ownsPath(path: File): Boolean = try {
+        val root = cacheDir.canonicalFile
+        val candidate = path.canonicalFile
+        candidate.path == root.path || candidate.path.startsWith(root.path + File.separator)
+    } catch (_: Exception) {
+        false
+    }
+
+    /** Atomically reject live download targets and remove a READY blob. */
+    @Synchronized
+    fun deleteReadyPathIfIdle(path: File): Boolean {
+        if (!ownsPath(path)) return false
+        val target = try { path.canonicalPath } catch (_: Exception) { path.absolutePath }
+        for (e in entries.values) {
+            val ep = e.path ?: continue
+            val same = try { ep.canonicalPath == target } catch (_: Exception) {
+                ep.absolutePath == target
+            }
+            if (same && e.state in setOf("pending", "downloading", "verifying", "retrying")) {
+                return false
+            }
+        }
+        return try { path.exists() && path.delete() && !path.exists() } catch (_: Exception) { false }
+    }
+
+    /**
+     * §27 inflight protection: item_id -> partial path (or null) for entries
+     * still being fetched/verified. Their `.part` must never be reclaimed under
+     * a delete window (protection reason `inflight`). Mirrors Windows
+     * `inflight_paths()`.
+     */
+    fun inflightPaths(): Map<String, File?> {
+        val out = LinkedHashMap<String, File?>()
+        for ((id, e) in entries) {
+            if (e.state in setOf("pending", "downloading", "verifying", "retrying")) {
+                out[id] = e.path
+            }
+        }
+        return out
+    }
+
+    /**
+     * §27/§28 index prune after a blob is physically deleted, so no cache row
+     * keeps pointing at a removed file (dangling-alias bug). Mirrors Windows
+     * `prune_entries()`. Delete of the file itself stays with the backend; this
+     * only drops the in-memory rows for the given ids.
+     */
+    fun pruneEntries(itemIds: List<String>) {
+        var changed = false
+        for (id in itemIds) {
+            if (entries.remove(id) != null) changed = true
+            inFlight.remove(id)
+        }
+        if (changed) notifyChange()
+    }
+
+    /**
      * §10/§11 重启恢复:进程重来后 [entries] 是空的(纯内存索引),但媒体文件仍在
      * [cacheDir]。对给定 playlist 的每个 item,按 [localPath] 算出期望文件路径,
      * 若文件已存在且(有 size 时)大小匹配、且没有对应的 `.part` 未完成文件,就在
@@ -436,7 +508,7 @@ class Downloader(
                 }
             }
             token = generation.incrementAndGet()
-            entries[itemId] = CacheEntry(itemId)
+            entries[itemId] = CacheEntry(itemId).apply { path = target }
             inFlight[itemId] = token
         }
         val result = pool.submit(
@@ -541,11 +613,16 @@ class Downloader(
                     return
                 }
             }
-            if (!part.renameTo(target)) {
-                part.copyTo(target, overwrite = true)
-                part.delete()
+            synchronized(this) {
+                if (inFlight[itemId] != token || stopped) return
+                if (!part.renameTo(target)) {
+                    part.copyTo(target, overwrite = true)
+                    part.delete()
+                }
+                val e = entries.getOrPut(itemId) { CacheEntry(itemId) }
+                e.state = "ready"; e.progress = 100; e.path = target
             }
-            setIfCurrent(itemId, token, state = "ready", progress = 100, path = target)
+            notifyChange()
         } catch (e: Exception) {
             activeCalls.remove(itemId)
             if (!stopped) failIfCurrent(itemId, token, e.javaClass.simpleName)

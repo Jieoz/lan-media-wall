@@ -147,6 +147,20 @@ at the end.
   never deletes twice. Results are structured per-item
   (`deleted` / `skipped` / `failed` with distinct reasons, `freed_bytes` counted
   once per physical `content_key`, `summary_after`) — never an optimistic ACK.
+  **Locking:** the SHARED generation lock (also held by playlist handlers) is
+  taken only for the fast generation re-check + the delete hand-off, **never**
+  for the O(N) scan/plan — a private transaction lock serializes cleanups and
+  guards the journal, so a running cleanup never stalls the receive loop or
+  playback transitions for the whole scan (design req. 10). The pre-delete
+  re-check under the generation lock keeps deletes fail-closed regardless.
+- **Idle device (Phase B limitation, by design):** an idle player has **no
+  adopted generation** (`current_push_id()` is `None`). A destructive commit
+  requires a **non-empty** `expected_push_id`; a non-empty token can never equal
+  the idle `None`, so it fails closed with `generation_mismatch` and deletes
+  nothing. This is deliberate: Phase B has no generation-token mechanism for an
+  idle device, so **destructive cleanup on an idle device is not possible** — no
+  sentinel is invented and the non-empty-generation safety contract is not
+  weakened. A `dry_run` (non-destructive) still works on an idle device.
 
 **Deliberate Phase B boundary (not done here, not user-visible):** inbound
 `cache_cleanup` / `cache_inventory` request routing, `status.cache_summary`

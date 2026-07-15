@@ -120,7 +120,7 @@ class LiveCacheBackend:
 
     def size_of(self, content_key: str) -> Optional[int]:
         path = self._key_to_path.get(content_key)
-        if not path:
+        if not path or not self._p.downloader.owns_path(path):
             return None
         try:
             return os.path.getsize(path)
@@ -128,19 +128,11 @@ class LiveCacheBackend:
             return None
 
     def delete(self, content_key: str) -> bool:
-        """Physically delete the blob (+ any .part sibling). True on success."""
+        """Delete only a blob contained by the cache root; report races truthfully."""
         path = self._key_to_path.get(content_key)
-        if not path:
+        if not path or not self._p.downloader.owns_path(path):
             return False
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-            part = path + ".part"
-            if os.path.exists(part):
-                os.remove(part)
-            return True
-        except OSError:
-            return False
+        return self._p.downloader.delete_ready_path_if_idle(path)
 
     def prune_index(self, item_ids: List[str]) -> None:
         self._p.downloader.prune_entries(item_ids)

@@ -7,6 +7,8 @@ Listens WS on 8770; WSS on 8771 when certs/ holds cert+key.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import ssl
@@ -176,9 +178,9 @@ class Hub:
         self._cooldowns: Dict[str, float] = {}          # ip -> until epoch s
         # §27/§28 role-security req #6: results are UNICAST to the controller
         # that initiated the request, never broadcast. Bounded FIFO map keyed by
-        # request_id -> initiating controller_id. A result for an unknown/expired
-        # request_id is dropped (not fanned to every controller).
-        self._cache_req_origin: "OrderedDict[str, str]" = OrderedDict()
+        # request_id -> (controller_id, request_type, allowed device ids). Results
+        # are accepted only from the authenticated player that was targeted.
+        self._cache_req_origin: "OrderedDict[str, tuple]" = OrderedDict()
         self.discovery: Optional[discovery_mod.Discovery] = None
         self.media: Optional[media_mod.MediaServer] = None
 
@@ -761,13 +763,44 @@ class Hub:
     # ---- §27/§28 cache cleanup / inventory (role-safe, unicast result) ---
     _CACHE_REQ_ORIGIN_MAX = 512  # bounded FIFO (idempotency/correlation req #5)
 
-    def _remember_cache_origin(self, request_id: str, controller_id: str) -> None:
-        if not request_id or not controller_id:
-            return
-        self._cache_req_origin[request_id] = controller_id
+    @staticmethod
+    def _cleanup_fingerprint(payload: dict) -> str:
+        # Byte-identical to windows_player.cache_cleanup.operation_fingerprint
+        # and Android CacheCleanup.operationFingerprint:
+        # - reason: only missing/None falls back to "manual"; explicit "" is kept
+        # - item_ids: None/missing → empty sequence (never explode on null)
+        target = (f"device:{payload['device_id']}" if payload.get("device_id") else
+                  f"group:{payload['group_id']}" if payload.get("group_id") else "all")
+        reason = payload.get("reason")
+        if reason is None:
+            reason = "manual"
+        item_ids = payload.get("item_ids") or []
+        if not isinstance(item_ids, (list, tuple)):
+            item_ids = []
+        fields = ["cache_cleanup", target, str(payload.get("mode", "")),
+                  "true" if payload.get("dry_run") is True else "false",
+                  *item_ids,
+                  str(payload.get("expected_push_id") or ""),
+                  str(reason)]
+        canonical = "".join(
+            f"{len(str(value).encode('utf-8'))}:{value}" for value in fields)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _remember_cache_origin(self, request_id: str, controller_id: str,
+                               request_type: str, device_ids,
+                               operation_fingerprint: str) -> bool:
+        if not request_id or not controller_id or not device_ids or not operation_fingerprint:
+            return False
+        existing = self._cache_req_origin.get(request_id)
+        proposed = (controller_id, request_type, frozenset(device_ids),
+                    operation_fingerprint)
+        if existing is not None and existing != proposed:
+            return False
+        self._cache_req_origin[request_id] = proposed
         self._cache_req_origin.move_to_end(request_id)
         while len(self._cache_req_origin) > self._CACHE_REQ_ORIGIN_MAX:
             self._cache_req_origin.popitem(last=False)
+        return True
 
     async def _on_cache_request(self, conn: ClientConn, env: dict) -> None:
         """controller->player cache_cleanup / cache_inventory. Records the
@@ -778,8 +811,6 @@ class Hub:
             return
         p = env["payload"]
         request_id = p.get("request_id")
-        if request_id:
-            self._remember_cache_origin(str(request_id), conn.ident or "")
         to = env.get("to")
         if not to or router.parse_addr(to)[0] not in ("all", "player", "group"):
             if p.get("device_id"):
@@ -788,6 +819,20 @@ class Hub:
                 to = f"group:{p['group_id']}"
             else:
                 to = "all"
+        targets = router.dedup_conns(
+            router.resolve_player_targets(to, self.reg, self.players))
+        if request_id:
+            operation_fingerprint = (self._cleanup_fingerprint(p)
+                                     if env["type"] == "cache_cleanup" else
+                                     json.dumps(p, sort_keys=True, separators=(",", ":"),
+                                                ensure_ascii=False))
+            accepted = self._remember_cache_origin(
+                str(request_id), conn.ident or "", env["type"],
+                [c.ident for c in targets if c.ident], operation_fingerprint)
+            if not accepted:
+                return
+        else:
+            return
         fwd = self.make_env(env["type"], p, to)
         await self.fanout_players(to, fwd)
 
@@ -800,10 +845,18 @@ class Hub:
         if conn.role != "player":
             return
         request_id = env["payload"].get("request_id")
-        controller_id = self._cache_req_origin.get(str(request_id)) \
+        origin = self._cache_req_origin.get(str(request_id)) \
             if request_id else None
-        if controller_id is None:
+        if origin is None:
             return  # no known initiator → drop, do not broadcast
+        controller_id, request_type, allowed_devices, operation_fingerprint = origin
+        expected_result = request_type + "_result"
+        payload_device = env["payload"].get("device_id")
+        if (env["type"] != expected_result or conn.ident not in allowed_devices or
+                payload_device != conn.ident or
+                (request_type == "cache_cleanup" and
+                 env["payload"].get("operation_fingerprint") != operation_fingerprint)):
+            return
         target = self.controllers.get(controller_id)
         if target is None:
             return  # initiating controller gone; nothing to deliver

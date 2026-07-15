@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import threading
 from typing import Any, Dict, List, Optional
 
 import config as config_mod
@@ -116,6 +117,7 @@ class Player:
         self.volume = 80
         self.muted = False
         self.audio_master = True
+        self._cache_generation_lock = threading.RLock()
         self.controller_present = bool(
             cfg.get("thumbnail", "always_collect", default=False))
         self._errors: List[str] = []
@@ -403,6 +405,8 @@ class Player:
             "cache": self.downloader.cache_status(),
             # §26 lightweight summary (full per-item list is on-demand via §28).
             "cache_summary": self._cache_summary(),
+            "capabilities": ["video", "image", "audio", "thumbnail",
+                             "cache_cleanup_v1", "cache_inventory_v1"],
             "clock_offset_ms": self.clock.offset_ms,
             "cpu": self._cpu_percent(),
             "errors": self._errors[-5:],
@@ -471,7 +475,7 @@ class Player:
         c = getattr(self, "_cleanup_obj", None)
         if c is None:
             backend = cache_live.LiveCacheBackend(self)
-            c = cache_cleanup.CacheCleanup(backend)
+            c = cache_cleanup.CacheCleanup(backend, lock=self._cache_generation_lock)
             self._cleanup_obj = c  # type: ignore[attr-defined]
             self._cleanup_backend = backend  # type: ignore[attr-defined]
         return c
@@ -481,13 +485,31 @@ class Player:
         emits ONLY the terminal cache_cleanup_result (truthfulness, E0001)."""
         if not self._targets_me(payload):
             return
+        request_id = payload.get("request_id")
+        mode = payload.get("mode")
+        dry_run = payload.get("dry_run", False)
+        item_ids = payload.get("item_ids")
+        selected_valid = (mode != "selected" or
+                          isinstance(item_ids, list) and bool(item_ids) and
+                          all(isinstance(i, str) and i for i in item_ids))
+        expected_push_id = payload.get("expected_push_id")
+        destructive_valid = (dry_run is True or
+                             mode == "selected" and selected_valid and
+                             isinstance(expected_push_id, str) and bool(expected_push_id))
+        if (not isinstance(request_id, str) or not request_id or
+                mode not in ("selected", "unreferenced") or
+                not isinstance(dry_run, bool) or not selected_valid or
+                not destructive_valid):
+            return
         req = cache_cleanup.CleanupRequest(
-            request_id=str(payload.get("request_id", "")),
-            mode=str(payload.get("mode", "unreferenced")),
-            item_ids=payload.get("item_ids"),
-            dry_run=bool(payload.get("dry_run", False)),
-            expected_push_id=payload.get("expected_push_id"),
+            request_id=request_id,
+            mode=mode,
+            item_ids=item_ids,
+            dry_run=dry_run,
+            expected_push_id=expected_push_id,
             reason=str(payload.get("reason", "manual")),
+            target=(f"device:{payload['device_id']}" if payload.get("device_id") else
+                    f"group:{payload['group_id']}" if payload.get("group_id") else "all"),
         )
         # Scan/verify/delete off the event loop so the WS receive loop, heartbeat
         # and playback transitions never stall (design req. 10).
@@ -620,39 +642,42 @@ class Player:
 
     # --- §6.3 playlist -----------------------------------------------
     async def _h_playlist(self, payload, env) -> None:
-        mode = playlist_ops.normalize_mode(payload.get("mode"))
-        items = payload.get("items", []) or []
-        if mode == playlist_ops.APPEND:
-            # §6.3a merge onto the tail, de-duped by item_id; existing indices
-            # never shift so current_index stays valid. Empty append = no-op.
-            if not items:
+        with self._cache_generation_lock:
+            mode = playlist_ops.normalize_mode(payload.get("mode"))
+            items = payload.get("items", []) or []
+            if mode == playlist_ops.APPEND:
+                # §6.3a merge onto the tail, de-duped by item_id; existing indices
+                # never shift so current_index stays valid. Empty append = no-op.
+                if not items:
+                    return
+                if not self.playlist:
+                    # nothing active to append to → treat as a fresh replace
+                    self.playlist = dict(payload)
+                    self.index = 0
+                else:
+                    merged = playlist_ops.merge_append(
+                        self.playlist.get("items", []), items)
+                    self.playlist = {**self.playlist, "items": merged}
+                self.state.store_playlist(self.playlist)
+                self.downloader.prefetch(items)
                 return
-            if not self.playlist:
-                # nothing active to append to → treat as a fresh replace
-                self.playlist = dict(payload)
-                self.index = 0
-            else:
-                merged = playlist_ops.merge_append(
-                    self.playlist.get("items", []), items)
-                self.playlist = {**self.playlist, "items": merged}
+            # replace (default). An empty replace is the CLEAR signal (§6.3a):
+            # clear active playlist + current state, enter idle/black, but never
+            # delete cached media inventory.
+            if not items:
+                await self._clear_active_playlist(
+                    str(payload.get("playlist_id") or ""), lock_held=True)
+                return
+            self._cancel_session_tasks()
+            self.playlist = dict(payload)
+            self.index = 0
             self.state.store_playlist(self.playlist)
             self.downloader.prefetch(items)
-            return
-        # replace (default). An empty replace is the CLEAR signal (§6.3a):
-        # clear active playlist + current state, enter idle/black, but never
-        # delete cached media inventory.
-        if not items:
-            await self._clear_active_playlist(str(payload.get("playlist_id") or ""))
-            return
-        self._cancel_session_tasks()
-        self.playlist = dict(payload)
-        self.index = 0
-        self.state.store_playlist(self.playlist)
-        self.downloader.prefetch(items)
-        # sync=false → broker drives single-box play_at=now separately; we just
-        # store. sync=true → wait for prepare/play_at.
+            # sync=false → broker drives single-box play_at=now separately; we just
+            # store. sync=true → wait for prepare/play_at.
 
-    async def _clear_active_playlist(self, playlist_id: str) -> None:
+    async def _clear_active_playlist(self, playlist_id: str,
+                                     *, lock_held: bool = False) -> None:
         """§6.3a empty-replace CLEAR: stop playback, drop the active playlist and
         current index/task, show the idle black/placeholder — cache inventory on
         disk is deliberately left intact."""
@@ -663,9 +688,10 @@ class Player:
         self.play_state = "idle"
         for pid in {active_playlist_id, playlist_id} - {None, ""}:
             self.state.delete_playlist(str(pid))
-        self.playlist = None
-        self.index = 0
-        self._persist_last_task(None, 0, 0)
+        with self._cache_generation_lock:
+            self.playlist = None
+            self.index = 0
+            self._persist_last_task(None, 0, 0)
 
     # --- §9.1 prepare -------------------------------------------------
     async def _h_prepare(self, payload, env) -> None:
@@ -690,8 +716,9 @@ class Player:
             items = pl.get("items", [])
             if 0 <= start_index < len(items):
                 item = items[start_index]
-                self.playlist = pl
-                self.index = start_index
+                with self._cache_generation_lock:
+                    self.playlist = pl
+                    self.index = start_index
                 if self.downloader.is_ready(item["item_id"]):
                     path = str(self.downloader.ready_path(item["item_id"]))
                     # §6.1: an image has no decoder to prime — it's shown at the
@@ -769,8 +796,9 @@ class Player:
         items = pl.get("items", [])
         if not (0 <= start_index < len(items)):
             return
-        self.playlist = pl
-        self.index = start_index
+        with self._cache_generation_lock:
+            self.playlist = pl
+            self.index = start_index
         item = items[start_index]
         path = self.downloader.ready_path(item["item_id"])
         if path is None:
@@ -904,7 +932,8 @@ class Player:
                     new_index %= len(items)
                 else:
                     return  # NONE clamps at the boundary
-        self.index = new_index
+        with self._cache_generation_lock:
+            self.index = new_index
         item = items[new_index]
         path = self.downloader.ready_path(item["item_id"]) or item.get("url")
         if not path:
@@ -1074,8 +1103,9 @@ class Player:
         if not (0 <= idx < len(items)):
             self._apply_idle_screen()
             return
-        self.playlist = pl
-        self.index = idx
+        with self._cache_generation_lock:
+            self.playlist = pl
+            self.index = idx
         item = items[idx]
         path = self.downloader.ready_path(item["item_id"]) or item.get("url")
         if not path:

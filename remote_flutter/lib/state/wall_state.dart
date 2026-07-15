@@ -14,6 +14,7 @@ import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../protocol/pair_uri.dart';
 import '../protocol/remote_endpoint.dart';
+import 'cache_ops.dart';
 import 'media_progress.dart';
 
 /// 持久化键。
@@ -137,6 +138,18 @@ class WallState extends ChangeNotifier {
   /// monotonic 0..100 and never-100-before-`ready` guarantees.
   final MediaProgressMachine _progress = MediaProgressMachine();
 
+  /// §27/§28 缓存清理/清单的一体化归约器(E0001)。Broker 与 P2P 的结果接收路径都汇入
+  /// 这一个 reducer(见 [_onCacheCleanupResult]/[_onCacheInventoryResult]),按
+  /// request_id+device_id 键做设备隔离、幂等、陈旧拒绝、超时与终态区分。传输无关。
+  final CacheOpsReducer _cacheOps = CacheOpsReducer();
+  int _nextCacheReq = 0;
+
+  /// 缓存操作视图(UI 读取: 每台设备最近的清理/清单结果、悬挂态)。
+  CacheOperation? cacheOperationFor(String requestId, String deviceId) =>
+      _cacheOps.operationFor(requestId, deviceId);
+  bool cacheHasPending(String deviceId) => _cacheOps.hasPending(deviceId);
+  Iterable<CacheOperation> get cacheOperations => _cacheOps.operations;
+
   /// deviceId → controller-assigned push-job generation. Bumped by [_beginPushJob]
   /// whenever a fresh push (replace playlist / local media) starts, so progress
   /// resets per job. Absent → generation 0 (passive tracking of ambient status).
@@ -249,6 +262,18 @@ class WallState extends ChangeNotifier {
   @visibleForTesting
   void debugClearPushJob(Iterable<String> deviceIds) =>
       _clearPushJob(deviceIds);
+
+  /// §27/§28 test seam: feed a raw cache result frame through the identical
+  /// ingestion path a broker/P2P frame takes ([_onCacheCleanupResult] /
+  /// [_onCacheInventoryResult]), so UI/state tests exercise the real converged
+  /// reducer matching (stale/idempotent/terminal) rather than re-simulating it.
+  @visibleForTesting
+  void debugIngestCacheCleanupResult(Map<String, dynamic> payload) =>
+      _onCacheCleanupResult(payload);
+
+  @visibleForTesting
+  void debugIngestCacheInventoryResult(Map<String, dynamic> payload) =>
+      _onCacheInventoryResult(payload);
 
   List<AnnounceInfo> get discovered => List.unmodifiable(_discovered);
   ConnState get conn => _conn;
@@ -443,6 +468,8 @@ class WallState extends ChangeNotifier {
       ..onDiagnostic = _onDiagnostic
       ..onUpdateStatus = _onUpdateStatus
       ..onLogDownload = _onLogDownload
+      ..onCacheCleanupResult = _onCacheCleanupResult
+      ..onCacheInventoryResult = _onCacheInventoryResult
       ..onState = _onConn
       ..onAuthMode = _onAuthMode
       ..onKeyMode = _onKeyMode
@@ -460,6 +487,8 @@ class WallState extends ChangeNotifier {
       ..onDiagnostic = _onDiagnostic
       ..onUpdateStatus = _onUpdateStatus
       ..onLogDownload = _onLogDownload
+      ..onCacheCleanupResult = _onCacheCleanupResult
+      ..onCacheInventoryResult = _onCacheInventoryResult
       ..onLog = _pushLog;
     _linksReady = true;
 
@@ -827,6 +856,36 @@ class WallState extends ChangeNotifier {
     }();
   }
 
+  // ---- §27/§28 缓存清理/清单结果接收(Broker + P2P 汇合到同一归约器) ----
+  /// §27 播放端回终态 cache_cleanup_result。两传输的接收路径都调这里(无平行状态)。
+  /// 解析成防御式模型后交给归约器匹配悬挂操作:落到不存在/已终态的键 → 归约器记陈旧
+  /// (绝不完成更新的操作、绝不二次变更)。
+  void _onCacheCleanupResult(Map<String, dynamic> payload) {
+    final r = CacheCleanupResult.fromMap(payload);
+    final settled = _cacheOps.onCleanupResult(r, nowMs: _nowMs());
+    if (settled == null) {
+      _pushLog('[${r.deviceId}] 陈旧/迟到 cache_cleanup_result(req=${r.requestId})已忽略');
+      return;
+    }
+    _pushLog('[${r.deviceId}] cache_cleanup_result: ${settled.status.name} '
+        'freed=${r.freedBytes} deleted=${r.deleted.length} '
+        'skipped=${r.skipped.length} failed=${r.failed.length}');
+    notifyListeners();
+  }
+
+  /// §28 播放端回终态 cache_inventory_result。
+  void _onCacheInventoryResult(Map<String, dynamic> payload) {
+    final r = CacheInventoryResult.fromMap(payload);
+    final settled = _cacheOps.onInventoryResult(r, nowMs: _nowMs());
+    if (settled == null) {
+      _pushLog('[${r.deviceId}] 陈旧/迟到 cache_inventory_result(req=${r.requestId})已忽略');
+      return;
+    }
+    _pushLog('[${r.deviceId}] cache_inventory_result: ${r.items.length} 项');
+    notifyListeners();
+  }
+
+  int _nowMs() => DateTime.now().millisecondsSinceEpoch;
 
   String _appendControllerDiagnostics(String deviceId, String playerText) {
     final b = StringBuffer(playerText);
@@ -988,6 +1047,127 @@ class WallState extends ChangeNotifier {
   void cachePrefetch(List<MediaItem> items, {String? groupId, String? deviceId}) {
     _send('cache_prefetch', Commands.cachePrefetch(items),
         groupId: groupId, deviceId: deviceId);
+  }
+
+  /// 某台设备的最近状态(能力/在线判定用)。未知 → null。
+  DeviceStatus? statusFor(String deviceId) {
+    for (final d in _wall.devices) {
+      if (d.deviceId == deviceId) return d;
+    }
+    return null;
+  }
+
+  String _newCacheRequestId() =>
+      '$controllerId-cc-${++_nextCacheReq}-${DateTime.now().microsecondsSinceEpoch}';
+
+  /// §27 单台缓存清理。能力真值前置:目标未广告 cache_cleanup_v1 → 直接终态
+  /// unsupported,从不下发(绝不静默超时冒充支持)。离线 → 直接终态 offline。否则登记
+  /// pending 并下发 controller→player 请求(单播)。返回归约器登记的操作供 UI 追踪。
+  ///
+  /// 删除权威在播放端:此处只发 item_ids/范围,绝不发路径。应用后清理必须带
+  /// [expectedPushId](与当前采纳代次绑定,fail-closed)。
+  CacheOperation cacheCleanup({
+    required String deviceId,
+    String mode = 'unreferenced',
+    List<String>? itemIds,
+    bool dryRun = false,
+    String? expectedPushId,
+    String reason = 'manual',
+  }) {
+    final st = statusFor(deviceId);
+    final supported = st?.supportsCacheCleanup ?? false;
+    final online = st?.online ?? false;
+    final reqId = _newCacheRequestId();
+    final operationFingerprint = cacheCleanupFingerprint(
+      target: 'device:$deviceId', mode: mode, dryRun: dryRun,
+      itemIds: itemIds, expectedPushId: expectedPushId, reason: reason);
+    final op = _cacheOps.beginCleanup(
+      requestId: reqId, deviceId: deviceId, dryRun: dryRun,
+      operationFingerprint: operationFingerprint, nowMs: _nowMs(),
+      supported: supported, online: online);
+    if (op.isPending) {
+      _dispatchCache(deviceId, reqId, op, () => _send(
+          'cache_cleanup',
+          // deviceId MUST also go into the payload (via Commands._target), not
+          // only the envelope `to:`. Broker/player derive operation_fingerprint
+          // target from payload device_id/group_id; if omitted they both use
+          // "all" and the controller's stored "device:<id>" fingerprint rejects
+          // every result as operation_fingerprint_mismatch.
+          Commands.cacheCleanup(
+            requestId: reqId, mode: mode, itemIds: itemIds, dryRun: dryRun,
+            expectedPushId: expectedPushId, reason: reason,
+            deviceId: deviceId),
+          deviceId: deviceId));
+    } else {
+      _pushLog('[$deviceId] cache_cleanup 未下发(${op.status.name}): ${op.detail}');
+    }
+    notifyListeners();
+    return op;
+  }
+
+  /// §28 单台缓存清单(按需)。能力/在线前置同 [cacheCleanup]。
+  CacheOperation cacheInventory({required String deviceId}) {
+    final st = statusFor(deviceId);
+    final supported = st?.supportsCacheInventory ?? false;
+    final online = st?.online ?? false;
+    final reqId = _newCacheRequestId();
+    final op = _cacheOps.beginInventory(
+      requestId: reqId, deviceId: deviceId, nowMs: _nowMs(),
+      supported: supported, online: online);
+    if (op.isPending) {
+      _dispatchCache(deviceId, reqId, op, () => _send(
+          'cache_inventory',
+          // Same payload-target rule as cacheCleanup: include device_id so
+          // routing identity and any future fingerprint/gate stay consistent.
+          Commands.cacheInventory(requestId: reqId, deviceId: deviceId),
+          deviceId: deviceId));
+    } else {
+      _pushLog('[$deviceId] cache_inventory 未下发(${op.status.name}): ${op.detail}');
+    }
+    notifyListeners();
+    return op;
+  }
+
+  /// 重试:用新 request_id 重开某设备的清理(旧终态保留)。能力/在线重新判定。
+  CacheOperation cacheCleanupRetry({
+    required String deviceId,
+    String mode = 'unreferenced',
+    List<String>? itemIds,
+    bool dryRun = false,
+    String? expectedPushId,
+    String reason = 'manual',
+  }) =>
+      cacheCleanup(
+        deviceId: deviceId, mode: mode, itemIds: itemIds, dryRun: dryRun,
+        expectedPushId: expectedPushId, reason: reason);
+
+  /// 收割超时(UI/状态刷新时调)。任何悬挂操作到期转 timeout 终态并通知。
+  void reapCacheTimeouts() {
+    final expired = _cacheOps.expire(_nowMs());
+    if (expired.isNotEmpty) {
+      for (final o in expired) {
+        _pushLog('[${o.deviceId}] cache ${o.kind} 超时(req=${o.requestId})');
+      }
+      notifyListeners();
+    }
+  }
+
+  /// 关闭详情面板时清理某设备的已终态记录(悬挂保留)。
+  void clearCacheResultsFor(String deviceId) {
+    _cacheOps.clearSettledFor(deviceId);
+    notifyListeners();
+  }
+
+  /// 下发缓存请求;投递失败不留幽灵 pending —— 立刻收割成 timeout 终态(投递失败与
+  /// 「发出去没回」同样对待,不伪造成功)。
+  void _dispatchCache(
+      String deviceId, String reqId, CacheOperation op, void Function() send) {
+    try {
+      send();
+    } catch (e) {
+      _cacheOps.failUndelivered(reqId, deviceId, _nowMs(), '命令未投递: $e');
+      _pushLog('[$deviceId] cache ${op.kind} 未投递(req=$reqId): $e');
+    }
   }
 
   /// 下发 playlist(§6.3)。[deviceId] 非空 → 单播给这一台(§9.4b 单台推送);

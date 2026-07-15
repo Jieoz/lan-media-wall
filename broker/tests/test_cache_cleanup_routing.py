@@ -124,10 +124,12 @@ def test_cache_cleanup_result_unicasts_to_initiating_controller_only():
         req = hub.make_env("cache_cleanup",
                           {"device_id": "dev-1", "request_id": "r1"}, "broker")
         _run(hub._dispatch(ctl_a, req, 0))
+        fingerprint = hub._cleanup_fingerprint(req["payload"])
 
         # player replies with the terminal result.
         res = hub.make_env("cache_cleanup_result",
-                          {"device_id": "dev-1", "request_id": "r1", "ok": True},
+                          {"device_id": "dev-1", "request_id": "r1", "ok": True,
+                           "operation_fingerprint": fingerprint},
                           "broker")
         _run(hub._dispatch(player, res, 0))
 
@@ -153,6 +155,30 @@ def test_cache_cleanup_result_with_unknown_request_is_dropped_not_broadcast():
                            "ok": True}, "broker")
         _run(hub._dispatch(player, res, 0))
         assert ctl.sent == [], "unknown request_id must not broadcast to all"
+    finally:
+        os.unlink(path) if os.path.exists(path) else None
+
+
+def test_cache_cleanup_result_with_wrong_fingerprint_is_dropped():
+    hub, path = _hub()
+    try:
+        ctl = FakeConn("controller", "ctl-1")
+        player = FakeConn("player", "dev-1")
+        hub.controllers["ctl-1"] = ctl
+        hub.players["dev-1"] = player
+        hub.reg.register("dev-1", group_id="default")
+        req = hub.make_env("cache_cleanup",
+                           {"device_id": "dev-1", "request_id": "r1",
+                            "mode": "selected", "item_ids": ["a"],
+                            "dry_run": False, "expected_push_id": "gen-1"},
+                           "broker")
+        _run(hub._dispatch(ctl, req, 0))
+        forged = hub.make_env("cache_cleanup_result",
+                              {"device_id": "dev-1", "request_id": "r1",
+                               "ok": True, "operation_fingerprint": "wrong"},
+                              "broker")
+        _run(hub._dispatch(player, forged, 0))
+        assert ctl.sent == []
     finally:
         os.unlink(path) if os.path.exists(path) else None
 
@@ -218,15 +244,60 @@ def test_two_devices_same_request_id_are_isolated():
         req = hub.make_env("cache_cleanup",
                           {"group_id": "g", "request_id": "rG"}, "broker")
         _run(hub._dispatch(ctl, req, 0))
+        fingerprint = hub._cleanup_fingerprint(req["payload"])
         assert len(d1.sent) == 1 and len(d2.sent) == 1
 
         for dev in ("dev-1", "dev-2"):
             res = hub.make_env("cache_cleanup_result",
                               {"device_id": dev, "request_id": "rG",
-                               "ok": True}, "broker")
+                               "ok": True, "operation_fingerprint": fingerprint},
+                              "broker")
             _run(hub._dispatch(d1 if dev == "dev-1" else d2, res, 0))
         assert len(ctl.sent) == 2
         got = {e["payload"]["device_id"] for e in ctl.sent}
         assert got == {"dev-1", "dev-2"}
+    finally:
+        os.unlink(path) if os.path.exists(path) else None
+
+
+def test_conflicting_request_id_is_rejected_before_player_fanout():
+    hub, path = _hub()
+    try:
+        ctl_a = FakeConn("controller", "ctl-A")
+        ctl_b = FakeConn("controller", "ctl-B")
+        player = FakeConn("player", "dev-1")
+        hub.controllers["ctl-A"] = ctl_a
+        hub.controllers["ctl-B"] = ctl_b
+        hub.players["dev-1"] = player
+        hub.reg.register("dev-1", group_id="default")
+        first = {"device_id": "dev-1", "request_id": "same",
+                 "mode": "selected", "item_ids": ["a"], "dry_run": True,
+                 "expected_push_id": "gen-1"}
+        conflict = {"device_id": "dev-1", "request_id": "same",
+                    "mode": "selected", "item_ids": ["b"], "dry_run": False,
+                    "expected_push_id": "gen-2"}
+        _run(hub._dispatch(ctl_a, hub.make_env("cache_cleanup", first, "broker"), 0))
+        _run(hub._dispatch(ctl_b, hub.make_env("cache_cleanup", conflict, "broker"), 0))
+        assert len(player.sent) == 1
+        assert player.sent[0]["payload"]["item_ids"] == ["a"]
+    finally:
+        os.unlink(path) if os.path.exists(path) else None
+
+
+def test_same_owner_request_id_cannot_change_operation_payload():
+    hub, path = _hub()
+    try:
+        ctl = FakeConn("controller", "ctl-1")
+        player = FakeConn("player", "dev-1")
+        hub.controllers["ctl-1"] = ctl
+        hub.players["dev-1"] = player
+        hub.reg.register("dev-1", group_id="default")
+        base = {"device_id": "dev-1", "request_id": "same",
+                "mode": "selected", "item_ids": ["a"], "dry_run": True,
+                "expected_push_id": "gen-1"}
+        _run(hub._dispatch(ctl, hub.make_env("cache_cleanup", base, "broker"), 0))
+        _run(hub._dispatch(ctl, hub.make_env(
+            "cache_cleanup", dict(base, dry_run=False), "broker"), 0))
+        assert len(player.sent) == 1
     finally:
         os.unlink(path) if os.path.exists(path) else None

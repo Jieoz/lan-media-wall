@@ -12,9 +12,12 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import com.jieoz.lanmediawall.player.cache.CacheCleanup
+import com.jieoz.lanmediawall.player.cache.CacheReferenceSnapshot
 import com.jieoz.lanmediawall.player.cache.Downloader
 import java.io.File
 import com.jieoz.lanmediawall.player.cache.LastTask
+import com.jieoz.lanmediawall.player.cache.LiveCacheBackend
 import com.jieoz.lanmediawall.player.cache.LoopMode
 import com.jieoz.lanmediawall.player.cache.MediaItem
 import com.jieoz.lanmediawall.player.cache.MediaStore
@@ -89,6 +92,14 @@ class PlayerService : Service() {
     @Volatile private var index = 0
     @Volatile private var audioMaster = true
     @Volatile private var controllerPresent = false
+    // §27 last-cleanup bookkeeping for the §26 summary (at-ms, error string).
+    @Volatile private var lastCleanupAt = 0L
+    @Volatile private var lastCleanupError = ""
+    /** §27 long-lived cleanup transaction — holds the bounded idempotency
+     *  journal so a repeated destructive request_id returns its terminal result
+     *  and never deletes twice. Built lazily on first cache request. */
+    private var cleanupObj: CacheCleanup? = null
+    private val cacheGenerationLock = Any()
     /** §6.4: item_ids for which we have already OPENED the retriever this session
      *  (whether or not bytes came back). With the permanent per-item thumbnail
      *  cache this bounds MMR to one brief open per item — the one-shot contract. */
@@ -425,7 +436,14 @@ class PlayerService : Service() {
             put("app_version", Settings.APP_VERSION)
             put("ip", ip)
             put("screen", screenJson())
-            put("capabilities", jsonStrArr(listOf("video", "image", "audio", "thumbnail")))
+            // §27/§28 cache_cleanup_v1 / cache_inventory_v1 advertised ONLY now
+            // that this player has live handlers that parse the request, run the
+            // proven-safe planner against a real snapshot adapter, and emit a
+            // terminal cache_cleanup_result / cache_inventory_result (capability
+            // truth, E0001). A player without these handlers must NOT advertise
+            // them, so a controller never sends and silently times out.
+            put("capabilities", jsonStrArr(listOf("video", "image", "audio",
+                "thumbnail", "cache_cleanup_v1", "cache_inventory_v1")))
             put("group_id", settings.groupId)
         }
         link?.send("hello", payload)
@@ -515,6 +533,15 @@ class PlayerService : Service() {
             put("muted", settings.muted)
             put("audio_master", audioMaster)
             put("cache", cacheJson())
+            // §26 lightweight cache summary (totals/reclaimable/protected) so the
+            // device wall shows cache pressure without carrying the full per-item
+            // inventory in every 1–2s status. The full list is pulled on demand
+            // via §28 cache_inventory. Additive (forward-compat).
+            put("cache_summary", cacheSummaryJson())
+            // Capabilities travel in status too: P2P has no player hello and
+            // broker wall snapshots are rebuilt from status.
+            put("capabilities", jsonStrArr(listOf("video", "image", "audio",
+                "thumbnail", "cache_cleanup_v1", "cache_inventory_v1")))
             put("clock_offset_ms", clock.offsetMs)
             put("app_version", Settings.APP_VERSION)
             put("ip", ip)
@@ -578,6 +605,132 @@ class PlayerService : Service() {
         return jsonObj { for ((k, v) in map) put(k, v) }
     }
 
+    // --- §26/§27/§28 cache adapter view + wire serialization ---------
+    /** Read-only live-state seam handed to [LiveCacheBackend]. Reads current
+     *  fields lazily so a long-lived backend always plans against the CURRENT
+     *  generation (the fail-closed guard depends on it). */
+    private val playerCacheView = object : LiveCacheBackend.PlayerView {
+        override fun activePlaylist(): Playlist? = playlist
+        override fun playState(): String = playState
+        override fun currentItem(): MediaItem? = this@PlayerService.currentItem()
+        override fun resolvePlaylist(playlistId: String?): Playlist? =
+            this@PlayerService.resolvePlaylist(playlistId)
+        override fun lastTask(): LastTask? = mediaStore.getLastTask()
+        override fun knownPlaylists(): List<Playlist> {
+            val out = ArrayList<Playlist>()
+            playlist?.let { out.add(it) }
+            // history supplies identity only; presence never protects a blob.
+            for (pl in mediaStore.pruneAndListReferenced(KEEP_RECENT_PLAYLISTS)) {
+                if (out.none { it.playlistId == pl.playlistId }) out.add(pl)
+            }
+            return out
+        }
+        override fun cacheSummary(): Map<String, Any?> = cacheSummary()
+    }
+
+    /** §26 lightweight summary map (shared by status + cleanup summary_after). */
+    private fun cacheSummary(): Map<String, Any?> {
+        val backend = LiveCacheBackend(playerCacheView, downloader)
+        val snapshot = backend.buildSnapshot()
+        var readyItems = 0
+        var totalBytes = 0L
+        var protectedItems = 0
+        var reclaimableItems = 0
+        var reclaimableBytes = 0L
+        for (it in backend.inventory()) {
+            val key = backend.contentKeyOf(it)
+            val size = if (key != null) backend.sizeOf(key) else null
+            readyItems++
+            if (size != null) totalBytes += size
+            val c = snapshot.classifyItem(it.itemId)
+            if (c.reason != null && c.reason != CacheReferenceSnapshot.NOT_FOUND) {
+                protectedItems++
+            } else {
+                reclaimableItems++
+                if (size != null) reclaimableBytes += size
+            }
+        }
+        return linkedMapOf(
+            "ready_items" to readyItems,
+            "total_bytes" to totalBytes,
+            "reclaimable_items" to reclaimableItems,
+            "reclaimable_bytes" to reclaimableBytes,
+            "protected_items" to protectedItems,
+            "inflight_items" to downloader.inflightPaths().size,
+            "last_cleanup_at" to lastCleanupAt,
+            "last_cleanup_error" to lastCleanupError,
+        )
+    }
+
+    private fun cacheSummaryJson(): Json = summaryMapJson(cacheSummary())
+
+    private fun summaryMapJson(m: Map<String, Any?>): Json = jsonObj {
+        for ((k, v) in m) when (v) {
+            is Int -> put(k, v)
+            is Long -> put(k, v)
+            is Boolean -> put(k, v)
+            is String -> put(k, v)
+            null -> putNull(k)
+            else -> put(k, v.toString())
+        }
+    }
+
+    /** §28 full per-item inventory rows (item_id/content_key/bytes/state/
+     *  protection_reasons/last_access_ms). */
+    private fun inventoryItems(): List<Json> {
+        val backend = LiveCacheBackend(playerCacheView, downloader)
+        val snapshot = backend.buildSnapshot()
+        val out = ArrayList<Json>()
+        for (it in backend.inventory()) {
+            val key = backend.contentKeyOf(it)
+            val c = snapshot.classifyItem(it.itemId)
+            val reasons = ArrayList<String>()
+            if (c.reason != null && c.reason != CacheReferenceSnapshot.NOT_FOUND) {
+                reasons.add(c.reason)
+            }
+            out.add(jsonObj {
+                put("item_id", it.itemId)
+                put("content_key", key)
+                (if (key != null) backend.sizeOf(key) else null)
+                    ?.let { b -> put("bytes", b) } ?: putNull("bytes")
+                put("state", "ready")
+                put("protection_reasons", jsonStrArr(reasons))
+                put("last_access_ms", 0L)
+            })
+        }
+        return out
+    }
+
+    /** §27 terminal cache_cleanup_result payload (wire schema, protocol §27). */
+    private fun cleanupResultJson(r: CacheCleanup.CleanupResult): Json = jsonObj {
+        put("request_id", r.requestId)
+        put("operation_fingerprint", r.operationFingerprint)
+        put("device_id", settings.deviceId)
+        put("ok", r.ok)
+        put("error", r.error)
+        put("dry_run", r.dryRun)
+        put("mode", r.mode)
+        put("reason", r.reason)
+        put("expected_push_id", r.expectedPushId)
+        put("observed_push_id", r.observedPushId)
+        put("deleted", jsonArr(r.deleted.map { d ->
+            jsonObj {
+                put("item_id", d.itemId)
+                put("content_key", d.contentKey)
+                put("bytes", d.bytes)
+            }
+        }))
+        put("skipped", jsonArr(r.skipped.map { s ->
+            jsonObj { put("item_id", s.itemId); put("reason", s.reason) }
+        }))
+        put("failed", jsonArr(r.failed.map { f ->
+            jsonObj { put("item_id", f.itemId); put("reason", f.reason) }
+        }))
+        put("freed_bytes", r.freedBytes)
+        put("summary_after", summaryMapJson(r.summaryAfter))
+        if (r.idempotentReplay) put("idempotent_replay", true)
+    }
+
     private fun effectiveState(): String {
         if (playState == "playing" || playState == "paused") {
             return playState
@@ -592,6 +745,11 @@ class PlayerService : Service() {
     private fun onBrokerMessage(type: String, payload: Json.Obj, env: Envelope.Parsed) {
         when (type) {
             "cache_prefetch" -> hCachePrefetch(payload)
+            // §27/§28 destructive/inventory ops. Handled OFF the generic-ack
+            // path (below): the player emits ONLY the terminal structured result,
+            // never an optimistic ack that could be mistaken for "files deleted".
+            "cache_cleanup" -> { hCacheCleanup(payload); return }
+            "cache_inventory" -> { hCacheInventory(payload); return }
             "playlist" -> hPlaylist(payload)
             "prepare" -> hPrepare(payload)
             "play_at" -> hPlayAt(payload)
@@ -664,6 +822,85 @@ class PlayerService : Service() {
         if (items.isNotEmpty()) downloader.prefetch(items)
     }
 
+    // --- §27/§28 cache cleanup + inventory (cache_cleanup_v1) --------
+    /** Long-lived cleanup transaction (holds the idempotency journal). */
+    @Synchronized private fun cleanup(): CacheCleanup {
+        var c = cleanupObj
+        if (c == null) {
+            c = CacheCleanup(LiveCacheBackend(playerCacheView, downloader), cacheGenerationLock)
+            cleanupObj = c
+        }
+        return c
+    }
+
+    /**
+     * §27: async destructive op. NO optimistic generic ack — the player emits
+     * ONLY the terminal cache_cleanup_result (truthfulness, E0001). Scanning /
+     * deletion runs on [Dispatchers.IO] so the receive loop, heartbeat and
+     * playback transitions never stall (design req. 10).
+     */
+    private fun hCacheCleanup(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val requestIdNode = payload.entries["request_id"]
+        val modeNode = payload.entries["mode"]
+        val dryRunNode = payload.entries["dry_run"] ?: Json.Bool(false)
+        val itemIdsNode = payload.entries["item_ids"]
+        val requestId = (requestIdNode as? Json.Str)?.value
+        val mode = (modeNode as? Json.Str)?.value
+        val dryRun = (dryRunNode as? Json.Bool)?.value
+        val itemIds = (itemIdsNode as? Json.Arr)?.items?.mapNotNull {
+            (it as? Json.Str)?.value
+        }
+        val selectedValid = mode != "selected" ||
+            (itemIdsNode is Json.Arr && itemIds != null &&
+                itemIds.size == itemIdsNode.items.size && itemIds.all { it.isNotBlank() } &&
+                itemIds.isNotEmpty())
+        val expectedPushId = (payload.entries["expected_push_id"] as? Json.Str)?.value
+        val destructiveValid = dryRun == true ||
+            (mode == "selected" && selectedValid && !expectedPushId.isNullOrBlank())
+        if (requestId.isNullOrBlank() || mode !in setOf("selected", "unreferenced") ||
+            dryRun == null || !selectedValid || !destructiveValid) {
+            return
+        }
+        val req = CacheCleanup.Request(
+            requestId = requestId,
+            mode = mode!!,
+            itemIds = itemIds,
+            dryRun = dryRun,
+            expectedPushId = expectedPushId,
+            reason = payload["reason"].asString() ?: "manual",
+            // §27 fingerprint target is PAYLOAD-derived, byte-identical to the
+            // broker + Windows: group:<gid> for a group-addressed request, else
+            // device:<did>, else all. Hard-coding device:<settings.deviceId>
+            // made group cleanups fail the broker's result-fingerprint gate.
+            target = CacheCleanup.targetFor(
+                payload["device_id"].asString(), payload["group_id"].asString()),
+        )
+        scope.launch(Dispatchers.IO) {
+            val result = cleanup().run(req)
+            if (!req.dryRun) {
+                lastCleanupAt = System.currentTimeMillis()
+                lastCleanupError = if (result.ok) "" else result.error
+            }
+            link?.send("cache_cleanup_result",
+                cleanupResultJson(result), to = "controller")
+        }
+    }
+
+    /** §28: on-demand full per-item inventory (never in periodic status). */
+    private fun hCacheInventory(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val requestId = payload["request_id"].asString() ?: ""
+        scope.launch(Dispatchers.IO) {
+            val items = inventoryItems()
+            link?.send("cache_inventory_result", jsonObj {
+                put("request_id", requestId)
+                put("device_id", settings.deviceId)
+                put("items", jsonArr(items))
+            }, to = "controller")
+        }
+    }
+
     // --- §6.3 playlist -----------------------------------------------
     /**
      * §6.3 replace-vs-append. The inbound frame carries an explicit `mode`
@@ -675,6 +912,7 @@ class PlayerService : Service() {
      * verbatim under the frame's playlist_id so restart restores order+index.
      */
     private fun hPlaylist(payload: Json.Obj) {
+        synchronized(cacheGenerationLock) {
         val incoming = Playlist.fromJson(payload) ?: return
         val mode = PlaylistOps.Mode.parse(payload["mode"].asString())
         // §6.3a: empty REPLACE means "clear and stop". Persisting an empty
@@ -721,6 +959,7 @@ class PlayerService : Service() {
         // 旧媒体,给真实颗粒腾余量(prefetch 内部还会做配额 LRU + 写前探针)。
         reclaimOrphans(pl)
         if (pl.items.isNotEmpty()) downloader.prefetch(pl.items)
+        }
     }
 
     private fun clearActivePlaylist(playlistId: String) {
@@ -806,9 +1045,11 @@ class PlayerService : Service() {
         val generation = prepareGeneration.replace()
         if (startIndex in pl.items.indices) {
             val item = pl.items[startIndex]
-            playlist = pl
-            index = startIndex
-            updateCacheProtection(pl)
+            synchronized(cacheGenerationLock) {
+                playlist = pl
+                index = startIndex
+                updateCacheProtection(pl)
+            }
             if (downloader.isReady(item.itemId)) {
                 val readyFile = downloader.readyPath(item.itemId)
                 val path = readyFile?.absolutePath
@@ -894,9 +1135,11 @@ class PlayerService : Service() {
         val pl = resolvePlaylist(pid) ?: return
         if (pushId.isNullOrEmpty() || pl.pushId != pushId) return
         if (startIndex !in pl.items.indices) return
-        playlist = pl
-        index = startIndex
-        updateCacheProtection(pl)
+        synchronized(cacheGenerationLock) {
+            playlist = pl
+            index = startIndex
+            updateCacheProtection(pl)
+        }
         val item = pl.items[startIndex]
         val readyFile = downloader.readyPath(item.itemId)
         readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
@@ -1236,7 +1479,7 @@ class PlayerService : Service() {
             if (wrap) newIndex = ((newIndex % pl.items.size) + pl.items.size) % pl.items.size
             else return  // NONE clamps at the boundary
         }
-        index = newIndex
+        synchronized(cacheGenerationLock) { index = newIndex }
         val item = pl.items[newIndex]
         val readyFile = downloader.readyPath(item.itemId)
         readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
@@ -1583,9 +1826,11 @@ class PlayerService : Service() {
             MainActivity.instance?.showIdle()
             return
         }
-        playlist = pl
-        index = task.index
-        updateCacheProtection(pl)
+        synchronized(cacheGenerationLock) {
+            playlist = pl
+            index = task.index
+            updateCacheProtection(pl)
+        }
         dwellTimer.getAndSet(null)?.cancel()
         val item = pl.items[task.index]
         val readyFile = downloader.readyPath(item.itemId)

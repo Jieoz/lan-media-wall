@@ -112,6 +112,12 @@ class P2pCoordinator {
   void Function(String deviceId, String state, String detail, int versionCode)?
       onUpdateStatus;
 
+  /// §27/§28 播放端回传的 cache_cleanup_result / cache_inventory_result 终态帧。
+  /// 与 [BrokerClient.onCacheCleanupResult] 语义一致 —— 两传输汇入 WallState 的同一
+  /// 归约器。P2P 显式处理这两种入站类型(protocol §27 兼容/转发)。
+  void Function(Map<String, dynamic> payload)? onCacheCleanupResult;
+  void Function(Map<String, dynamic> payload)? onCacheInventoryResult;
+
   /// 诊断日志。
   void Function(String line)? onLog;
 
@@ -521,6 +527,14 @@ class P2pCoordinator {
           (env.payload['version_code'] as num?)?.toInt() ?? 0,
         );
         break;
+      case 'cache_cleanup_result':
+        // §27: P2P 直连,播放端只对发起的控制端回结果。缺省 device_id 回落到连接归一
+        // 后的 deviceId,与其它回帧一致,再汇入 WallState 的同一归约器。
+        onCacheCleanupResult?.call(_withDevice(env.payload, deviceId));
+        break;
+      case 'cache_inventory_result':
+        onCacheInventoryResult?.call(_withDevice(env.payload, deviceId));
+        break;
       default:
         _log('忽略入站类型($deviceId): ${env.type}');
     }
@@ -753,6 +767,14 @@ class P2pCoordinator {
 
   static String _asStr(Object? v, [String def = '']) =>
       v is String && v.isNotEmpty ? v : def;
+
+  /// 回帧缺省 device_id 时回落到连接归一后的 [deviceId](与 diagnostic/log 回帧
+  /// 一致),这样归约器的 request_id+device_id 键在 P2P 直连下也能正确匹配。
+  static Map<String, dynamic> _withDevice(
+      Map<String, dynamic> payload, String deviceId) {
+    if (_asStr(payload['device_id']).isNotEmpty) return payload;
+    return {...payload, 'device_id': deviceId};
+  }
 }
 
 /// 一条 p2p 直连的订阅集合：文本帧 + 二进制帧（缩略图）两条订阅，加上该连接的

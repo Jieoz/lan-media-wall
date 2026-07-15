@@ -41,6 +41,13 @@ class BrokerClient {
   /// 收到被控端回传的日志文件内容。
   void Function(String deviceId, String text, String fileName)? onLogDownload;
 
+  /// §27 收到播放端回传的 cache_cleanup_result 终态帧(raw payload; WallState 解析
+  /// 成 [CacheCleanupResult] 并喂给一体化归约器 —— 与 P2P 路径汇合到同一 reducer)。
+  void Function(Map<String, dynamic> payload)? onCacheCleanupResult;
+
+  /// §28 收到播放端回传的 cache_inventory_result 终态帧。
+  void Function(Map<String, dynamic> payload)? onCacheInventoryResult;
+
   /// 连接态变化。
   void Function(ConnState state)? onState;
 
@@ -251,6 +258,14 @@ class BrokerClient {
           env.payload['text']?.toString() ?? '',
           env.payload['file_name']?.toString() ?? 'player.log',
         );
+        break;
+      case 'cache_cleanup_result':
+        // §27: broker 已做 player→controller 方向/角色校验; 这里只解析并汇入
+        // WallState 的一体化归约器(与 P2P 路径完全同一 reducer)。
+        onCacheCleanupResult?.call(env.payload);
+        break;
+      case 'cache_inventory_result':
+        onCacheInventoryResult?.call(env.payload);
         break;
       case 'ack':
         _log('ack: ${env.payload}');

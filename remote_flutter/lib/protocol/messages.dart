@@ -127,6 +127,46 @@ class CurrentItem {
   }
 }
 
+/// §26 轻量缓存摘要。周期性 status 里承载,只有总量/可回收/受保护等标量,
+/// 不含逐项清单(完整清单按需用 §28 cache_inventory 拉取)。防御式解析:
+/// 老端不带该字段时 [DeviceStatus.cacheSummary] 为 null,任何缺失键走 0/空。
+class CacheSummary {
+  final int readyItems;
+  final int totalBytes;
+  final int reclaimableItems;
+  final int reclaimableBytes;
+  final int protectedItems;
+  final int inflightItems;
+  final int lastCleanupAt;
+  final String lastCleanupError;
+
+  const CacheSummary({
+    this.readyItems = 0,
+    this.totalBytes = 0,
+    this.reclaimableItems = 0,
+    this.reclaimableBytes = 0,
+    this.protectedItems = 0,
+    this.inflightItems = 0,
+    this.lastCleanupAt = 0,
+    this.lastCleanupError = '',
+  });
+
+  /// null-in → null-out (老端未上报)。畸形/未知字段不崩:每个键独立防御。
+  static CacheSummary? fromMap(Map<String, dynamic>? m) {
+    if (m == null) return null;
+    return CacheSummary(
+      readyItems: _asInt(m['ready_items']),
+      totalBytes: _asInt(m['total_bytes']),
+      reclaimableItems: _asInt(m['reclaimable_items']),
+      reclaimableBytes: _asInt(m['reclaimable_bytes']),
+      protectedItems: _asInt(m['protected_items']),
+      inflightItems: _asInt(m['inflight_items']),
+      lastCleanupAt: _asInt(m['last_cleanup_at']),
+      lastCleanupError: _asStr(m['last_cleanup_error']),
+    );
+  }
+}
+
 /// 单台设备状态（§5.1 / §5.2 devices 子集）。
 class DeviceStatus {
   final String deviceId;
@@ -156,6 +196,14 @@ class DeviceStatus {
   final String? updateDetail;
   final int? updateVersionCode;
 
+  /// §26 轻量缓存摘要（可选）。老端不上报时为 null，UI 防御式处理。
+  final CacheSummary? cacheSummary;
+
+  /// §4 hello 广告的能力集（video/image/.../cache_cleanup_v1/cache_inventory_v1）。
+  /// 只有真正带 live 清理/清单 handler 的播放端才会广告 cache_*_v1（capability
+  /// truth, E0001）。控制端据此启用/禁用缓存清理入口，绝不对不支持的端静默超时。
+  final List<String> capabilities;
+
   /// 被控端上报的应用版本号（§4 hello / §5 status 的 `app_version`）。
   /// 单台状态弹窗展示用；缺失时为 null（老端/未上报，防御式处理）。
   final String? appVersion;
@@ -184,7 +232,16 @@ class DeviceStatus {
     this.updateState,
     this.updateDetail,
     this.updateVersionCode,
+    this.cacheSummary,
+    this.capabilities = const [],
   });
+
+  /// §27 缓存清理能力真值：仅当播放端广告 `cache_cleanup_v1`（其确有 live handler
+  /// 且回终态结果）时为 true。控制端据此启用清理入口，否则显示「不支持/需升级」。
+  bool get supportsCacheCleanup => capabilities.contains('cache_cleanup_v1');
+
+  /// §28 缓存清单能力真值。
+  bool get supportsCacheInventory => capabilities.contains('cache_inventory_v1');
 
   static DeviceStatus fromMap(Map<String, dynamic> m) {
     final cacheRaw = (m['cache'] as Map?) ?? {};
@@ -220,6 +277,11 @@ class DeviceStatus {
       updateVersionCode: m['update_version_code'] == null
           ? null
           : _asInt(m['update_version_code']),
+      cacheSummary: CacheSummary.fromMap(
+          (m['cache_summary'] as Map?)?.cast<String, dynamic>()),
+      capabilities: ((m['capabilities'] as List?) ?? const [])
+          .map((e) => e.toString())
+          .toList(),
     );
   }
 
@@ -257,6 +319,8 @@ class DeviceStatus {
         updateState: updateState,
         updateDetail: updateDetail,
         updateVersionCode: updateVersionCode,
+        cacheSummary: cacheSummary,
+        capabilities: capabilities,
       );
 }
 
@@ -649,6 +713,43 @@ class Commands {
         'version_code': versionCode,
         'sha256': sha256,
         if (versionName != null) 'version_name': versionName,
+      };
+
+  /// §27 cache_cleanup 请求。控制端只发 item ID / 范围,绝不发路径(删除权威在
+  /// 播放端)。[requestId] 是幂等键——同一 request_id 重复请求返回原终态、绝不二次
+  /// 删除。[dryRun] 只规划回候选、不动磁盘。[expectedPushId] 应用后清理时必填:
+  /// 与当前采纳代次不符→整单 generation_mismatch。方向 controller→player,单播时
+  /// 带 device_id;整组时带 group_id。
+  static Map<String, dynamic> cacheCleanup({
+    required String requestId,
+    String mode = 'unreferenced',
+    List<String>? itemIds,
+    bool dryRun = false,
+    String? expectedPushId,
+    String reason = 'manual',
+    String? groupId,
+    String? deviceId,
+  }) =>
+      {
+        ..._target(groupId: groupId, deviceId: deviceId),
+        'request_id': requestId,
+        'mode': mode,
+        if (itemIds != null) 'item_ids': itemIds,
+        'dry_run': dryRun,
+        if (expectedPushId != null && expectedPushId.isNotEmpty)
+          'expected_push_id': expectedPushId,
+        'reason': reason,
+      };
+
+  /// §28 cache_inventory 请求(按需拉取完整逐项清单,不进周期性 status)。
+  static Map<String, dynamic> cacheInventory({
+    required String requestId,
+    String? groupId,
+    String? deviceId,
+  }) =>
+      {
+        ..._target(groupId: groupId, deviceId: deviceId),
+        'request_id': requestId,
       };
 
   static Map<String, dynamic> _target({String? groupId, String? deviceId}) => {

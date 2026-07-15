@@ -140,6 +140,15 @@ class Downloader:
         stem = sha if sha else str(item["item_id"])
         return self.cache_dir / f"{stem}{ext}"
 
+    def owns_path(self, path) -> bool:
+        """Fail closed unless *path* resolves inside the configured cache root."""
+        try:
+            root = self.cache_dir.resolve()
+            candidate = Path(path).resolve()
+            return candidate == root or root in candidate.parents
+        except (OSError, RuntimeError, ValueError):
+            return False
+
     def cache_status(self) -> Dict[str, str]:
         with self._lock:
             return {k: e.status_value() for k, e in self._entries.items()}
@@ -182,6 +191,26 @@ class Downloader:
                 self._threads.pop(iid, None)
         self._notify()
 
+    def delete_ready_path_if_idle(self, path: Path) -> bool:
+        """Delete under the lock that owns downloader state publication."""
+        with self._lock:
+            if not self.owns_path(path):
+                return False
+            target = Path(path).resolve(strict=False)
+            for entry in self._entries.values():
+                if entry.path is None:
+                    continue
+                if (Path(entry.path).resolve(strict=False) == target and
+                        entry.state in ("pending", "downloading", "verifying")):
+                    return False
+            try:
+                if not target.exists():
+                    return False
+                target.unlink()
+                return not target.exists()
+            except OSError:
+                return False
+
     def prefetch(self, items: List[Dict[str, Any]]) -> None:
         """Queue a batch (§6.2). Already-ready items are skipped; others get a
         background worker thread."""
@@ -201,7 +230,8 @@ class Downloader:
                     item_id=item_id, state="ready", progress=100, path=target)
                 self._notify()
                 return
-            self._entries[item_id] = CacheEntry(item_id=item_id, state="pending")
+            self._entries[item_id] = CacheEntry(
+                item_id=item_id, state="pending", path=target)
             t = threading.Thread(target=self._worker, args=(item,),
                                  name=f"dl-{item_id}", daemon=True)
             self._threads[item_id] = t
@@ -245,7 +275,7 @@ class Downloader:
                                        cr_total) or item.get("size")
                 downloaded = existing
                 self._set(item_id, state="downloading",
-                          progress=percent(downloaded, total), path=None)
+                          progress=percent(downloaded, total), path=target)
                 mode = "ab" if existing else "wb"
                 with part.open(mode) as f:
                     for chunk in resp.iter_content(self.chunk_size):
@@ -266,8 +296,15 @@ class Downloader:
                     part.unlink(missing_ok=True)  # corrupt; force clean retry
                     self._fail(item_id, "sha256-mismatch")
                     return
-            part.replace(target)  # atomic publish
-            self._set(item_id, state="ready", progress=100, path=target)
+            with self._lock:
+                entry = self._entries.get(item_id)
+                if entry is None or entry.state not in ("downloading", "verifying"):
+                    return
+                part.replace(target)  # atomic publish under cleanup exclusion
+                entry.state = "ready"
+                entry.progress = 100
+                entry.path = target
+            self._notify()
         except Exception as exc:  # network/IO — keep .part for resume
             self._fail(item_id, type(exc).__name__)
 
