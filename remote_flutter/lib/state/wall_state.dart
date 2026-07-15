@@ -267,6 +267,13 @@ class WallState extends ChangeNotifier {
   /// ingestion path a broker/P2P frame takes ([_onCacheCleanupResult] /
   /// [_onCacheInventoryResult]), so UI/state tests exercise the real converged
   /// reducer matching (stale/idempotent/terminal) rather than re-simulating it.
+  /// Test seam: when true, cache_cleanup/inventory begin as pending but do not
+  /// call the live transport. Widget/unit tests can then settle via
+  /// [debugIngestCacheCleanupResult] without needing init()/links. Production
+  /// always leaves this false so undeliverable sends still fail closed.
+  @visibleForTesting
+  bool debugHoldOutboundCache = false;
+
   @visibleForTesting
   void debugIngestCacheCleanupResult(Map<String, dynamic> payload) =>
       _onCacheCleanupResult(payload);
@@ -1085,7 +1092,7 @@ class WallState extends ChangeNotifier {
       requestId: reqId, deviceId: deviceId, dryRun: dryRun,
       operationFingerprint: operationFingerprint, nowMs: _nowMs(),
       supported: supported, online: online);
-    if (op.isPending) {
+    if (op.isPending && !debugHoldOutboundCache) {
       _dispatchCache(deviceId, reqId, op, () => _send(
           'cache_cleanup',
           // deviceId MUST also go into the payload (via Commands._target), not
@@ -1098,7 +1105,7 @@ class WallState extends ChangeNotifier {
             expectedPushId: expectedPushId, reason: reason,
             deviceId: deviceId),
           deviceId: deviceId));
-    } else {
+    } else if (!op.isPending) {
       _pushLog('[$deviceId] cache_cleanup 未下发(${op.status.name}): ${op.detail}');
     }
     notifyListeners();
@@ -1114,14 +1121,14 @@ class WallState extends ChangeNotifier {
     final op = _cacheOps.beginInventory(
       requestId: reqId, deviceId: deviceId, nowMs: _nowMs(),
       supported: supported, online: online);
-    if (op.isPending) {
+    if (op.isPending && !debugHoldOutboundCache) {
       _dispatchCache(deviceId, reqId, op, () => _send(
           'cache_inventory',
           // Same payload-target rule as cacheCleanup: include device_id so
           // routing identity and any future fingerprint/gate stay consistent.
           Commands.cacheInventory(requestId: reqId, deviceId: deviceId),
           deviceId: deviceId));
-    } else {
+    } else if (!op.isPending) {
       _pushLog('[$deviceId] cache_inventory 未下发(${op.status.name}): ${op.detail}');
     }
     notifyListeners();

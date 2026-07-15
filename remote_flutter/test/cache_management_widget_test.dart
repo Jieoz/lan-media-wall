@@ -183,14 +183,18 @@ void main() {
       await t.pumpWidget(_host(
           CacheManagementView(state: ws, deviceId: 'd1', deviceName: 'D1')));
       expect(find.text('请先演练'), findsOneWidget);
-      final button = t.widget<FilledButton>(find.ancestor(
-          of: find.text('请先演练'), matching: find.byType(FilledButton)));
-      expect(button.onPressed, isNull);
+      // FilledButton.icon keeps label under the button; prefer widgetWithText.
+      final commit = find.widgetWithText(FilledButton, '请先演练');
+      expect(commit, findsOneWidget);
+      expect(t.widget<FilledButton>(commit).onPressed, isNull);
       expect(ws.cacheOperations.where((o) => o.kind == 'cleanup'), isEmpty);
     });
 
     testWidgets('成功演练后确认才下发精确候选清理(无乐观成功)', (t) async {
       final ws = _supportedDevice();
+      // Keep dry-run pending so debugIngest can settle it; real commit later
+      // re-enables outbound so undeliverable send still fails closed.
+      ws.debugHoldOutboundCache = true;
       addTearDown(ws.dispose);
       await t.pumpWidget(_host(
           CacheManagementView(state: ws, deviceId: 'd1', deviceName: 'D1')));
@@ -198,6 +202,7 @@ void main() {
       await t.pump();
       final dry = ws.cacheOperations.singleWhere(
           (o) => o.kind == 'cleanup' && o.dryRun);
+      expect(dry.status, CacheOpStatus.pending);
       ws.debugIngestCacheCleanupResult({
         'request_id': dry.requestId,
         'device_id': 'd1',
@@ -214,6 +219,8 @@ void main() {
       });
       await t.pump();
       expect(find.text('清理 1 项'), findsOneWidget);
+      // Real commit must exercise undeliverable fail-closed path.
+      ws.debugHoldOutboundCache = false;
       await t.tap(find.text('清理 1 项'));
       await t.pumpAndSettle();
       expect(find.text('确认清理缓存?'), findsOneWidget);
