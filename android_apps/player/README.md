@@ -1,5 +1,11 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.17.0 Phase B — 缓存清理已接线:**`PlayerService` 现处理入站
+> `cache_cleanup` / `cache_inventory`,发射 `status.cache_summary`,并在
+> `hello.capabilities` 广告 `cache_cleanup_v1` / `cache_inventory_v1`。删除仍只在
+> 播放端发生:请求只带 item id(从不带路径),代次 fail-closed,受保护并集不删。
+> Phase A 纯内核与跨语言夹具保持不变。
+>
 > **v1.16.0 Phase A — 缓存清理内核(仅内核,未接线):**新增 Kotlin 缓存清理内核
 > `cache/CacheHash.kt` / `cache/CacheReferenceSnapshot.kt` / `cache/CacheCleanup.kt`
 > 及其单元测试,与 Windows 播放端 (`windows_player/cache_*.py`) **协议等价、逐字节
@@ -43,7 +49,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.16.0 / versionCode 66`** — derived from
+> **Current build: `versionName 1.17.0 / versionCode 67`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
@@ -192,7 +198,7 @@ prefetch barrier §21, remote self-update §23).
 - **§7 discovery** — UDP 8772 responder: verifies `discover`, unicasts a signed
   `announce`.
 
-## Cache-lifecycle cleanup core (Phase A, §25–§29 — core only, not wired)
+## Cache-lifecycle cleanup (Phase A core + Phase B live wiring, §25–§29)
 
 `app/src/main/kotlin/.../player/cache/` holds the proven-safe cache cleanup
 core, **behaviorally on par with the Windows player** (`windows_player/cache_*.py`)
@@ -220,12 +226,10 @@ and frozen against the same cross-language fixture so the contract can't drift:
   `content_key`, `summary_after` — never an optimistic ACK.
 
 All pure JVM, **API 19-safe** (no modern-only filesystem APIs), so it unit-tests
-off-device. **Deliberate Phase B boundary (not done here, not user-visible):**
-inbound `cache_cleanup`/`cache_inventory` request routing in `PlayerService`,
-`status.cache_summary` emission, the broker/P2P return path, Flutter UI, and
-`hello.capabilities` advertisement of `cache_cleanup_v1` are all Phase B. Kotlin
-compilation and real-device verification still require exact-SHA GitHub Actions;
-this repo does not claim live cleanup is deployed.
+off-device. **Phase B (live):** `PlayerService` routes inbound cleanup/inventory,
+emits `status.cache_summary`, returns terminal result frames, and advertises
+`cache_cleanup_v1` / `cache_inventory_v1` only because handlers exist. The player
+remains sole deletion authority. Exact-SHA cloud CI remains the build gate.
 
 ## HMAC / canonical JSON alignment (the critical interop point)
 
