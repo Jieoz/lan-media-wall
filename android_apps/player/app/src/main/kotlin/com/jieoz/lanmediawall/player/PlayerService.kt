@@ -1606,6 +1606,8 @@ class PlayerService : Service() {
         logEvent("update_app recv authed=${env.authed} p2pLocal=$p2pLocal " +
             "target=$targetCode current=${BuildConfig.VERSION_CODE} " +
             "url=${url ?: "null"} sha_len=${sha?.length ?: 0}")
+        logEvent("UPDATE_STAGE=recv authed=${env.authed} p2pLocal=$p2pLocal " +
+            "target=$targetCode current=${BuildConfig.VERSION_CODE}")
         val decision = com.jieoz.lanmediawall.player.update.UpdateGuard.decide(
             authed = env.authed,
             p2pLocal = p2pLocal,
@@ -1616,14 +1618,16 @@ class PlayerService : Service() {
         )
         if (decision is com.jieoz.lanmediawall.player.update.UpdateGuard.Decision.Reject) {
             logEvent("update_app rejected reason=${decision.reason}")
-            reportUpdate("rejected", decision.reason)
+            logEvent("UPDATE_STAGE=guard reject reason=${decision.reason}")
+            reportUpdate("rejected", "UPDATE_STAGE=guard reason=${decision.reason}")
             pushError("update:${decision.reason}")
             return
         }
         // Proceed on a background thread — download can be large; must not block
         // the link. url/sha are non-null here (guard passed).
         logEvent("update_app proceed → download+verify+install")
-        reportUpdate("downloading", "")
+        logEvent("UPDATE_STAGE=download start")
+        reportUpdate("downloading", "UPDATE_STAGE=download start")
         scope.launch(Dispatchers.IO) {
             val updater = com.jieoz.lanmediawall.player.update.AppUpdater(cacheDir)
             when (val r = updater.downloadVerifyInstall(
@@ -1631,15 +1635,20 @@ class PlayerService : Service() {
             )) {
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Installing -> {
                     logEvent("update_app installing (daemon activated pm install -r)")
-                    reportUpdate("installing", "app-restart")
+                    logEvent("UPDATE_STAGE=restart_app app-restart")
+                    reportUpdate("installing", "UPDATE_STAGE=restart_app app-restart")
                 }
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.ActivationDispatched -> {
                     logEvent("update_app legacy_activation_dispatched reboot_required=${r.rebootRequired}")
-                    reportUpdate("legacy_activation_dispatched", r.detail, r.rebootRequired)
+                    logEvent("UPDATE_STAGE=legacy_stage reboot_required=${r.rebootRequired} detail=${r.detail}")
+                    reportUpdate("legacy_activation_dispatched",
+                        "UPDATE_STAGE=legacy_stage ${r.detail}", r.rebootRequired)
                 }
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Failed -> {
+                    val st = com.jieoz.lanmediawall.player.update.AppUpdater.stageForReason(r.reason)
                     logEvent("update_app failed reason=${r.reason}")
-                    reportUpdate("failed", r.reason)
+                    logEvent("UPDATE_STAGE=$st reason=${r.reason}")
+                    reportUpdate("failed", "UPDATE_STAGE=$st reason=${r.reason}")
                     pushError("update:${r.reason}")
                 }
             }

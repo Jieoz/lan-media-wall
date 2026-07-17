@@ -35,6 +35,17 @@ class AppUpdater(
     }
 
     /**
+     * OTA-probe stage marker (§probe): emit a machine-readable
+     * `UPDATE_STAGE=<stage> <msg>` line so remote log scraping can pin the exact
+     * breakpoint of a push-upgrade (daemon_probe / download / sha256 / staged /
+     * pm_install / restart_app / legacy_stage / exception). Additive — the
+     * existing `update_*` lines are kept for backward compatibility.
+     */
+    private fun stage(log: (String) -> Unit, stage: String, msg: String = "") {
+        log(if (msg.isBlank()) "UPDATE_STAGE=$stage" else "UPDATE_STAGE=$stage $msg")
+    }
+
+    /**
      * Download [url] into the update cache, verify against [expectedSha256]
      * (lower-hex, already shape-checked by [UpdateGuard]), and root-install for
      * [pkg]. Blocking — call off the main thread. Never partially installs: a
@@ -53,19 +64,33 @@ class AppUpdater(
         val apk = File(dir, "$pkg-update.apk")
         val part = File(dir, "$pkg-update.apk.part")
         try {
+            // §probe fail-closed: verify the root daemon is reachable + genuinely
+            // root BEFORE spending bandwidth on the APK. A dead root bridge fails
+            // here at daemon_probe instead of downloading megabytes just to die at
+            // the pm_install hand-off.
+            val probe = RootInstaller.probe(force = true)
+            if (!probe.ready) {
+                stage(log, "daemon_probe", "ready=false detail=${probe.detail}")
+                return Result.Failed("daemon-not-ready:${probe.detail}")
+            }
+            stage(log, "daemon_probe", "ready=true detail=${probe.detail}")
+
             var existing = if (part.exists()) part.length() else 0L
             val builder = Request.Builder().url(url).get()
             if (existing > 0) builder.header("Range", "bytes=$existing-")
+            stage(log, "download", "start url=$url resume_from=$existing")
             log("update_download_start url=$url resume_from=$existing")
 
             client.newCall(builder.build()).execute().use { resp ->
                 val code = resp.code()
                 if (code != 200 && code != 206) {
+                    stage(log, "download", "fail http=$code")
                     log("update_download_fail http=$code")
                     return Result.Failed("http-$code")
                 }
                 if (code == 200 && existing > 0) { existing = 0; part.delete() }
                 val body = resp.body() ?: run {
+                    stage(log, "download", "fail reason=no-body http=$code")
                     log("update_download_fail reason=no-body http=$code")
                     return Result.Failed("no-body")
                 }
@@ -79,33 +104,48 @@ class AppUpdater(
                         if (n > 0) fos.write(buf, 0, n)
                     }
                 }
+                stage(log, "download", "ok http=$code bytes=${part.length()}")
                 log("update_download_done http=$code bytes=${part.length()}")
             }
 
+            stage(log, "sha256", "start expected=$expectedSha256")
             val actual = sha256File(part)
             if (!actual.equals(expectedSha256, ignoreCase = true)) {
                 part.delete()
+                stage(log, "sha256", "fail expected=$expectedSha256 actual=$actual")
                 log("update_verify_fail reason=sha256-mismatch expected=$expectedSha256 actual=$actual")
                 return Result.Failed("sha256-mismatch")
             }
+            stage(log, "sha256", "ok sha256=$actual")
             log("update_verify_ok sha256=$actual")
             if (!part.renameTo(apk)) {
                 part.copyTo(apk, overwrite = true); part.delete()
             }
+            stage(log, "staged", "path=${apk.absolutePath}")
             log("update_staged path=${apk.absolutePath}")
 
             // Hand off to the root daemon over its local socket. There is NO su
             // fallback — on the target su denies the app UID and setuid is a
             // no-op under no_new_privs, so the daemon is the only path that works.
+            stage(log, "pm_install", "daemon_send path=${apk.absolutePath}")
             val installed = RootInstaller.install(pkg, apk, log)
             return when (installed.state) {
-                RootDaemonProtocol.InstallState.PM_SUCCESS -> Result.Installing
-                RootDaemonProtocol.InstallState.LEGACY_ACTIVATION_DISPATCHED ->
+                RootDaemonProtocol.InstallState.PM_SUCCESS -> {
+                    stage(log, "restart_app", "pm_success detail=${installed.detail}")
+                    Result.Installing
+                }
+                RootDaemonProtocol.InstallState.LEGACY_ACTIVATION_DISPATCHED -> {
+                    stage(log, "legacy_stage", "reboot_required=${installed.rebootRequired} detail=${installed.detail}")
                     Result.ActivationDispatched(installed.detail, installed.rebootRequired)
-                RootDaemonProtocol.InstallState.FAILED -> Result.Failed(installed.detail)
+                }
+                RootDaemonProtocol.InstallState.FAILED -> {
+                    stage(log, "pm_install", "fail detail=${installed.detail}")
+                    Result.Failed(installed.detail)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "update failed: ${e.javaClass.simpleName}")
+            stage(log, "exception", "${e.javaClass.simpleName}: ${e.message ?: ""}")
             log("update_exception ${e.javaClass.simpleName}: ${e.message ?: ""}")
             return Result.Failed(e.javaClass.simpleName)
         }
@@ -124,5 +164,27 @@ class AppUpdater(
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    companion object { private const val TAG = "lmw.AppUpdater" }
+    companion object {
+        private const val TAG = "lmw.AppUpdater"
+
+        /**
+         * §probe: map a [Result.Failed] reason string to the UPDATE_STAGE it
+         * belongs to, so the controller can put `UPDATE_STAGE=<stage>` into
+         * `update_status.detail` and field ops can pin the breakpoint without
+         * reading player.log. Pure (device-free) — locked by AppUpdaterStageTest.
+         *
+         *   daemon-not-ready*          -> daemon_probe
+         *   http-* / no-body           -> download
+         *   sha256-mismatch            -> sha256
+         *   *pm_failed* / daemon:*     -> pm_install
+         *   else                       -> failed
+         */
+        fun stageForReason(reason: String): String = when {
+            reason.startsWith("daemon-not-ready") -> "daemon_probe"
+            reason.startsWith("http-") || reason == "no-body" -> "download"
+            reason == "sha256-mismatch" -> "sha256"
+            reason.contains("pm_failed") || reason.startsWith("daemon:") -> "pm_install"
+            else -> "failed"
+        }
+    }
 }

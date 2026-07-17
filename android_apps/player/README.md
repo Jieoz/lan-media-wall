@@ -54,6 +54,14 @@ prefetch barrier §21, remote self-update §23).
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
 >
+> **This branch tip is an OTA probe build: `1.17.1-ota-probe+68`** (versionCode
+> 68, strictly newer than the field baseline 67). It is a one-shot field
+> diagnostic — the `update_app` path now emits machine-readable `UPDATE_STAGE=…`
+> markers (daemon_probe / download / sha256 / staged / pm_install / restart_app /
+> legacy_stage / exception) into both `player.log` and `update_status.detail`, and
+> fail-closes at `daemon_probe` before downloading if the root bridge is dead. Not
+> a formal product release; the v1.17.0 narrative above still stands.
+>
 > **v1.14.8** — control-plane + composition fixes. **(1) Ordered playlist
 > replace/append**: the `playlist` frame now carries an explicit `mode`
 > (`replace` default = swap-and-restart, byte-for-byte legacy; `append` = merge
