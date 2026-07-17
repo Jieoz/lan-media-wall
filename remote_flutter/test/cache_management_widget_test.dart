@@ -265,24 +265,6 @@ void main() {
       ];
       final selected = <String>{};
       await t.pumpWidget(_host(SingleChildScrollView(
-        child: CacheInventoryList(
-          items: items,
-          selectedIds: selected,
-          onToggle: (id, on) {
-            if (on) {
-              selected.add(id);
-            } else {
-              selected.remove(id);
-            }
-          },
-        ),
-      )));
-      expect(find.textContaining('已勾选 0'), findsOneWidget);
-      expect(find.byType(CheckboxListTile), findsOneWidget); // only reclaimable
-      await t.tap(find.byType(CheckboxListTile));
-      await t.pump();
-      // parent setState not wired; re-pump with updated selected via rebuild
-      await t.pumpWidget(_host(SingleChildScrollView(
         child: StatefulBuilder(builder: (ctx, setState) {
           return CacheInventoryList(
             items: items,
@@ -299,10 +281,15 @@ void main() {
           );
         }),
       )));
+      expect(find.textContaining('已勾选 0'), findsOneWidget);
+      // only reclaimable rows get a checkbox; protected stays ListTile
+      expect(find.byType(CheckboxListTile), findsOneWidget);
+      expect(find.text('clip-b'), findsOneWidget);
       await t.tap(find.byType(CheckboxListTile));
       await t.pump();
       expect(selected.contains('clip-a'), isTrue);
       expect(selected.contains('clip-b'), isFalse);
+      expect(find.textContaining('已勾选 1'), findsOneWidget);
     });
 
     testWidgets('窄屏(320 宽)动作条不溢出', (t) async {
