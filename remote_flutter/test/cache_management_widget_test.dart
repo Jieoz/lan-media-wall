@@ -90,7 +90,7 @@ void main() {
         CacheOpStatus.timeout: '清理 · 超时无响应',
         CacheOpStatus.partial: '清理 · 部分成功',
         CacheOpStatus.failed: '清理 · 失败',
-        CacheOpStatus.generationConflict: '清理 · 代次冲突(未删除任何内容)',
+        CacheOpStatus.generationConflict: '清理 · 代次不匹配(未删除)',
       }.entries) {
         await t.pumpWidget(_host(CacheOpResultTile(op: _op(e.key), onRetry: () {})));
         expect(find.text(e.value), findsOneWidget, reason: '${e.key}');

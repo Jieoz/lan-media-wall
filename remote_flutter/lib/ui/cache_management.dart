@@ -51,7 +51,7 @@ CacheOpVisual cacheOpVisual(CacheOpStatus status) {
       return const CacheOpVisual(Icons.cloud_off, Colors.grey, '设备离线');
     case CacheOpStatus.generationConflict:
       return const CacheOpVisual(
-          Icons.sync_problem, Colors.deepPurple, '代次冲突(未删除任何内容)');
+          Icons.sync_problem, Colors.deepPurple, '代次不匹配(未删除)');
   }
 }
 
@@ -131,8 +131,11 @@ class CacheOpResultTile extends StatelessWidget {
         subtitleLines.add('删除失败 ${r.failed.length} 项');
       }
       if (op.status == CacheOpStatus.generationConflict) {
-        subtitleLines.add('期望代次 ${r.expectedPushId ?? '?'} '
-            '≠ 实际 ${r.observedPushId ?? '?'}');
+        subtitleLines.add(
+          '推送代次不一致，未删除任何内容。'
+          '若设备刚空闲/未播过内容，请先推送或播放一次再清理。'
+          '（期望 ${r.expectedPushId ?? "?"} ≠ 实际 ${r.observedPushId ?? "?"}）',
+        );
       }
     }
     if (op.detail.isNotEmpty && op.status != CacheOpStatus.success) {

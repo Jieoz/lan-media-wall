@@ -14,6 +14,7 @@ import 'device_wall_filter.dart';
 import 'device_wall_layout.dart';
 import 'dwell_picker.dart';
 import 'invite_screen.dart';
+import '../util/version_code.dart';
 
 /// 设备墙栏(设计合同 §4.1 左栏) —— 控制端常驻主视图。
 ///
@@ -127,7 +128,7 @@ class _ActionsBar extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(child: OutlinedButton.icon(
               icon: const Icon(Icons.system_update_alt),
-              label: Text(compact ? '更新' : '更新固件'),
+              label: Text(compact ? '升级' : '推送升级'),
               onPressed: () => _remoteUpdateDialog(context, state),
             )),
           ]),
@@ -165,6 +166,8 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
   final knownVersionCode = lockedStatus?.updateVersionCode; // int or null
   // Prefill the field with current+1 as a safe editable hint when we know the
   // device's integer versionCode; still require the operator to confirm.
+  // Prefill with next intuitive code when known; operators may type v1.17.3 /
+  // 1.17.3 / 1173 / 1.17.3+1173 — all parse to the wire integer versionCode.
   final versionCtl = TextEditingController(
     text: knownVersionCode != null ? '${knownVersionCode + 1}' : '',
   );
@@ -197,21 +200,36 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
               const SizedBox(height: 8),
               TextField(
                 controller: versionCtl,
-                keyboardType: TextInputType.number,
+                // Allow v1.17.3 / 1.17.3 / 1173 / 1.17.3+1173 — not digits-only.
+                keyboardType: TextInputType.text,
                 decoration: const InputDecoration(
-                  labelText: '目标 versionCode（整数，必须比被控端现版本大）',
-                  helperText: '必须填 APK 真实 versionCode（本次正式包=69）；'
-                      '禁止填 1.17.1 或 1171 这类版本名/拼凑值',
+                  labelText: '目标版本（直观号 / 版本名）',
+                  helperText:
+                      '可填 v1.17.3、1.17.3、1173 或 1.17.3+1173；'
+                      '规则 major×1000+minor×10+patch（例 v1.17.2→1172）。'
+                      '必须严格大于被控端当前号',
                 ),
               ),
               if (knownVersionName != null || knownVersionCode != null) ...[
                 const SizedBox(height: 4),
-                Text(
-                  '该台当前：'
-                  '${knownVersionName != null ? "版本名 $knownVersionName" : ""}'
-                  '${knownVersionCode != null ? "  versionCode $knownVersionCode（必须 > 此值）" : "（versionCode 未上报）"}',
-                  style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
-                ),
+                Builder(builder: (_) {
+                  final namePart = knownVersionName != null
+                      ? '版本名 $knownVersionName'
+                      : '';
+                  String codePart = '（versionCode 未上报）';
+                  if (knownVersionCode != null) {
+                    final approx = decodeVersionCode(knownVersionCode!);
+                    final approxHint =
+                        approx != null ? '（≈ v$approx）' : '';
+                    codePart =
+                        '  号 $knownVersionCode$approxHint（目标必须更大）';
+                  }
+                  return Text(
+                    '该台当前：$namePart$codePart',
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.blueGrey),
+                  );
+                }),
               ],
               const SizedBox(height: 8),
               // 单设备入口:目标已锁定为该台,不再给目标类型选择器(只显示锁定提示)。
@@ -285,39 +303,30 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
                 ? null
                 : () async {
                     final raw = versionCtl.text.trim();
-                    // Reject dotted version NAMES (e.g. "1.17.1") outright — a
-                    // versionCode is a bare integer; a dot means the operator typed
-                    // the version name by mistake (§field-and-6037055a3d).
-                    if (raw.contains('.')) {
+                    final parsed = parseUpgradeVersionInput(raw);
+                    if (parsed == null) {
                       ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
-                          content: Text('versionCode 必须是纯整数；'
-                              '「1.17.1」是版本名，不是 versionCode（本次正式包=69）')));
+                          content: Text('请填写目标版本：v1.17.3 / 1.17.3 / 1173 / 1.17.3+1173')));
                       return;
                     }
-                    final vc = int.tryParse(raw);
-                    if (vc == null || vc <= 0) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
-                          content: Text('请填写有效的 versionCode（正整数）')));
-                      return;
-                    }
-                    // Hard reject a downgrade/replay when we KNOW the device's
-                    // integer versionCode — mirrors the被控端 UpdateGuard so the
-                    // operator gets an instant, local, clear error.
+                    final vc = parsed.code;
+                    // Hard reject downgrade/replay when we KNOW the device's code.
                     if (knownVersionCode != null && vc <= knownVersionCode) {
                       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-                          content: Text('目标 versionCode=$vc 必须严格大于该台当前 '
-                              '$knownVersionCode（被控端会拒绝降级/重放）')));
+                          content: Text('目标号 $vc'
+                              '${parsed.displayName != null ? "（v${parsed.displayName}）" : ""}'
+                              ' 必须严格大于该台当前 $knownVersionCode'
+                              '（被控端会拒绝降级/重放）')));
                       return;
                     }
-                    // Soft warn (require a second tap) on a value that looks like a
-                    // dotted-version lookalike (e.g. 1171) — absurdly far above the
-                    // known current code. Confirming once proceeds.
+                    // Soft warn on absurdly large jumps (require second tap).
                     final ceiling = (knownVersionCode ?? 0) + 1000;
                     if (vc > ceiling && !versionWarned) {
                       versionWarned = true;
                       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-                          content: Text('versionCode=$vc 远高于该台当前值，'
-                              '像版本名拼凑（如 1171）。确认无误请再点一次「准备并下发」')));
+                          content: Text('目标号 $vc'
+                              '${parsed.displayName != null ? "（v${parsed.displayName}）" : ""}'
+                              ' 远高于该台当前值。确认无误请再点一次「准备并下发」')));
                       return;
                     }
                     final groupId = targetKind == 'group' ? targetGroupId : null;
@@ -811,30 +820,36 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                     SizedBox(width: 32, child: Text('${volume.round()}')),
                   ],
                 ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('音量仅本机 · 点「应用配置」后下发',
+                      style: Theme.of(ctx).textTheme.bodySmall),
+                ),
                 const Divider(height: 20),
-                // 内容 / 升级 / 重启:各自即时动作,先关本弹窗再走对应流程。
+                // 分层：常用 → 维护 → 危险。即时动作先关弹窗再走流程。
+                Text('常用', style: Theme.of(ctx).textTheme.labelLarge),
+                const SizedBox(height: 6),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    // P0: 点设备即管列表 — 入口文案明确「当前列表」。
                     FilledButton.icon(
                       icon: const Icon(Icons.playlist_play),
-                      label: const Text('当前列表(编辑/推送)'),
+                      label: const Text('编辑当前列表'),
                       onPressed: () {
                         Navigator.pop(ctx);
                         _pushContentToDeviceDialog(context, state, device);
                       },
                     ),
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.playlist_add),
-                      label: const Text('推送内容(仅这一台)'),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _pushContentToDeviceDialog(context, state, device);
-                      },
-                    ),
-                    // §27/§28 设备缓存管理:清单/演练/确认清理,与「推送内容」独立。
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('维护', style: Theme.of(ctx).textTheme.labelLarge),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
                     OutlinedButton.icon(
                       icon: const Icon(Icons.sd_storage),
                       label: const Text('缓存管理'),
@@ -843,7 +858,6 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         showCacheManagementDialog(context, state, device);
                       },
                     ),
-                    // §23 单台推送升级:复用 _remoteUpdateDialog,目标预锁定该台。
                     OutlinedButton.icon(
                       icon: const Icon(Icons.system_update_alt),
                       label: const Text('推送升级'),
@@ -852,7 +866,6 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         _remoteUpdateDialog(context, state, lockDevice: device);
                       },
                     ),
-                    // §debug 单台下载日志:请求被控端回传 player.log 并落到本地文件。
                     OutlinedButton.icon(
                       icon: const Icon(Icons.download_outlined),
                       label: const Text('下载日志'),
@@ -893,7 +906,19 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         }
                       },
                     ),
-                    // §9.4 只重启播放 App(安全,保住 Wi-Fi)。无需重启整机。
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('危险操作',
+                    style: Theme.of(ctx)
+                        .textTheme
+                        .labelLarge
+                        ?.copyWith(color: Colors.red.shade700)),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.orange),
@@ -904,7 +929,6 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         _confirmRestartApp(context, state, device);
                       },
                     ),
-                    // §10 整机重启——高危,会中断 Wi-Fi(QZX_C1 需冷启动恢复)。强二次确认。
                     OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.red),

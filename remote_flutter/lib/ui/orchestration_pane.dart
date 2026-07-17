@@ -192,18 +192,51 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         )),
         const SizedBox(width: 8),
         FilledButton.icon(
-          icon: const Icon(Icons.save), label: const Text('应用到此设备'),
-          onPressed: _deviceId == null ? null : () {
-            final d = state.wallDevices
-                .where((item) => item.deviceId == _deviceId)
-                .firstOrNull;
-            final group = d?.status?.groupId ?? _groupId ?? '';
-            state.sendPlaylist(playlistId: _draft.playlistId ?? _newPlaylistId(),
-              groupId: group, sync: _draft.sync, loopMode: _draft.loopMode,
-              items: _draft.items, mode: 'replace', deviceId: _deviceId);
-            state.cachePrefetch(_draft.items, deviceId: _deviceId);
-            _toast('已更新 ${d?.deviceName ?? _deviceId} 的播放列表并开始缓存；未删除缓存文件');
-          },
+          icon: const Icon(Icons.send),
+          label: const Text('下发到此设备'),
+          onPressed: _deviceId == null
+              ? null
+              : () async {
+                  final d = state.wallDevices
+                      .where((item) => item.deviceId == _deviceId)
+                      .firstOrNull;
+                  final name = d?.deviceName.isNotEmpty == true
+                      ? d!.deviceName
+                      : (_deviceId ?? '');
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: Text('下发到「$name」?'),
+                      content: const Text(
+                        '将用当前草稿整列替换该机播放列表并开始缓存（不自动起播）。'
+                        '不会删除已缓存文件。',
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('取消'),
+                        ),
+                        FilledButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('确认下发'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok != true) return;
+                  final group = d?.status?.groupId ?? _groupId ?? '';
+                  state.sendPlaylist(
+                    playlistId: _draft.playlistId ?? _newPlaylistId(),
+                    groupId: group,
+                    sync: _draft.sync,
+                    loopMode: _draft.loopMode,
+                    items: _draft.items,
+                    mode: 'replace',
+                    deviceId: _deviceId,
+                  );
+                  state.cachePrefetch(_draft.items, deviceId: _deviceId);
+                  _toast('已下发到 $name 并开始缓存；未删除缓存文件');
+                },
         ),
       ]),
     );
@@ -393,29 +426,34 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             spacing: 8,
             runSpacing: 8,
             children: [
+              FilledButton.icon(
+                icon: const Icon(Icons.play_circle),
+                label: const Text('替换并播放'),
+                onPressed: _canSend ? () => _doBarrierPlay(state) : null,
+              ),
               OutlinedButton.icon(
                 icon: const Icon(Icons.download),
-                label: const Text('显式整列替换并缓存 (不播)'),
+                label: const Text('只缓存不播'),
                 onPressed: _canSend ? () => _doPrefetch(state) : null,
               ),
               OutlinedButton.icon(
-                icon: const Icon(Icons.play_circle),
-                label: const Text('显式整列替换并播放'),
-                onPressed: _canSend ? () => _doBarrierPlay(state) : null,
-              ),
-              FilledButton.icon(
                 icon: const Icon(Icons.playlist_add),
-                label: const Text('编排/添加项目到当前列表'),
+                label: const Text('追加到当前列表'),
                 onPressed: _canSend ? () => _doAppend(state) : null,
               ),
               OutlinedButton.icon(
                 icon: const Icon(Icons.stop_circle_outlined),
-                label: const Text('清空并停播 (保留缓存)'),
+                label: const Text('清空列表并停播'),
                 onPressed: _groupId == null
                     ? null
                     : () => _doClearRemote(state),
               ),
             ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '「替换」= 整列覆盖；「追加」= 合并到现有列表；清空只停播，保留缓存文件。',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
       ),
@@ -758,7 +796,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
     final g = _group;
     final members = g == null ? const <DeviceStatus>[] : state.membersOf(g.groupId);
     return _Section(
-      title: '出声台 set_audio_master',
+      title: '本家出声设备',
       child: members.isEmpty
           ? const Text('本组暂无成员')
           : _AudioMasterPicker(

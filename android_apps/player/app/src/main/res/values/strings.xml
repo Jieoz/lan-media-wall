@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">LAN Media Wall</string>
-    <string name="settings_title">Player Setup</string>
+        <string name="settings_title">Player Setup</string>
 
     <!-- §4.2/§7 first-boot notice: stopped-state rule + LAN-only warning. -->
     <string name="first_boot_notice">After installing, open this app once manually — otherwise Android won\'t deliver the boot broadcast and it won\'t auto-start after a reboot. LAN use only: do not expose this player to the public internet.</string>
@@ -77,6 +77,7 @@
     <string name="action_export_diag">Choose location and export diagnostics</string>
     <string name="action_open_battery">Open battery ignore / auto-start</string>
     <string name="action_open_home">Choose default HOME / launcher</string>
+    <string name="label_takeover_section">Field takeover (one-time)</string>
     <string name="takeover_shortcuts_hint">One-time field takeover (no ADB): set default HOME to this app, then allow battery / auto-start. Competing OEM players must be stopped manually.</string>
     <string name="takeover_status_fmt">battery_ignored=%1$s · we_are_default_home=%2$s</string>
     <string name="takeover_open_fail">Could not open system settings on this device</string>

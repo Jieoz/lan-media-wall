@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.17.3] — 2026-07-17
+
+- Operator UX polish + **intuitive upgrade versionCode** (versionCode **1173**, versionName `1.17.3`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.3+1173`). Mapping: `versionCode = major×1000 + minor×10 + patch` (e.g. **v1.17.2 → 1172**, **v1.17.3 → 1173**). Legacy small codes (69–72) remain accepted as bare integers for older boxes.
+  - **Controller — upgrade dialog.** Accepts `v1.17.3` / `1.17.3` / `1173` / `1.17.3+1173`; removes the hard-coded “正式包=69” text; still rejects non-newer targets and soft-warns on huge jumps.
+  - **Controller — orchestration actions.** Renames primary actions to **替换并播放 / 只缓存不播 / 追加到当前列表 / 清空列表并停播**; **应用到此设备 → 下发到此设备** with confirm; **出声台 set_audio_master → 本家出声设备**.
+  - **Controller — device dialog layers.** Actions split into 常用 / 维护 / 危险; drops the duplicate “推送内容” twin of “编辑当前列表”; volume notes “仅本机”.
+  - **Controller — cache cleanup copy.** Generation-conflict label/subtitle explain idle/no-push cases in plain language.
+  - **Player — takeover card on top.** Settings moves battery-ignore + default HOME shortcuts under a top **现场接管（一次性）** section.
+
 ## [v1.17.2] — 2026-07-17
 
 - Formal field-ops release (versionCode **72**, versionName `1.17.2`): residual operator UX + no-ADB takeover shortcuts. Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.2+72`). Includes prior field-fix 70/71 forensics/read-back work that had not been promoted to a GitHub Release.
