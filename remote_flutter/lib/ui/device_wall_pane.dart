@@ -11,6 +11,7 @@ import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 import 'cache_management.dart';
 import 'device_wall_layout.dart';
+import 'dwell_picker.dart';
 import 'invite_screen.dart';
 
 /// 设备墙栏(设计合同 §4.1 左栏) —— 控制端常驻主视图。
@@ -114,7 +115,19 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
   if (path == null) return;
   final apk = File(path);
 
-  final versionCtl = TextEditingController();
+  // §field-and-6037055a3d: the controller once sent target versionCode=1171 for
+  // an APK whose real versionCode was 68. Surface what we KNOW about the locked
+  // device so the operator can't fat-finger a dotted version (1.17.1) or a
+  // 4-digit lookalike (1171). appVersion is the dotted name; the integer code is
+  // only known once a device has reported an update_status (updateVersionCode).
+  final lockedStatus = lockDevice?.status;
+  final knownVersionName = lockedStatus?.appVersion; // e.g. "1.17.1"
+  final knownVersionCode = lockedStatus?.updateVersionCode; // int or null
+  // Prefill the field with current+1 as a safe editable hint when we know the
+  // device's integer versionCode; still require the operator to confirm.
+  final versionCtl = TextEditingController(
+    text: knownVersionCode != null ? '${knownVersionCode + 1}' : '',
+  );
   final groups = state.groups;
   final devices = state.wallDevices;
   // lockDevice 非空 → 预锁定到该台;否则整墙入口默认 all。
@@ -123,6 +136,9 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
   String? targetDeviceId = lockDevice?.deviceId ??
       (devices.isEmpty ? null : devices.first.deviceId);
   var uploading = false;
+  // Set once the operator has been warned about an absurd-looking versionCode; a
+  // second tap then proceeds (see the send handler).
+  var versionWarned = false;
   String? uploadedUrl, uploadedSha;
 
   if (!context.mounted) return;
@@ -144,9 +160,19 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
                   labelText: '目标 versionCode（整数，必须比被控端现版本大）',
-                  helperText: '被控端会拒绝 ≤ 当前版本的更新（防降级/重放）',
+                  helperText: '必须填 APK 真实 versionCode（本次正式包=69）；'
+                      '禁止填 1.17.1 或 1171 这类版本名/拼凑值',
                 ),
               ),
+              if (knownVersionName != null || knownVersionCode != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '该台当前：'
+                  '${knownVersionName != null ? "版本名 $knownVersionName" : ""}'
+                  '${knownVersionCode != null ? "  versionCode $knownVersionCode（必须 > 此值）" : "（versionCode 未上报）"}',
+                  style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
+                ),
+              ],
               const SizedBox(height: 8),
               // 单设备入口:目标已锁定为该台,不再给目标类型选择器(只显示锁定提示)。
               if (lockDevice != null)
@@ -218,10 +244,40 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
             onPressed: uploading
                 ? null
                 : () async {
-                    final vc = int.tryParse(versionCtl.text.trim());
+                    final raw = versionCtl.text.trim();
+                    // Reject dotted version NAMES (e.g. "1.17.1") outright — a
+                    // versionCode is a bare integer; a dot means the operator typed
+                    // the version name by mistake (§field-and-6037055a3d).
+                    if (raw.contains('.')) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                          content: Text('versionCode 必须是纯整数；'
+                              '「1.17.1」是版本名，不是 versionCode（本次正式包=69）')));
+                      return;
+                    }
+                    final vc = int.tryParse(raw);
                     if (vc == null || vc <= 0) {
                       ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
                           content: Text('请填写有效的 versionCode（正整数）')));
+                      return;
+                    }
+                    // Hard reject a downgrade/replay when we KNOW the device's
+                    // integer versionCode — mirrors the被控端 UpdateGuard so the
+                    // operator gets an instant, local, clear error.
+                    if (knownVersionCode != null && vc <= knownVersionCode) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                          content: Text('目标 versionCode=$vc 必须严格大于该台当前 '
+                              '$knownVersionCode（被控端会拒绝降级/重放）')));
+                      return;
+                    }
+                    // Soft warn (require a second tap) on a value that looks like a
+                    // dotted-version lookalike (e.g. 1171) — absurdly far above the
+                    // known current code. Confirming once proceeds.
+                    final ceiling = (knownVersionCode ?? 0) + 1000;
+                    if (vc > ceiling && !versionWarned) {
+                      versionWarned = true;
+                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                          content: Text('versionCode=$vc 远高于该台当前值，'
+                              '像版本名拼凑（如 1171）。确认无误请再点一次「准备并下发」')));
                       return;
                     }
                     final groupId = targetKind == 'group' ? targetGroupId : null;
@@ -265,7 +321,8 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
   );
   if (ok == true && context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('已下发更新指令;被控端校验通过后将下载→安装→重启')));
+        content: Text('已下发更新指令;被控端校验通过后将下载→安装。'
+            '正常仅重启 App;个别老机型（legacy）可能整机重启，Wi-Fi 会短暂中断后自恢复')));
   }
 }
 
@@ -1143,6 +1200,12 @@ Future<void> _pushContentToDeviceDialog(
             withData: false,
           );
           if (result == null || result.files.isEmpty) return;
+          // §5 图片必须有停留时长:上传前用秒 UI 确认(默认 8 秒),不再硬编码 8000ms。
+          int? durationMs;
+          if (type == 'image') {
+            durationMs = await showDwellPicker(ctx);
+            if (durationMs == null) return; // 取消即放弃
+          }
           setLocal(() {
             uploading = true;
             uploadHint = '准备上传…';
@@ -1156,7 +1219,7 @@ Future<void> _pushContentToDeviceDialog(
                 file: File(path),
                 type: type,
                 name: f.name,
-                durationMs: type == 'image' ? 8000 : null,
+                durationMs: durationMs,
                 onProgress: (sent, total) {
                   if (total > 0) {
                     setLocal(() => uploadHint =
@@ -1243,8 +1306,24 @@ Future<void> _pushContentToDeviceDialog(
                           '${i + 1}. ${it.name}${draft.currentIndex == i ? " · 当前播放" : ""}',
                           overflow: TextOverflow.ellipsis,
                         ),
+                        subtitle: it.isImage
+                            ? Text('图片 · ${dwellSecondsLabel(it.durationMs)}')
+                            : null,
                         trailing: Wrap(
                           children: [
+                            if (it.isImage)
+                              IconButton(
+                                tooltip: '改停留时长',
+                                icon: const Icon(Icons.timer_outlined),
+                                onPressed: () async {
+                                  final ms = await showDwellPicker(ctx,
+                                      initialMs: it.durationMs,
+                                      title: '「${it.name}」停留时长');
+                                  if (ms == null) return;
+                                  draft.setDurationMs(i, ms);
+                                  setLocal(() {});
+                                },
+                              ),
                             IconButton(
                               tooltip: '上移',
                               icon: const Icon(Icons.arrow_upward),

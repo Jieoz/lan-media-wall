@@ -1,9 +1,10 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# OTA probe build: stage-coded update_app path for one-shot field diagnosis.
-# versionCode 68 is strictly newer than field baseline 1.17.0+67.
-version: 1.17.1-ota-probe+68
+# v1.17.1+69: honest legacy-staged reboot status, force-internal pm install before
+# any whole-device reboot, and seconds-based image dwell UX. versionCode 69 is
+# strictly newer than the field baseline (1.17.0+67 / probe +68).
+version: 1.17.1+69
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

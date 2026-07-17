@@ -87,6 +87,14 @@ class PlaylistDraft extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 编辑某项停留时长(§5 图片 dwell)。复用 [MediaItem.copyWith] 只改
+  /// `duration_ms`(毫秒),其余字段保序不变。越界或非正值为无操作(不通知)。
+  void setDurationMs(int index, int durationMs) {
+    if (index < 0 || index >= _items.length || durationMs <= 0) return;
+    _items[index] = _items[index].copyWith(durationMs: durationMs);
+    notifyListeners();
+  }
+
   /// 清空条目(保留 playlist 身份/开关)。空列表清空为无操作(不通知)。
   void clear() {
     if (_items.isEmpty) return;

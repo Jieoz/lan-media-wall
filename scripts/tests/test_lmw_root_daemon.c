@@ -150,6 +150,26 @@ static void test_legacy_install_contract(void) {
           "verified startup commits by deleting backup");
 }
 
+// §field-and-6037055a3d: before any whole-device reboot the daemon must try a
+// force-INTERNAL pm install. Lock the ordered command list: first a plain
+// `pm install -r`, then a `-f` (force internal) attempt, and never a downgrade.
+static void test_pm_install_cmd_order(void) {
+    CHECK(LMW_PM_INSTALL_CMD_COUNT == 2, "exactly two ordered pm attempts");
+    CHECK(strstr(LMW_PM_INSTALL_CMDS[0], "pm install -r ") == LMW_PM_INSTALL_CMDS[0],
+          "first attempt is a plain reinstall");
+    CHECK(strstr(LMW_PM_INSTALL_CMDS[0], " -f ") == NULL,
+          "first attempt does not force internal");
+    CHECK(strstr(LMW_PM_INSTALL_CMDS[1], "pm install -r ") == LMW_PM_INSTALL_CMDS[1] &&
+          strstr(LMW_PM_INSTALL_CMDS[1], " -f ") != NULL,
+          "second attempt forces install to internal storage before any reboot");
+    for (size_t i = 0; i < LMW_PM_INSTALL_CMD_COUNT; i++) {
+        CHECK(strstr(LMW_PM_INSTALL_CMDS[i], " -d ") == NULL,
+              "no attempt enables downgrade (policy: strictly-newer only)");
+        CHECK(strstr(LMW_PM_INSTALL_CMDS[i], LMW_STAGED_APK) != NULL,
+              "every attempt installs only our fixed world-readable stage");
+    }
+}
+
 // ---- §restart-state-machine: pure helpers driving the deterministic restart ----
 // These lock the decision logic of the RESTART_APP worker so the "force-stop but
 // never came back" field failure is caught by construction, not by a blind chain.
@@ -335,6 +355,7 @@ int main(void) {
     test_read_allowed_uid();
     test_pm_success_line();
     test_legacy_install_contract();
+    test_pm_install_cmd_order();
     test_am_start_failed();
     test_extract_pid();
     test_should_retry_restart();

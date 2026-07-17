@@ -125,6 +125,22 @@ void main() {
       expect(draft.currentIndex, 1);
     });
 
+    test('setDurationMs edits image dwell in place, ignoring bad input', () {
+      final draft = PlaylistDraft()..addAll(const [_a, _c]);
+      var notifications = 0;
+      draft.addListener(() => notifications++);
+
+      draft.setDurationMs(1, 15000);
+      expect(draft.items[1].durationMs, 15000);
+      expect(draft.items[1].itemId, 'c'); // 其余字段保序不变
+      expect(notifications, 1);
+
+      draft.setDurationMs(1, 0); // 非正值无操作
+      draft.setDurationMs(5, 10000); // 越界无操作
+      expect(draft.items[1].durationMs, 15000);
+      expect(notifications, 1);
+    });
+
     test('public item view is immutable', () {
       final draft = PlaylistDraft()..addAll(const [_a]);
 

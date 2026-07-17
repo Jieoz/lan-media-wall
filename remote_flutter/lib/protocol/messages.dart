@@ -40,6 +40,20 @@ class MediaItem {
 
   bool get isImage => type == 'image';
 
+  /// Copy with a changed [durationMs] (image dwell edit). Everything else is
+  /// preserved — only the wire field `duration_ms` (ms) changes; the seconds UI
+  /// is a controller-side presentation on top of this millisecond value.
+  MediaItem copyWith({int? durationMs}) => MediaItem(
+        itemId: itemId,
+        type: type,
+        name: name,
+        url: url,
+        size: size,
+        sha256: sha256,
+        durationMs: durationMs ?? this.durationMs,
+        loop: loop,
+      );
+
   Map<String, dynamic> toMap() => {
         'item_id': itemId,
         'type': type,

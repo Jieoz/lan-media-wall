@@ -47,8 +47,11 @@
 //   * INSTALL copies the verified APK to a WORLD-READABLE stage (LMW_STAGED_APK,
 //     0644 so system_server/installd uid 1000 can read it — the app's own
 //     cache/update dir is 0700 app-private and PM cannot read it), then runs
-//     `pm install -r <stage>` and, only on a "Success" reply, RESTART_APP. No
-//     whole-device reboot (see WHY PM-INSTALL below).
+//     an ordered `pm install` (plain `-r`, then `-r -f` force-internal — see
+//     LMW_PM_INSTALL_CMDS) and, only on a "Success" reply, RESTART_APP. No
+//     whole-device reboot (see WHY PM-INSTALL below). Only if every pm attempt
+//     fails with INSTALL_FAILED_INVALID_INSTALL_LOCATION is the legacy scanner
+//     stage + delayed reboot used as a last resort.
 //
 // WHY PM-INSTALL (not the old /data/app overwrite + whole-device reboot):
 //   The old path copied the APK straight into /data/app/<pkg>-1.apk and rebooted
@@ -278,6 +281,28 @@ static lmw_install_action lmw_install_decision(const char *out) {
     if (lmw_pm_is_invalid_install_location(out)) return INSTALL_LEGACY_STAGE;
     return INSTALL_FAIL;
 }
+
+// Ordered `pm install` attempts, tried in sequence before any whole-device
+// reboot is even considered (§field-and-6037055a3d: a warm reboot drops Wi-Fi on
+// QZX_C1). Every entry is a COMPILE-TIME CONSTANT command string — LMW_STAGED_APK
+// is our own fixed stage (the request path is validated == LMW_CANONICAL_APK and
+// copied THERE), so these popen lines carry NO external/request bytes.
+//   1. `pm install -r`      — normal reinstall (keeps existing install location).
+//   2. `pm install -r -f`   — force-install to INTERNAL storage. On boxes whose
+//      default install location is a flaky/absent SD (the source of
+//      INSTALL_FAILED_INVALID_INSTALL_LOCATION) this succeeds where (1) failed,
+//      activating the APK via PackageManager with only an app restart — NO
+//      whole-device reboot. We deliberately do NOT add `-d` (allow-downgrade):
+//      downgrades are blocked by policy (UpdateGuard already requires a strictly
+//      newer versionCode) and enabling it here would weaken that guarantee.
+// Kept in the pure region so test_lmw_root_daemon can lock the ordering/force flag
+// without a device.
+static const char *const LMW_PM_INSTALL_CMDS[] = {
+    "pm install -r " LMW_STAGED_APK " 2>&1",
+    "pm install -r -f " LMW_STAGED_APK " 2>&1",
+};
+#define LMW_PM_INSTALL_CMD_COUNT \
+    (sizeof(LMW_PM_INSTALL_CMDS) / sizeof(LMW_PM_INSTALL_CMDS[0]))
 static const char *lmw_legacy_target_path(void) { return LMW_LEGACY_APK; }
 static const char *lmw_legacy_temp_path(void) { return LMW_LEGACY_TMP_APK; }
 static const char *lmw_legacy_backup_path(void) { return LMW_LEGACY_BACKUP_APK; }
@@ -801,17 +826,12 @@ static int lmw_restart_app(void) {
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-// Run `pm install -r <stage>` and return 1 iff PackageManager reports success.
-// On 4.4 `pm` prints "Success" / "Failure [reason]" to stdout and its exit code
-// is unreliable, so we scan the captured output for "Success" (the authoritative
-// signal). The command is built from COMPILE-TIME CONSTANTS only (LMW_STAGED_APK
-// is not request-derived — the request path is validated == LMW_CANONICAL_APK and
-// we copy THAT to our own fixed stage), so this popen carries no external bytes.
-// `pm` is invoked via the shell so it inherits init's framework env (BOOTCLASSPATH
-// etc.) the toolbox `pm` wrapper needs.
-static int lmw_pm_install(char *out, size_t outsz) {
+// Run one pm command, capturing stdout+stderr into out. Returns 1 iff the shell
+// and pm exited cleanly AND an exact, independently trimmed "Success" line was
+// printed (pm's exit code is unreliable on 4.4, so the line is authoritative).
+static int lmw_pm_run_one(const char *cmd, char *out, size_t outsz) {
     out[0] = '\0';
-    FILE *p = popen("pm install -r " LMW_STAGED_APK " 2>&1", "r");
+    FILE *p = popen(cmd, "r");
     if (!p) return 0;
     size_t used = 0;
     char buf[256];
@@ -821,9 +841,26 @@ static int lmw_pm_install(char *out, size_t outsz) {
     }
     out[used] = '\0';
     int status = pclose(p);
-    // Require both a clean shell/pm exit and an exact, independently trimmed result line.
     return status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
            lmw_pm_has_success_line(out);
+}
+
+// Try each ordered pm command until one reports Success. Returns 1 on the first
+// success (out holds that attempt's output). We only advance to the next command
+// when the current attempt failed with INSTALL_FAILED_INVALID_INSTALL_LOCATION —
+// the one failure `-f` (force internal) is meant to fix; any OTHER failure won't
+// be helped by re-trying and is returned as-is so lmw_install_decision reports the
+// real reason. On return-0, out holds the LAST attempt's output. `pm` is invoked
+// via the shell so it inherits init's framework env (BOOTCLASSPATH etc.).
+static int lmw_pm_install(char *out, size_t outsz) {
+    out[0] = '\0';
+    for (size_t i = 0; i < LMW_PM_INSTALL_CMD_COUNT; i++) {
+        if (lmw_pm_run_one(LMW_PM_INSTALL_CMDS[i], out, outsz)) return 1;
+        // Stop early unless this is the invalid-install-location failure that a
+        // later force-internal attempt can actually address.
+        if (!lmw_pm_is_invalid_install_location(out)) break;
+    }
+    return 0;
 }
 
 // Collapse pm's multi-line output to a single greppable token for the reply line.
@@ -891,7 +928,11 @@ static void lmw_handle_install(int fd, const char *path) {
                 return;
             }
             // Child is ready but gated: deliver and half-close the reply first.
-            dprintf(fd, "ok install state=legacy_staged reboot_pending via=data_app_scanner\n");
+            // Canonical reply — matches RootDaemonProtocol.parseInstall's primary
+            // token spelling (state=legacy_activation_dispatched + reboot_required).
+            // The player also still accepts the older legacy_staged/reboot_pending
+            // spelling from daemons already in the field.
+            dprintf(fd, "ok install state=legacy_activation_dispatched reboot_required via=data_app_scanner\n");
             fsync(fd);
             shutdown(fd, SHUT_WR);
             if (!lmw_release_reboot(&gate)) (void)lmw_legacy_rollback();

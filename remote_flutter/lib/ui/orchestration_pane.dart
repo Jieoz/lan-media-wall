@@ -8,6 +8,7 @@ import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
+import 'dwell_picker.dart';
 
 /// 播放编排栏(设计合同 §4.1 右栏) —— 主工作区。
 ///
@@ -289,9 +290,12 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                   overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Text(it.isImage
-                    ? '图片 · ${it.durationMs ?? 0}ms · ${_sizeStr(it.size)}'
-                    : '视频${it.durationMs != null ? " · ${it.durationMs}ms" : ""} · ${_sizeStr(it.size)}'),
+                    ? '图片 · ${dwellSecondsLabel(it.durationMs)} · ${_sizeStr(it.size)}'
+                    : '视频 · ${_sizeStr(it.size)}'),
                 trailing: Wrap(children: [
+                  if (it.isImage)
+                    IconButton(tooltip: '改停留时长', icon: const Icon(Icons.timer_outlined),
+                      onPressed: () => _editDwell(i)),
                   IconButton(tooltip: '上移', icon: const Icon(Icons.arrow_upward),
                     onPressed: i == 0 ? null : () => _draft.move(i, i - 1)),
                   IconButton(tooltip: '下移', icon: const Icon(Icons.arrow_downward),
@@ -378,6 +382,15 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
     return '${bytes}B';
   }
 
+  /// 修改草稿中某图片项的停留时长(秒 UI → 毫秒),复用 [PlaylistDraft.setDurationMs]。
+  Future<void> _editDwell(int index) async {
+    final it = _draft.items[index];
+    final ms = await showDwellPicker(context,
+        initialMs: it.durationMs, title: '「${it.name}」停留时长');
+    if (ms == null) return;
+    _draft.setDurationMs(index, ms);
+  }
+
   // ---- 本地上传(§20 A+B) ----
   Future<void> _pickAndUpload(WallState state, String type) async {
     final result = await FilePicker.platform.pickFiles(
@@ -386,6 +399,14 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
       withData: false, // 用文件路径流式上传,避免大视频占内存
     );
     if (result == null || result.files.isEmpty) return;
+    // §5 图片必须有停留时长:上传前用**秒** UI 让操作者确认,默认 8 秒,
+    // 不再静默硬编码 8000ms。整批图片共用一个停留值。
+    int? durationMs;
+    if (type == 'image') {
+      if (!mounted) return;
+      durationMs = await showDwellPicker(context);
+      if (durationMs == null) return; // 取消即放弃本次上传
+    }
     setState(() {
       _uploading = true;
       _uploadHint = '准备上传…';
@@ -395,7 +416,6 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         final path = f.path;
         if (path == null) continue;
         final name = f.name;
-        int? durationMs = type == 'image' ? 8000 : null;
         setState(() => _uploadHint = '上传 $name …');
         final item = await state.uploadLocalMedia(
           file: File(path),
@@ -422,7 +442,9 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
   Future<void> _addUrlDialog(String type) async {
     final nameCtl = TextEditingController();
     final urlCtl = TextEditingController();
-    final durCtl = TextEditingController(text: type == 'image' ? '8000' : '');
+    // 停留时长以**秒**面向操作者,提交时换算为 duration_ms(毫秒)。
+    final durCtl = TextEditingController(
+        text: type == 'image' ? '$kDefaultDwellSeconds' : '');
     var isImage = type == 'image';
     final ok = await showDialog<bool>(
       context: context,
@@ -450,12 +472,13 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                     labelText: 'URL (http/WebDAV)',
                     hintText: 'http://nas.local/media/x.mp4'),
               ),
-              TextField(
-                controller: durCtl,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                    labelText: isImage ? '停留时长 ms (必填)' : '时长 ms (可选)'),
-              ),
+              if (isImage)
+                TextField(
+                  controller: durCtl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                      labelText: '停留时长 (必填)', suffixText: '秒'),
+                ),
             ],
           ),
           actions: [
@@ -476,17 +499,21 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
       _toast('名称与 URL 必填');
       return;
     }
-    final dur = int.tryParse(durCtl.text.trim());
-    if (isImage && (dur == null || dur <= 0)) {
-      _toast('图片必须设有效停留时长');
-      return;
+    int? durationMs;
+    if (isImage) {
+      final secs = int.tryParse(durCtl.text.trim());
+      if (secs == null || secs <= 0) {
+        _toast('图片必须设有效停留时长(秒)');
+        return;
+      }
+      durationMs = secs * 1000; // 线协议仍用毫秒
     }
     _draft.add(MediaItem(
       itemId: uuid4().substring(0, 8),
       type: isImage ? 'image' : 'video',
       name: name,
       url: url,
-      durationMs: dur,
+      durationMs: durationMs,
     ));
   }
 

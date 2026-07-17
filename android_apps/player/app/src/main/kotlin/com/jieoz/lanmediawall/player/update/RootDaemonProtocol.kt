@@ -54,11 +54,26 @@ object RootDaemonProtocol {
         return when {
             line.startsWith("ok install ") && line.contains("state=pm_success") ->
                 InstallReply(InstallState.PM_SUCCESS, line)
-            line.startsWith("ok install ") && line.contains("state=legacy_activation_dispatched") &&
-                line.contains("reboot_required") ->
+            // Legacy last-resort activation: the APK is staged for the boot scanner
+            // and a whole-device reboot has been dispatched. This is NOT a failure —
+            // the update will apply on reboot. Accept both the canonical reply
+            // (state=legacy_activation_dispatched + reboot_required) AND the
+            // field-observed variant (state=legacy_staged + reboot_pending) that
+            // older/deployed daemons still emit, so a real staged reboot is never
+            // mis-reported as install_daemon_fail (§field-and-6037055a3d).
+            line.startsWith("ok install ") && isLegacyStagedReboot(line) ->
                 InstallReply(InstallState.LEGACY_ACTIVATION_DISPATCHED, line)
             else -> InstallReply(InstallState.FAILED, line.ifBlank { "empty" })
         }
+    }
+
+    /** True if an `ok install` line carries legacy-stage semantics AND a reboot
+     *  marker, in either the canonical or the field-observed token spelling. */
+    private fun isLegacyStagedReboot(line: String): Boolean {
+        val staged = line.contains("state=legacy_activation_dispatched") ||
+            line.contains("state=legacy_staged")
+        val reboot = line.contains("reboot_required") || line.contains("reboot_pending")
+        return staged && reboot
     }
 
     /** Parse the daemon's PROBE reply. Ready requires an explicit root euid so a

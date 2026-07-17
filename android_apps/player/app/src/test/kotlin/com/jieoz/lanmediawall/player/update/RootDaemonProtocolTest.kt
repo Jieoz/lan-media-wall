@@ -119,4 +119,29 @@ class RootDaemonProtocolTest {
         assertFalse(failed.ok)
         assertFalse(failed.rebootRequired)
     }
+
+    @Test
+    fun parse_install_accepts_field_legacy_staged_reboot_pending_as_non_failure() {
+        // §field-and-6037055a3d: a deployed daemon returned this exact line and the
+        // player mis-classified it as install_daemon_fail. A legacy staged reboot is
+        // a SUCCESS-with-reboot, never a failure — the update applies on reboot.
+        val field = RootDaemonProtocol.parseInstall(
+            "ok install state=legacy_staged reboot_pending via=data_app_scanner")
+        assertEquals(RootDaemonProtocol.InstallState.LEGACY_ACTIVATION_DISPATCHED, field.state)
+        assertTrue(field.ok)
+        assertTrue(field.rebootRequired)
+    }
+
+    @Test
+    fun parse_install_requires_both_legacy_stage_and_reboot_markers() {
+        // A bare "ok install" with neither marker must NOT be silently treated as a
+        // reboot-pending success (that would hide a genuinely ambiguous reply).
+        val neither = RootDaemonProtocol.parseInstall("ok install something else")
+        assertEquals(RootDaemonProtocol.InstallState.FAILED, neither.state)
+
+        val failed = RootDaemonProtocol.parseInstall("error install pm_failed detail=Failure")
+        assertEquals(RootDaemonProtocol.InstallState.FAILED, failed.state)
+        assertFalse(failed.ok)
+        assertFalse(failed.rebootRequired)
+    }
 }

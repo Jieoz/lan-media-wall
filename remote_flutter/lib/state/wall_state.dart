@@ -832,8 +832,29 @@ class WallState extends ChangeNotifier {
     if (deviceId.isEmpty) return;
     _updateStatus[deviceId] = state;
     _updateDetail[deviceId] = detail;
-    _pushLog('[$deviceId] 升级状态: $state v$versionCode $detail');
+    _pushLog('[$deviceId] 升级状态: ${updateStateLabel(state)} '
+        '($state) v$versionCode $detail');
     notifyListeners();
+  }
+
+  /// 人类可读的升级状态措辞。关键：`legacy_activation_dispatched` 是「已就绪、待重启
+  /// 生效」的成功态，绝不能被误读为失败(§field-and-6037055a3d：老机型走 legacy 分支
+  /// 时被控端返回该态，控制端曾错当失败)。
+  static String updateStateLabel(String state) {
+    switch (state) {
+      case 'downloading':
+        return '下载中';
+      case 'installing':
+        return '安装中(将重启 App)';
+      case 'legacy_activation_dispatched':
+        return '已就绪·待整机重启生效(非失败)';
+      case 'rejected':
+        return '被拒绝(护栏)';
+      case 'failed':
+        return '失败';
+      default:
+        return state;
+    }
   }
 
   void _onLogDownload(String deviceId, String text, String fileName) {
