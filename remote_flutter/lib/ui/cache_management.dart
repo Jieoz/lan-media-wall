@@ -224,6 +224,10 @@ class _CacheManagementViewState extends State<CacheManagementView> {
   List<String> _dryRunCandidates = const [];
   String? _reviewedPushId;
 
+  /// 清单多选:操作员勾选的可回收 item_id。受保护项不可选。
+  /// 有勾选时「清理选中」优先于演练候选。
+  final Set<String> _selectedItemIds = <String>{};
+
   @override
   void initState() {
     super.initState();
@@ -254,7 +258,10 @@ class _CacheManagementViewState extends State<CacheManagementView> {
   void _refreshInventory() {
     _s.reapCacheTimeouts();
     final op = _s.cacheInventory(deviceId: widget.deviceId);
-    setState(() => _inventoryReq = op.requestId);
+    setState(() {
+      _inventoryReq = op.requestId;
+      _selectedItemIds.clear();
+    });
   }
 
   void _dryRun() {
@@ -268,19 +275,41 @@ class _CacheManagementViewState extends State<CacheManagementView> {
   }
 
   /// 提交真实清理。必须先过显式确认(§27:无乐观成功、删除权威在播放端)。
-  /// 只允许提交当前成功 dry-run 审核出的精确候选。
-  Future<void> _commitCleanup() async {
-    final candidates = _dryRunCandidates;
+  ///
+  /// 两条入口:
+  /// 1) 清单多选(优先):mode=selected + 勾选 id + 设备当前 push_id(若有)
+  /// 2) 演练候选:成功 dry-run 后的精确 id + observed_push_id
+  Future<void> _commitCleanup({bool fromSelection = false}) async {
+    final selected = _selectedItemIds.toList(growable: false);
+    final fromSelect = fromSelection || selected.isNotEmpty;
+    final candidates = fromSelect ? selected : _dryRunCandidates;
     final n = candidates.length;
-    final reviewedPushId = _reviewedPushId;
-    if (reviewedPushId == null || reviewedPushId.isEmpty) return;
     if (n == 0) return;
+
+    // 代次:清单多选用设备当前 push_id;演练用 dry-run 回传 observed_push_id。
+    // 空闲设备无 push_id 时 fail-closed(播放端会 generation_mismatch),UI 直接拦。
+    final String? generation = fromSelect
+        ? (_status?.pushId)
+        : _reviewedPushId;
+    if (generation == null || generation.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(
+            content: Text('无法清理:设备尚未采纳可校验的播放代次(空闲或旧端)。'
+                '请先推送/播放一列后再删,或只对有 push_id 的设备做演练清理。')));
+      return;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('确认清理缓存?'),
-        content: Text('将从「${widget.deviceName}」删除演练确认的 $n 项可回收缓存。受保护内容'
-            '(正在播放/当前列表/断电续播/下载中)不会被删除。此操作不可撤销。'),
+        content: Text(fromSelect
+            ? '将从「${widget.deviceName}」删除勾选的 $n 项缓存。受保护内容'
+                '(正在播放/当前列表/断电续播/下载中)由播放端拒绝,不会被删。此操作不可撤销。'
+            : '将从「${widget.deviceName}」删除演练确认的 $n 项可回收缓存。受保护内容'
+                '(正在播放/当前列表/断电续播/下载中)不会被删除。此操作不可撤销。'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -299,9 +328,14 @@ class _CacheManagementViewState extends State<CacheManagementView> {
       mode: 'selected',
       dryRun: false,
       itemIds: candidates,
-      expectedPushId: reviewedPushId,
+      expectedPushId: generation,
     );
-    if (mounted) setState(() => _cleanupReq = op.requestId);
+    if (mounted) {
+      setState(() {
+        _cleanupReq = op.requestId;
+        if (fromSelect) _selectedItemIds.clear();
+      });
+    }
   }
 
   void _retryCleanup() {
@@ -456,9 +490,11 @@ class _CacheManagementViewState extends State<CacheManagementView> {
     );
   }
 
-  /// 动作条:刷新清单 / 演练(dry-run) / 提交清理。窄屏用 Wrap 不溢出。
+  /// 动作条:刷新清单 / 演练(dry-run) / 清理勾选 / 清理演练候选。窄屏用 Wrap 不溢出。
   Widget _actionBar() {
     final busy = _s.cacheHasPending(widget.deviceId);
+    final selN = _selectedItemIds.length;
+    final dryN = _dryRunCandidates.length;
     return Wrap(
       spacing: 8,
       runSpacing: 8,
@@ -474,14 +510,20 @@ class _CacheManagementViewState extends State<CacheManagementView> {
           label: const Text('演练(不删除)'),
         ),
         FilledButton.icon(
+          key: const Key('cache-commit-selected'),
+          onPressed: (_supportsCleanup && !busy && selN > 0)
+              ? () => _commitCleanup(fromSelection: true)
+              : null,
+          icon: const Icon(Icons.delete_sweep, size: 18),
+          label: Text(selN > 0 ? '清理勾选 $selN 项' : '勾选后清理'),
+        ),
+        FilledButton.icon(
           key: const Key('cache-commit-cleanup'),
-          onPressed: (_supportsCleanup && !busy && _dryRunCandidates.isNotEmpty)
-              ? _commitCleanup
+          onPressed: (_supportsCleanup && !busy && dryN > 0)
+              ? () => _commitCleanup(fromSelection: false)
               : null,
           icon: const Icon(Icons.cleaning_services, size: 18),
-          label: Text(_dryRunCandidates.isNotEmpty
-              ? '清理 ${_dryRunCandidates.length} 项'
-              : '请先演练'),
+          label: Text(dryN > 0 ? '清理演练 $dryN 项' : '请先演练'),
         ),
       ],
     );
@@ -501,7 +543,21 @@ class _CacheManagementViewState extends State<CacheManagementView> {
               requestId: '_', deviceId: '_', kind: 'inventory',
               status: CacheOpStatus.pending, startedAtMs: 0)));
     } else if (inv != null && inv.isTerminal && inv.inventory != null) {
-      out.add(CacheInventoryList(items: inv.inventory!.items));
+      out.add(CacheInventoryList(
+        items: inv.inventory!.items,
+        selectedIds: _selectedItemIds,
+        onToggle: _supportsCleanup
+            ? (id, selected) {
+                setState(() {
+                  if (selected) {
+                    _selectedItemIds.add(id);
+                  } else {
+                    _selectedItemIds.remove(id);
+                  }
+                });
+              }
+            : null,
+      ));
     } else if (inv != null && inv.isTerminal) {
       // 清单请求终态但无 items(超时/失败/离线等)→ 复用结果卡区分。
       out.add(CacheOpResultTile(op: inv, onRetry: _refreshInventory));
@@ -510,38 +566,105 @@ class _CacheManagementViewState extends State<CacheManagementView> {
   }
 }
 
-/// §28 缓存清单逐项列表(纯展示):每项标可回收/受保护并给出保护原因。
+/// §28 缓存清单逐项列表:每项标可回收/受保护并给出保护原因。
+/// 可回收项支持多选([onToggle] 非空时),受保护项永远不可勾选。
 /// 抽成公开件便于 widget 测试直接渲染,无需网络。
 class CacheInventoryList extends StatelessWidget {
-  const CacheInventoryList({super.key, required this.items});
+  const CacheInventoryList({
+    super.key,
+    required this.items,
+    this.selectedIds,
+    this.onToggle,
+  });
 
   final List<InventoryItem> items;
+  final Set<String>? selectedIds;
+  final void Function(String itemId, bool selected)? onToggle;
 
   @override
   Widget build(BuildContext context) {
+    final selectable = onToggle != null;
+    final sel = selectedIds ?? const <String>{};
+    final reclaimable =
+        items.where((e) => !e.isProtected).map((e) => e.itemId).toList();
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Text('缓存清单(${items.length} 项)',
-              style: Theme.of(context).textTheme.labelLarge),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  selectable
+                      ? '缓存清单(${items.length} 项 · 已勾选 ${sel.length})'
+                      : '缓存清单(${items.length} 项)',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+              if (selectable && reclaimable.isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    final allOn = reclaimable.every(sel.contains);
+                    for (final id in reclaimable) {
+                      onToggle!(id, !allOn);
+                    }
+                  },
+                  child: Text(
+                    reclaimable.every(sel.contains) ? '取消全选可回收' : '全选可回收',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
         ),
-        for (final it in items) _CacheInventoryTile(item: it),
+        for (final it in items)
+          _CacheInventoryTile(
+            item: it,
+            selected: sel.contains(it.itemId),
+            onToggle: (it.isProtected || onToggle == null)
+                ? null
+                : (v) => onToggle!(it.itemId, v),
+          ),
       ],
     );
   }
 }
 
 class _CacheInventoryTile extends StatelessWidget {
-  const _CacheInventoryTile({required this.item});
+  const _CacheInventoryTile({
+    required this.item,
+    this.selected = false,
+    this.onToggle,
+  });
   final InventoryItem item;
+  final bool selected;
+  final ValueChanged<bool>? onToggle;
 
   @override
   Widget build(BuildContext context) {
     final it = item;
     final protectedReasons = it.protectionReasons.map(cacheReasonLabel).join('、');
+    final subtitle = [
+      if (it.bytes != null) humanBytes(it.bytes!),
+      if (it.isProtected) '受保护: $protectedReasons' else '可回收',
+    ].join(' · ');
+    if (onToggle != null) {
+      return CheckboxListTile(
+        dense: true,
+        value: selected,
+        onChanged: (v) => onToggle!(v ?? false),
+        controlAffinity: ListTileControlAffinity.leading,
+        secondary: Icon(
+          Icons.delete_sweep_outlined,
+          size: 18,
+          color: Colors.blueGrey,
+        ),
+        title: Text(it.itemId, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text(subtitle),
+      );
+    }
     return ListTile(
       dense: true,
       leading: Icon(
@@ -550,10 +673,7 @@ class _CacheInventoryTile extends StatelessWidget {
         color: it.isProtected ? Colors.orange : Colors.blueGrey,
       ),
       title: Text(it.itemId, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text([
-        if (it.bytes != null) humanBytes(it.bytes!),
-        if (it.isProtected) '受保护: $protectedReasons' else '可回收',
-      ].join(' · ')),
+      subtitle: Text(subtitle),
     );
   }
 }

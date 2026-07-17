@@ -218,10 +218,10 @@ void main() {
         'freed_bytes': 100,
       });
       await t.pump();
-      expect(find.text('清理 1 项'), findsOneWidget);
+      expect(find.text('清理演练 1 项'), findsOneWidget);
       // Real commit must exercise undeliverable fail-closed path.
       ws.debugHoldOutboundCache = false;
-      await t.tap(find.text('清理 1 项'));
+      await t.tap(find.text('清理演练 1 项'));
       await t.pumpAndSettle();
       expect(find.text('确认清理缓存?'), findsOneWidget);
       await t.tap(find.text('确认清理'));
@@ -251,6 +251,58 @@ void main() {
       expect(find.textContaining('可回收'), findsWidgets);
       expect(find.textContaining('正在播放'), findsOneWidget);
       expect(find.textContaining('缓存清单(2 项)'), findsOneWidget);
+    });
+
+    testWidgets('清单多选:可回收可勾选,受保护不可选', (t) async {
+      final items = [
+        InventoryItem.fromMap(const {
+          'item_id': 'clip-a', 'bytes': 1024, 'protection_reasons': []
+        }),
+        InventoryItem.fromMap(const {
+          'item_id': 'clip-b', 'bytes': 2048,
+          'protection_reasons': ['playing']
+        }),
+      ];
+      final selected = <String>{};
+      await t.pumpWidget(_host(SingleChildScrollView(
+        child: CacheInventoryList(
+          items: items,
+          selectedIds: selected,
+          onToggle: (id, on) {
+            if (on) {
+              selected.add(id);
+            } else {
+              selected.remove(id);
+            }
+          },
+        ),
+      )));
+      expect(find.textContaining('已勾选 0'), findsOneWidget);
+      expect(find.byType(CheckboxListTile), findsOneWidget); // only reclaimable
+      await t.tap(find.byType(CheckboxListTile));
+      await t.pump();
+      // parent setState not wired; re-pump with updated selected via rebuild
+      await t.pumpWidget(_host(SingleChildScrollView(
+        child: StatefulBuilder(builder: (ctx, setState) {
+          return CacheInventoryList(
+            items: items,
+            selectedIds: selected,
+            onToggle: (id, on) {
+              setState(() {
+                if (on) {
+                  selected.add(id);
+                } else {
+                  selected.remove(id);
+                }
+              });
+            },
+          );
+        }),
+      )));
+      await t.tap(find.byType(CheckboxListTile));
+      await t.pump();
+      expect(selected.contains('clip-a'), isTrue);
+      expect(selected.contains('clip-b'), isFalse);
     });
 
     testWidgets('窄屏(320 宽)动作条不溢出', (t) async {

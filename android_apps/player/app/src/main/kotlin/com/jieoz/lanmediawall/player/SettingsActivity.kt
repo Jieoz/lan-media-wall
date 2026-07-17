@@ -81,11 +81,15 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnRefreshDiag.setOnClickListener { renderDiagnostics() }
         binding.btnRestartService.setOnClickListener { startPlayerService() }
         binding.btnExportDiag.setOnClickListener { chooseDiagnosticExportPath() }
+        binding.btnOpenBattery.setOnClickListener { openBatteryIgnoreSettings() }
+        binding.btnOpenHome.setOnClickListener { openDefaultHomePicker() }
+        renderTakeoverStatus()
     }
 
     override fun onResume() {
         super.onResume()
         ui.post(connTick) // start/refresh the connection-status ticker
+        if (::binding.isInitialized) renderTakeoverStatus()
     }
 
     override fun onPause() {
@@ -366,7 +370,82 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    /** PowerManager.isIgnoringBatteryOptimizations — API 23+; else "na". */
+    /** One-time field takeover: open system battery / auto-start related screens.
+     *  Prefer REQUEST_IGNORE_BATTERY_OPTIMIZATIONS; fall back to app details /
+     *  battery settings. Never throws — toast on total failure. */
+    private fun openBatteryIgnoreSettings() {
+        val pkg = packageName
+        val candidates = mutableListOf<Intent>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            candidates += Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = android.net.Uri.parse("package:$pkg")
+            }
+            candidates += Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        }
+        candidates += Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.parse("package:$pkg")
+        }
+        candidates += Intent(android.provider.Settings.ACTION_BATTERY_SAVER_SETTINGS)
+        if (!launchFirstResolvable(candidates)) {
+            Toast.makeText(this, R.string.takeover_open_fail, Toast.LENGTH_LONG).show()
+        }
+        renderTakeoverStatus()
+    }
+
+    /** Open the system default HOME / launcher chooser so the operator can pick us. */
+    private fun openDefaultHomePicker() {
+        val candidates = listOf(
+            Intent(android.provider.Settings.ACTION_HOME_SETTINGS),
+            Intent(android.provider.Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS),
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
+            Intent(android.provider.Settings.ACTION_SETTINGS),
+        )
+        if (!launchFirstResolvable(candidates)) {
+            Toast.makeText(this, R.string.takeover_open_fail, Toast.LENGTH_LONG).show()
+        }
+        renderTakeoverStatus()
+    }
+
+    private fun launchFirstResolvable(candidates: List<Intent>): Boolean {
+        val pm = packageManager
+        for (raw in candidates) {
+            try {
+                val intent = Intent(raw).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (intent.resolveActivity(pm) != null) {
+                    startActivity(intent)
+                    return true
+                }
+            } catch (_: Throwable) {
+                // try next
+            }
+        }
+        return false
+    }
+
+    private fun renderTakeoverStatus() {
+        if (!::binding.isInitialized) return
+        val battery = batteryOptimizationIgnored()
+        val weHome = weAreDefaultHome()
+        binding.textTakeoverStatus.text = getString(R.string.takeover_status_fmt, battery, weHome)
+    }
+
+    /** Whether our package is the preferred/default HOME activity. Best-effort. */
+    private fun weAreDefaultHome(): String = try {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val ri = packageManager.resolveActivity(home, 0)
+        val pkg = ri?.activityInfo?.packageName
+        when {
+            pkg == null -> "unknown"
+            pkg == packageName -> "true"
+            pkg.contains("ResolverActivity", ignoreCase = true) ||
+                pkg == "android" -> "false"
+            else -> "false"
+        }
+    } catch (_: Throwable) {
+        "unknown"
+    }
+
+        /** PowerManager.isIgnoringBatteryOptimizations — API 23+; else "na". */
     private fun batteryOptimizationIgnored(): String = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager

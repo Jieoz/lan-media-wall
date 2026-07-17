@@ -10,22 +10,45 @@ import '../protocol/messages.dart';
 import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 import 'cache_management.dart';
+import 'device_wall_filter.dart';
 import 'device_wall_layout.dart';
 import 'dwell_picker.dart';
 import 'invite_screen.dart';
 
 /// 设备墙栏(设计合同 §4.1 左栏) —— 控制端常驻主视图。
 ///
-/// 组织:发现/添加动作条 → 分组管理入口 → 设备卡列表(按组分区)。
+/// 组织:发现/添加动作条 → 分组筛选/管理 → 设备卡列表。
 /// 每张设备卡显示缩略图/名/组/在线相位/缓存态,并提供「配置盒子」(改名/设组/音量)。
-class DeviceWallPane extends StatelessWidget {
+///
+/// 点分组 chip = **筛选设备墙**;编辑按钮才改组名。筛选态只活在本 pane,
+/// 不污染编排页目标,避免误伤整组推送。
+class DeviceWallPane extends StatefulWidget {
   const DeviceWallPane({super.key});
+
+  @override
+  State<DeviceWallPane> createState() => _DeviceWallPaneState();
+}
+
+class _DeviceWallPaneState extends State<DeviceWallPane> {
+  /// null / [DeviceWallFilter.all] = 显示全部;否则只显示该 groupId。
+  String? _filterGroupId;
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<WallState>();
     final devices = state.wallDevices;
     final groups = state.groups;
+    // 若筛选组已被删除,回退到全部。
+    if (_filterGroupId != null &&
+        !DeviceWallFilter.isAll(_filterGroupId) &&
+        !groups.any((g) => g.groupId == _filterGroupId)) {
+      _filterGroupId = null;
+    }
+    final visible = DeviceWallFilter.apply(
+      devices,
+      filterGroupId: _filterGroupId,
+      groupOf: (d) => d.status?.groupId,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -38,10 +61,27 @@ class DeviceWallPane extends StatelessWidget {
               : ListView(
                   padding: const EdgeInsets.all(8),
                   children: [
-                    _GroupsHeader(state: state, groups: groups),
+                    _GroupsHeader(
+                      state: state,
+                      groups: groups,
+                      filterGroupId: _filterGroupId,
+                      onFilterChanged: (id) =>
+                          setState(() => _filterGroupId = id),
+                    ),
                     const SizedBox(height: 4),
-                    for (final d in devices)
-                      _DeviceCard(state: state, device: d, groups: groups),
+                    if (visible.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Text(
+                          DeviceWallFilter.isAll(_filterGroupId)
+                              ? '暂无设备'
+                              : '该分组当前没有可见设备 · 点「全部」看整墙',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      )
+                    else
+                      for (final d in visible)
+                        _DeviceCard(state: state, device: d, groups: groups),
                   ],
                 ),
         ),
@@ -326,11 +366,22 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
   }
 }
 
-/// 分组管理头:列出各组为 chip,点击可改名/删组;修「不能新建组」的核心入口。
+/// 分组筛选/管理头。
+///
+/// - 点 chip = **筛选设备墙**(「全部」或某组)
+/// - 下方编辑按钮 = 改组名/同步
+/// - chip 删除 = 删组(default 不可删)
 class _GroupsHeader extends StatelessWidget {
-  const _GroupsHeader({required this.state, required this.groups});
+  const _GroupsHeader({
+    required this.state,
+    required this.groups,
+    required this.filterGroupId,
+    required this.onFilterChanged,
+  });
   final WallState state;
   final List<WallGroup> groups;
+  final String? filterGroupId;
+  final ValueChanged<String?> onFilterChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -340,30 +391,69 @@ class _GroupsHeader extends StatelessWidget {
         child: Text('暂无分组 · 点「新建组」创建第一个', style: TextStyle(fontSize: 12)),
       );
     }
+    final filterAll = DeviceWallFilter.isAll(filterGroupId);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('分组 (${groups.length})',
-                style: Theme.of(context).textTheme.labelMedium),
+            Text(
+              filterAll
+                  ? '分组筛选 · 全部 (${groups.length} 组)'
+                  : '分组筛选 · 仅看选中组',
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+            const SizedBox(height: 2),
+            Text('点 chip 筛选墙面 · 点 ✎ 改组名',
+                style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 6),
             Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
+                FilterChip(
+                  label: const Text('全部'),
+                  selected: filterAll,
+                  onSelected: (_) => onFilterChanged(null),
+                ),
                 for (final g in groups)
                   InputChip(
+                    selected: !filterAll && filterGroupId == g.groupId,
                     label: Text(
                         '${g.name.isEmpty ? g.groupId : g.name} · ${g.members.length}台'),
                     avatar: Icon(
                         g.sync ? Icons.sync : Icons.sync_disabled,
                         size: 16),
-                    onPressed: () => _editGroupDialog(context, state, g),
+                    onPressed: () => onFilterChanged(
+                      filterGroupId == g.groupId ? null : g.groupId,
+                    ),
                     onDeleted: g.groupId == 'default'
                         ? null
                         : () => _confirmDeleteGroup(context, state, g),
+                    deleteIcon: g.groupId == 'default'
+                        ? null
+                        : const Icon(Icons.close, size: 16),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                for (final g in groups)
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                    ),
+                    icon: const Icon(Icons.edit_outlined, size: 14),
+                    label: Text(
+                      g.name.isEmpty ? g.groupId : g.name,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    onPressed: () => _editGroupDialog(context, state, g),
                   ),
               ],
             ),
@@ -727,6 +817,15 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                   spacing: 8,
                   runSpacing: 8,
                   children: [
+                    // P0: 点设备即管列表 — 入口文案明确「当前列表」。
+                    FilledButton.icon(
+                      icon: const Icon(Icons.playlist_play),
+                      label: const Text('当前列表(编辑/推送)'),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _pushContentToDeviceDialog(context, state, device);
+                      },
+                    ),
                     OutlinedButton.icon(
                       icon: const Icon(Icons.playlist_add),
                       label: const Text('推送内容(仅这一台)'),

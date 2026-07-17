@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.17.1-field-fix+72] — 2026-07-17
+
+- field-fix (versionCode **72**, versionName `1.17.1-field-fix`): residual operator UX + no-ADB takeover shortcuts. Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.1-field-fix+72`).
+  - **Controller — device wall group filter.** Group chips now **filter** the wall (plus「全部」); edit/rename moved to explicit ✎ buttons so tapping a group no longer only opens rename.
+  - **Controller — cache multi-select cleanup.** Inventory list can multi-select reclaimable items (protected rows stay locked); new「清理勾选 N 项」commits `mode=selected` with the device's current `push_id`. Dry-run path remains as「清理演练 N 项」.
+  - **Controller — single-device playlist entry.** Device config dialog primary action is「当前列表(编辑/推送)」so operators can manage one box's playlist without hunting the orchestration pane.
+  - **Player — takeover shortcuts.** Settings screen adds「打开电池白名单/自启」and「选择默认桌面/HOME」system-intent buttons (no silent `pm disable`) plus live `battery_ignored` / `we_are_default_home` status under diagnostics export.
+
 ## [Unreleased]
 
 - field-fix (versionCode **71**, versionName `1.17.1-field-fix`): one combined field build closing two operator gaps, single-sourced from `remote_flutter/pubspec.yaml` (`1.17.1-field-fix+71`, strictly newer than boot-probe 70 / formal 69 / field 67); the controller rebuilds too. No change to the 69 OTA/install logic or the 70 `boot_audit` work.

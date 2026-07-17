@@ -61,6 +61,11 @@
     <string name="action_restart_service">重新启动播放服务</string>
     <string name="service_restart_requested">已请求重新启动；请查看上方状态</string>
     <string name="action_export_diag">选择路径并导出诊断</string>
+    <string name="action_open_battery">打开电池白名单 / 自启设置</string>
+    <string name="action_open_home">选择默认桌面 / HOME</string>
+    <string name="takeover_shortcuts_hint">无 ADB 现场接管（一次性）：把默认桌面设为本应用，再允许电池/自启白名单。竞品播放器需手动停用，本应用不会静默禁用系统组件。</string>
+    <string name="takeover_status_fmt">电池白名单=%1$s · 已是默认桌面=%2$s</string>
+    <string name="takeover_open_fail">本机无法打开系统设置页</string>
     <string name="diag_export_ok_fmt">诊断已保存到：\n%1$s</string>
     <string name="diag_export_fallback_ok_fmt">系统没有可用的文件选择器（%2$s），诊断已改存到：\n%1$s\n可用文件管理器或 USB 读取。</string>
     <string name="diag_export_failed_fmt">写入诊断文件失败：%1$s</string>

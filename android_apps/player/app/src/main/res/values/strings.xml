@@ -75,6 +75,11 @@
     <string name="action_reset_conn">Reset connection config</string>
     <string name="action_refresh_diag">Refresh diagnostics</string>
     <string name="action_export_diag">Choose location and export diagnostics</string>
+    <string name="action_open_battery">Open battery ignore / auto-start</string>
+    <string name="action_open_home">Choose default HOME / launcher</string>
+    <string name="takeover_shortcuts_hint">One-time field takeover (no ADB): set default HOME to this app, then allow battery / auto-start. Competing OEM players must be stopped manually.</string>
+    <string name="takeover_status_fmt">battery_ignored=%1$s · we_are_default_home=%2$s</string>
+    <string name="takeover_open_fail">Could not open system settings on this device</string>
     <string name="diag_export_ok_fmt">Saved diagnostics to:\n%1$s</string>
     <string name="diag_export_fallback_ok_fmt">No system document picker is available (%2$s). Diagnostics were saved instead to:\n%1$s\nUse a file manager or USB connection to retrieve it.</string>
     <string name="diag_export_failed_fmt">Could not write diagnostics file: %1$s</string>

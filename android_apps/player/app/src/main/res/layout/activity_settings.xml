@@ -175,6 +175,37 @@
             android:textIsSelectable="true"
             android:paddingBottom="8dp" />
 
+        <!-- No-ADB field takeover: open system screens the operator must set once.
+             Never silent pm-disable; only system settings intents. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingTop="4dp"
+            android:text="@string/takeover_shortcuts_hint" />
+        <Button
+            android:id="@+id/btn_open_battery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/action_open_battery" />
+        <Button
+            android:id="@+id/btn_open_home"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/action_open_home" />
+        <TextView
+            android:id="@+id/text_takeover_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingTop="4dp"
+            android:paddingBottom="8dp"
+            android:textIsSelectable="true" />
+
         <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
         <EditText
             android:id="@+id/input_device_name"
