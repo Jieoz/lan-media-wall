@@ -1,8 +1,8 @@
 # Changelog
 
-## [v1.17.1-field-fix+72] — 2026-07-17
+## [v1.17.2] — 2026-07-17
 
-- field-fix (versionCode **72**, versionName `1.17.1-field-fix`): residual operator UX + no-ADB takeover shortcuts. Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.1-field-fix+72`).
+- Formal field-ops release (versionCode **72**, versionName `1.17.2`): residual operator UX + no-ADB takeover shortcuts. Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.2+72`). Includes prior field-fix 70/71 forensics/read-back work that had not been promoted to a GitHub Release.
   - **Controller — device wall group filter.** Group chips now **filter** the wall (plus「全部」); edit/rename moved to explicit ✎ buttons so tapping a group no longer only opens rename.
   - **Controller — cache multi-select cleanup.** Inventory list can multi-select reclaimable items (protected rows stay locked); new「清理勾选 N 项」commits `mode=selected` with the device's current `push_id`. Dry-run path remains as「清理演练 N 项」.
   - **Controller — single-device playlist entry.** Device config dialog primary action is「当前列表(编辑/推送)」so operators can manage one box's playlist without hunting the orchestration pane.

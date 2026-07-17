@@ -4,7 +4,7 @@ publish_to: "none"
 # v1.17.1-field-fix+72: residual P0 UX — wall group filter, cache multi-select
 # cleanup, single-device "current playlist" entry, player no-ADB takeover shortcuts
 # (battery ignore + default HOME). versionCode 72 > 71. Single-sourced here.
-version: 1.17.1-field-fix+72
+version: 1.17.2+72
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
