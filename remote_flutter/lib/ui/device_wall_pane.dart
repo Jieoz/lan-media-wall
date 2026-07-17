@@ -217,12 +217,13 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
                       ? '版本名 $knownVersionName'
                       : '';
                   String codePart = '（versionCode 未上报）';
-                  if (knownVersionCode != null) {
-                    final approx = decodeVersionCode(knownVersionCode!);
+                  final code = knownVersionCode;
+                  if (code != null) {
+                    final approx = decodeVersionCode(code);
                     final approxHint =
                         approx != null ? '（≈ v$approx）' : '';
                     codePart =
-                        '  号 $knownVersionCode$approxHint（目标必须更大）';
+                        '  号 $code$approxHint（目标必须更大）';
                   }
                   return Text(
                     '该台当前：$namePart$codePart',
