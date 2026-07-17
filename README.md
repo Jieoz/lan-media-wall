@@ -41,7 +41,7 @@
 
 > **v1.14.9:** controller composition now defaults to adding items to the active ordered playlist; explicit whole-list replacement remains a clearly labelled operation. On QZX API19 single-VDEC devices, MediaPlayer video-to-video switches reuse the existing ImageView and an already cached JPEG as a temporary hold frame, rebuilding only one decoder and removing the overlay on first frame or error. No PixelCopy (unavailable on API19) and no concurrent decoder are used.
 
-The controller orchestration pane can load and edit the active playlist reported by an online device. Ordinary composition adds items by `item_id`; the separately labelled whole-list operation replaces that device's active playlist. Cache inventory and cache files remain separate.
+The controller orchestration pane can load and edit the active playlist reported by an online device. Ordinary composition adds items by `item_id`; the separately labelled whole-list operation replaces that device's active playlist. Cache inventory and cache files remain separate. Beyond the single-device read-back, **「载入分组当前清单」** (v1.17.1-field-fix) loads a group's active playlist from a representative online member and reports how many members are consistent / divergent / missing an active playlist.
 
 [![ci](https://github.com/Jieoz/lan-media-wall/actions/workflows/ci.yml/badge.svg)](https://github.com/Jieoz/lan-media-wall/actions/workflows/ci.yml)
 [![windows-build](https://github.com/Jieoz/lan-media-wall/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Jieoz/lan-media-wall/actions/workflows/windows-build.yml)

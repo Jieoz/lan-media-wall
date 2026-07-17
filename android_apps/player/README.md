@@ -1,5 +1,21 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.17.1-field-fix — 无 ADB 通用取证(takeover forensics):**现场盒子无 ADB、
+> 竞品 OEM 播放器开机自启且手动退出后又抢屏。一键诊断导出新增 `===== takeover_forensics =====`
+> 段(`player/diag/TakeoverForensics.kt`,**只读、绝不抛异常**),用于设计逐台投屏接管:
+> 设备身份(厂商/品牌/型号/product/device/hardware、release/sdk_int/security_patch、
+> 包名+versionName/versionCode+首装/末更新时间);HOME/桌面(首选/默认 HOME、完整
+> MAIN+HOME 候选表含 `package/class/priority/default/mine`、是否 HOME 处理者、是否默认
+> HOME——API 缺口时为 `unknown`);本端 boot 组件(MainActivity 启用态、API 28+ 的
+> `isBackgroundRestricted`,以及既有电池优化/boot 接收器/HOME 候选行);启发式已装包表
+> (任一 MAIN+HOME 或 MAIN+LEANBACK_LAUNCHER 处理者,加上 id/label 命中
+> `launcher`/`tv`/`home`/`kiosk`/`player`/`media`/`signage`/`youku`/`gallery`/`desk`
+> 的包,均标 `heuristic`——只是**线索不是定罪**),带 `enabled`/`system`/`home`/`leanback`
+> 与截断标记;以及尽力而为的运行进程。**不做任何 `pm disable`/卸载**。Manifest 加
+> `<queries>`(MAIN+HOME、MAIN+LEANBACK_LAUNCHER)让竞品桌面在 Android 11+ 包可见性下
+> 仍可解析,**不申请** `QUERY_ALL_PACKAGES`。既有 `===== boot_audit =====`、helper/
+> restart/update、player.log 尾段全部保留。
+
 > **v1.17.0 Phase B — 缓存清理已接线:**`PlayerService` 现处理入站
 > `cache_cleanup` / `cache_inventory`,发射 `status.cache_summary`,并在
 > `hello.capabilities` 广告 `cache_cleanup_v1` / `cache_inventory_v1`。删除仍只在

@@ -159,6 +159,13 @@
             android:layout_marginTop="8dp"
             android:text="@string/action_export_diag" />
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingTop="2dp"
+            android:text="@string/diag_export_forensics_hint" />
+        <TextView
             android:id="@+id/text_export_path"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

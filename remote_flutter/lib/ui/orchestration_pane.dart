@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
+import '../state/group_playlist_load.dart';
 import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 import 'dwell_picker.dart';
@@ -82,25 +83,71 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
   String _newPlaylistId() => 'pl-${_groupId ?? "g"}-${uuid4().substring(0, 6)}';
 
   // ---- 组选择 ----
+  // 目标分组 = 推送/同步目标;「载入分组当前清单」= 从组内成员回读当前 active_playlist;
+  // 下方「单台当前播放列表」= 精确回读某一台。三者不再混淆。
   Widget _groupSelector(WallState state, List<WallGroup> groups) {
     return _Section(
-      title: '目标分组',
+      title: '目标分组(推送/同步目标)',
       child: groups.isEmpty
           ? const Text('暂无分组 · 先在左侧设备墙「新建组」')
-          : DropdownButton<String>(
-              isExpanded: true,
-              value: _groupId,
-              items: [
-                for (final g in groups)
-                  DropdownMenuItem(
-                    value: g.groupId,
-                    child: Text(
-                        '${g.name.isEmpty ? g.groupId : g.name} · ${g.members.length}台 · ${g.sync ? "同步" : "各播各的"}'),
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                DropdownButton<String>(
+                  isExpanded: true,
+                  value: _groupId,
+                  items: [
+                    for (final g in groups)
+                      DropdownMenuItem(
+                        value: g.groupId,
+                        child: Text(
+                            '${g.name.isEmpty ? g.groupId : g.name} · ${g.members.length}台 · ${g.sync ? "同步" : "各播各的"}'),
+                      ),
+                  ],
+                  onChanged: (v) => setState(() => _groupId = v),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.download_for_offline_outlined),
+                    label: const Text('载入分组当前清单'),
+                    onPressed: _groupId == null ? null : () => _loadGroupPlaylist(state),
                   ),
+                ),
               ],
-              onChanged: (v) => setState(() => _groupId = v),
             ),
     );
+  }
+
+  /// 从当前目标分组的在线成员里挑一个代表,把其 active_playlist 载入草稿,并如实
+  /// 汇报组内一致性(§6.3 group read-back)。纯逻辑在 [loadGroupPlaylist],此处只做
+  /// 状态收集与副作用。
+  void _loadGroupPlaylist(WallState state) {
+    final groupId = _groupId;
+    if (groupId == null) return;
+    final result = loadGroupPlaylist(
+      state.membersOf(groupId),
+      selectedGroupId: groupId,
+    );
+    if (!result.ok || result.draft == null) {
+      _toast(result.message);
+      return;
+    }
+    setState(() {
+      _draft.load(result.draft!, currentIndex: result.currentIndex);
+      // 代表清单若带非空 group_id,以它为准,让目标分组与被载入清单保持一致。
+      final loadedGroup = result.draft!.groupId;
+      if (loadedGroup.isNotEmpty) _groupId = loadedGroup;
+      // 让「单台」区与代表保持一致,便于操作员随后按台核对。
+      final repId = result.representative?.deviceId;
+      if (repId != null &&
+          state.wallDevices.any(
+              (d) => d.deviceId == repId && d.status?.online == true)) {
+        _deviceId = repId;
+      }
+    });
+    _toast(result.message);
   }
 
   // ---- §21 预缓存栅栏进度 ----
@@ -112,7 +159,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
       _deviceId = null;
     }
     return _Section(
-      title: '单台当前播放列表',
+      title: '单台当前播放列表(精确回读某一台)',
       child: Row(children: [
         Expanded(child: DropdownButton<String>(
           isExpanded: true,

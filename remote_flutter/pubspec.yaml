@@ -1,11 +1,13 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.17.1-boot-probe+70: forensic boot-auto-start probe build. versionCode 70 is
-# strictly newer than field 67 / formal 69. Version is single-sourced here for
-# player+controller+tag; the controller rebuilds too (acceptable for probe
-# delivery). Android versionName = "1.17.1-boot-probe", versionCode = 70.
-version: 1.17.1-boot-probe+70
+# v1.17.1-field-fix+71: combined field build — controller group playlist read-back
+# (「载入分组当前清单」) + player universal no-ADB takeover forensics. versionCode 71
+# is strictly newer than boot-probe 70 / formal 69 / field 67. Version is
+# single-sourced here for player+controller+tag; the controller rebuilds too
+# (acceptable — same single source). Android versionName = "1.17.1-field-fix",
+# versionCode = 71.
+version: 1.17.1-field-fix+71
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

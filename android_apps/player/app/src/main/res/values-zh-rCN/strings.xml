@@ -64,6 +64,7 @@
     <string name="diag_export_ok_fmt">诊断已保存到：\n%1$s</string>
     <string name="diag_export_fallback_ok_fmt">系统没有可用的文件选择器（%2$s），诊断已改存到：\n%1$s\n可用文件管理器或 USB 读取。</string>
     <string name="diag_export_failed_fmt">写入诊断文件失败：%1$s</string>
+    <string name="diag_export_forensics_hint">导出含 HOME/竞品/boot 取证（只读，无需 adb）</string>
     <string name="conn_discovering">正在局域网内查找协调者…</string>
     <string name="conn_connecting_broker_fmt">正在连接 broker %1$s…</string>
     <string name="conn_connected_broker_fmt">已连接 broker %1$s</string>

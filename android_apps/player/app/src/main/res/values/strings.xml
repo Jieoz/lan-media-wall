@@ -78,6 +78,7 @@
     <string name="diag_export_ok_fmt">Saved diagnostics to:\n%1$s</string>
     <string name="diag_export_fallback_ok_fmt">No system document picker is available (%2$s). Diagnostics were saved instead to:\n%1$s\nUse a file manager or USB connection to retrieve it.</string>
     <string name="diag_export_failed_fmt">Could not write diagnostics file: %1$s</string>
+    <string name="diag_export_forensics_hint">Export includes HOME/competitor/boot forensics (read-only, no adb).</string>
     <string name="label_diag_status">Local diagnostics</string>
     <string name="diag_hint">Shows the currently readable root-daemon / restart / update / playback state on this device. No export required.</string>
     <string name="diag_unavailable">Unavailable</string>

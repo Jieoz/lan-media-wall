@@ -1,5 +1,7 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.17.1-field-fix：分组当前清单回读。**编排栏此前只能从**单台**在线设备载入 `active_playlist`,选中分组无法回填草稿(操作员反映「分组清单拉不到」)。「目标分组(推送/同步目标)」区新增 **「载入分组当前清单」** 按钮:从组内在线成员里选一个**代表**,把其有序 `active_playlist` 载入草稿。代表策略(纯逻辑 `lib/state/group_playlist_load.dart`):优先 `active_playlist.group_id` 与所选组一致者,否则任一在线且非空的成员,平手时 `playing`/`buffering` 优先于 `idle`,再按 `device_id` 字典序稳定取小。载入时如实汇报一致性:按成员指纹(`playlist_id` + 有序 `item_id` join)与代表比较,提示组内多少台一致/不同/未上报(如 `已从代表 and-xxx 载入；组内 2 台一致、1 台不同、1 台未上报`)。单台回读路径(现名「单台当前播放列表(精确回读某一台)」)不变。不新增线协议类型,复用现有 `status.active_playlist`。
+
 > **v1.17.0 Phase B 缓存清理接线(已发布):**控制端把 broker 与 P2P 两条 `cache_cleanup_result` / `cache_inventory_result` 接收路径**汇入同一个 `CacheOpsReducer`**(`lib/state/cache_ops.dart`),按 `request_id + device_id` 键做设备隔离、幂等去重、陈旧/迟到结果拒绝、超时收割与互不混淆的终态(成功/部分/失败/超时/不支持/离线/代次冲突)。设备详情弹窗新增独立的**「缓存管理」**入口(`lib/ui/cache_management.dart`):清单 → 演练(dry-run,零删除) → 显式确认 → 提交,展示总量/可回收/受保护/下载中摘要与逐项保护原因,提供每台设备终态与重试;真实删除必须过一道确认对话框并只按演练回来的候选 `item_id` 下发。能力真值:目标未广告 `cache_cleanup_v1` / `cache_inventory_v1` 直接置 `unsupported`,绝不「发了没回」冒充支持。播放列表行删除仍只是「移出列表」,不动缓存。窄屏(320)不溢出。不含 Phase C 组实时编排;正式字节由 exact-SHA 云 CI + release-promote 门禁。
 
 > **v1.16.0：**本次为播放端 Phase A 缓存清理内核 + 协议合同(仅内核,未接线)统一晋级,**控制端本身无功能改动**;版本随全端单一真相源 `pubspec.yaml` 同步递增。Phase B(请求路由、状态发射、broker/P2P 回传、Flutter UI、能力声明)在上面的候选条目落地。

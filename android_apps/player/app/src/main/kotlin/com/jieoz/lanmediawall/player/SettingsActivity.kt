@@ -342,6 +342,10 @@ class SettingsActivity : AppCompatActivity() {
             appendLine("--- probe ---");    appendLine(describeProbe())
             appendLine("--- player.log tail (persisted, survives failed start) ---")
             appendLine(readPlayerLogTail())
+            // field-fix+71: universal no-ADB takeover forensics (identity / HOME
+            // handlers / our components / heuristic packages / running procs).
+            // Read-only and never-throws, safe with a null service.
+            appendLine(com.jieoz.lanmediawall.player.diag.TakeoverForensics.build(this@SettingsActivity))
             appendLine("===== boot_audit =====")
             appendLine(readBootAuditTail())
         }

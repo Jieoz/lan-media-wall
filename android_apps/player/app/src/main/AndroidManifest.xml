@@ -23,6 +23,23 @@
     <!-- Post notifications (Android 13+ requires runtime grant for FGS notif) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- field-fix+71: no-ADB takeover forensics. Android 11+ (sdk30) package
+         visibility hides most installed apps from PackageManager queries. We do
+         NOT request QUERY_ALL_PACKAGES (Play policy pain). Instead we declare the
+         intents we legitimately inspect so competing HOME/launcher and LEANBACK
+         players stay resolvable for read-only diagnostics. sdk29 targets also
+         benefit from the explicit declaration. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".PlayerApp"
         android:allowBackup="false"
