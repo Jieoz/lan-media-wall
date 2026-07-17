@@ -329,6 +329,10 @@ class SettingsActivity : AppCompatActivity() {
             appendLine("conn_detail=${ConnState.detail}")
             appendLine("start_requested_elapsed_ms=$serviceStartElapsedMs")
             appendLine("now_elapsed_ms=${android.os.SystemClock.elapsedRealtime()}")
+            // boot-probe: autostart forensics — these hold even with no service.
+            appendLine("battery_optimization_ignored=${batteryOptimizationIgnored()}")
+            appendLine("boot_receiver_enabled=${bootReceiverEnabled()}")
+            appendLine("is_home_candidate=${isHomeCandidate()}")
             appendLine("--- helper ---");   appendLine(describeHelper())
             appendLine("--- restart ---");  appendLine(describeRestart())
             appendLine("--- update ---");   appendLine(describeUpdate())
@@ -338,7 +342,60 @@ class SettingsActivity : AppCompatActivity() {
             appendLine("--- probe ---");    appendLine(describeProbe())
             appendLine("--- player.log tail (persisted, survives failed start) ---")
             appendLine(readPlayerLogTail())
+            appendLine("===== boot_audit =====")
+            appendLine(readBootAuditTail())
         }
+    }
+
+    /** boot-probe: the durable receiver-level breadcrumb log, independent of
+     *  PlayerService. Survives a boot where the service never came up. */
+    private fun readBootAuditTail(maxBytes: Int = 64 * 1024): String {
+        val logFile = File(filesDir, "logs/boot_audit.log")
+        val rotated = File(filesDir, "logs/boot_audit.log.1")
+        return buildString {
+            if (rotated.exists()) append(tailOf(rotated, maxBytes / 2))
+            if (logFile.exists()) {
+                append(tailOf(logFile, maxBytes))
+            } else if (!rotated.exists()) {
+                append("no boot_audit.log yet (BootReceiver has not fired since install)")
+            }
+        }
+    }
+
+    /** PowerManager.isIgnoringBatteryOptimizations — API 23+; else "na". */
+    private fun batteryOptimizationIgnored(): String = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+            "${pm?.isIgnoringBatteryOptimizations(packageName)}"
+        } else {
+            "na(<23)"
+        }
+    } catch (e: Exception) {
+        "err:${e.message}"
+    }
+
+    /** BootReceiver component-enabled state via PackageManager. DEFAULT means
+     *  the manifest value (enabled) applies. */
+    private fun bootReceiverEnabled(): String = try {
+        val cn = android.content.ComponentName(this, "com.jieoz.lanmediawall.player.boot.BootReceiver")
+        when (packageManager.getComponentEnabledSetting(cn)) {
+            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED -> "disabled"
+            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED -> "enabled"
+            else -> "default(manifest)"
+        }
+    } catch (e: Exception) {
+        "err:${e.message}"
+    }
+
+    /** Best-effort: does our package own a MAIN+HOME activity (i.e. is the app
+     *  the launcher/HOME so it wins the screen after boot)? */
+    private fun isHomeCandidate(): String = try {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val matches = packageManager.queryIntentActivities(home, 0)
+        val mine = matches.any { it.activityInfo?.packageName == packageName }
+        "$mine (home_handlers=${matches.size})"
+    } catch (e: Exception) {
+        "err:${e.message}"
     }
 
     /** Read the tail of the persisted player.log without needing the service. */

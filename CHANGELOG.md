@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- boot-probe (versionCode **70**, versionName `1.17.1-boot-probe`): a forensic-only build that collects durable boot-auto-start evidence for the sdk29 (`and-319413a07c`, Android 10) autostart investigation. A new `BootAudit` sink writes append-only `time_ms=… elapsed_ms=… event=… detail=…` records to `filesDir/logs/boot_audit.log` the instant `BootReceiver` fires — independent of `PlayerService`, so a boot that never reaches the service still leaves evidence. It records `receiver_enter` (with sdk/pid/bg-restricted), `service_start_ok|service_start_fail mode=startForegroundService|startService`, `activity_start_ok|activity_start_fail`, `receiver_exit`, `service_oncreate`, and first-per-process `main_oncreate`/`main_onresume`. The Settings diagnostics export now includes a `===== boot_audit =====` section plus `battery_optimization_ignored=`, `boot_receiver_enabled=`, and `is_home_candidate=`, all safe when the service is null. No change to the 69 OTA/install logic; no daemon or device-reboot changes. Version is single-sourced from `remote_flutter/pubspec.yaml`, so the controller rebuilds too — acceptable for probe delivery.
+
 ## [v1.17.1] — 2026-07-17
 
 - Field-driven OTA fixes for the rooted-box update path (versionCode **69**; `remote_flutter/pubspec.yaml` is the single source `1.17.1+69`). Evidence from device `and-6037055a3d` (sdk19): the root daemon staged the APK and returned a reboot-required line, but the player mis-parsed it as `install_daemon_fail` and only a **whole-device reboot** activated the update — dropping Wi-Fi on the way.

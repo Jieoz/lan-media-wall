@@ -128,6 +128,9 @@ class PlayerService : Service() {
     override fun onCreate() {
         super.onCreate()
         ConnState.set(ConnState.Phase.STARTING, "service onCreate")
+        // boot-probe: durable breadcrumb proving the service actually reached
+        // onCreate (vs. the receiver's start call throwing before we get here).
+        com.jieoz.lanmediawall.player.boot.BootAudit.record(applicationContext, "service_oncreate", "")
         instance = this
         settings = Settings(applicationContext)
         clock = ClockSync()

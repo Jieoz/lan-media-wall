@@ -47,6 +47,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (bootAuditOnCreateDone.compareAndSet(false, true)) {
+            com.jieoz.lanmediawall.player.boot.BootAudit.record(applicationContext, "main_oncreate", "")
+        }
         settings = Settings(applicationContext)
 
         // Fresh entry into the kiosk Activity re-arms the lockdown: any prior
@@ -102,6 +105,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (bootAuditOnResumeDone.compareAndSet(false, true)) {
+            com.jieoz.lanmediawall.player.boot.BootAudit.record(applicationContext, "main_onresume", "")
+        }
         // While the debug backdoor is engaged, don't re-grab the screen — let
         // the operator reach Settings / desktop.
         if (KioskState.suspended) return
@@ -314,6 +320,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** boot-probe: fire main_oncreate / main_onresume at most once per
+         *  process so we capture the FIRST activity appearance after boot
+         *  without spamming the audit log on every recreate/resume. */
+        private val bootAuditOnCreateDone = java.util.concurrent.atomic.AtomicBoolean(false)
+        private val bootAuditOnResumeDone = java.util.concurrent.atomic.AtomicBoolean(false)
+
         @Volatile
         var instance: MainActivity? = null
             private set

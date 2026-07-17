@@ -25,15 +25,32 @@ class BootReceiver : BroadcastReceiver() {
         if (action !in BOOT_ACTIONS) return
         Log.i(TAG, "boot self-start on $action (sdk=${Build.VERSION.SDK_INT})")
 
+        // boot-probe: durable forensic breadcrumb, independent of PlayerService.
+        BootAudit.record(
+            context,
+            "receiver_enter",
+            "action=$action sdk=${Build.VERSION.SDK_INT} ${BootAudit.startReasonDetail(context)}",
+        )
+
         // Start the resident service (it owns WS + watchdog + resume_last).
         // §4/§6.1: startForegroundService is 26+; <26 must use startService.
         val serviceIntent = Intent(context, PlayerService::class.java).apply {
             this.action = PlayerService.ACTION_START
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(serviceIntent)
-        } else {
-            context.startService(serviceIntent)
+        val fgs = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        val mode = if (fgs) "startForegroundService" else "startService"
+        try {
+            if (fgs) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
+            BootAudit.record(context, "service_start_ok", "mode=$mode")
+        } catch (e: Exception) {
+            // On sdk29 a background startForegroundService can throw if the OS
+            // deems the app background-restricted — this is exactly the failure
+            // we are hunting. Record it, do not crash the boot broadcast.
+            BootAudit.record(context, "service_start_fail", "mode=$mode err=${e.javaClass.simpleName}:${e.message}")
         }
 
         // Bring the kiosk activity forward so the screen is the player, never
@@ -43,10 +60,14 @@ class BootReceiver : BroadcastReceiver() {
         }
         try {
             context.startActivity(activityIntent)
+            BootAudit.record(context, "activity_start_ok", "")
         } catch (e: Exception) {
-            // Some OEMs block background activity starts; the service + its
-            // full-screen notification still recover the player.
+            // Some OEMs (and sdk29 background-activity-start limits) block this;
+            // the service + its full-screen notification still recover the player.
+            BootAudit.record(context, "activity_start_fail", "err=${e.javaClass.simpleName}:${e.message}")
         }
+
+        BootAudit.record(context, "receiver_exit", "action=$action")
     }
 
     companion object {
