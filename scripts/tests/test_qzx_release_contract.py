@@ -13,4 +13,11 @@ assert 'if [ "$trigger" = "daemon" ]' in sh
 assert 'if "%DAEMON_PRESENT%"=="yes" if "%DAEMON_RC%"=="0"' in bat
 for required in ("qzx_field_check.bat", "qzx_field_check.sh", "lmw_root_daemon"):
     assert workflow.count(required) >= 2, f"{required} must be copied and zipped"
+for required in (
+    "android_ota/android_ota_diag.py",
+    "android_ota/profiles/standard-pm.json",
+    "android_ota/profiles/qzx-yunos-4.4.json",
+    "scripts/tests/test_android_ota_simulator.c",
+):
+    assert required in workflow, f"{required} must be present in android-build workflow"
 print("QZX_RELEASE_CONTRACT_PASS")

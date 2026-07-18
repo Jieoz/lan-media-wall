@@ -1,5 +1,9 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.17.7：通用 Android OTA 诊断框架随 QZX Update Tools 发布。**离线
+> `android_ota_diag.py` + profile + 主机 legacy 仿真器;版本随全端单一真相源
+> `pubspec.yaml` = `1.17.7+1177`。控制端功能无本版业务改动。
+>
 > **v1.17.6：二次 legacy OTA 不再因残留 `.lmw-backup` 永久失败。**root
 > 守护进程 re-stage 前自动 commit/restore leftover backup。已走过 legacy 的
 > 盒子需 QZX Update Tools 重装 daemon。版本随全端单一真相源

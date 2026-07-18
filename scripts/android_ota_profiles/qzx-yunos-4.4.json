@@ -1,0 +1,11 @@
+{
+  "schema": "android-ota-profile/v1",
+  "name": "qzx-yunos-4.4",
+  "package": "com.jieoz.lanmediawall.player",
+  "pm": {
+    "success_lines": ["Success"],
+    "fallback_on_exact_lines": {
+      "Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]": "data_app_scanner"
+    }
+  }
+}

@@ -1,5 +1,10 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.17.7 — 通用 Android OTA 诊断框架:**QZX Update Tools 附带
+> `android_ota/`(离线判定器 + profile + 主机 legacy 仿真)。版本随全端
+> `pubspec.yaml` = `1.17.7+1177`。播放端业务路径无本版功能改动;二次 OTA
+> leftover-backup 与 pm Success 诚实逻辑仍以守护进程为准。
+>
 > **v1.17.6 — 二次 legacy OTA:**成功 stage 留下的 `.lmw-backup` 不再永久
 > 挡下一次远程升级(`legacy_activation_failed`)。daemon 在 re-stage 前自动
 > commit( target+backup 都在 ) / restore( 仅 backup )。**已走过 legacy 的

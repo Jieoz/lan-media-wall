@@ -119,9 +119,15 @@
 #define LMW_STAGED_APK    "/data/local/tmp/lmw_update_staged.apk"
 // YunOS 4.4.2-only activation target. Package name and slot are compile-time
 // constants, matching the field-validated deploy_player.sh scanner path.
+#ifndef LMW_LEGACY_APK
 #define LMW_LEGACY_APK        "/data/app/" LMW_PKG "-1.apk"
+#endif
+#ifndef LMW_LEGACY_BACKUP_APK
 #define LMW_LEGACY_BACKUP_APK LMW_LEGACY_APK ".lmw-backup"
+#endif
+#ifndef LMW_LEGACY_TMP_APK
 #define LMW_LEGACY_TMP_APK    LMW_LEGACY_APK ".lmw-new"
+#endif
 // Root-owned file holding the single authorized Player uid (written by setup).
 #define LMW_UID_FILE      "/data/local/tmp/lmw_root_daemon.uid"
 // Abstract socket name (leading NUL added at bind time). Kotlin connects with
@@ -381,7 +387,7 @@ static int lmw_legacy_commit_verified(const char *backup, int version_verified) 
 }
 #endif
 
-#ifndef LMW_DAEMON_TEST
+#if !defined(LMW_DAEMON_TEST) || defined(LMW_DAEMON_INTEGRATION_TEST)
 static int lmw_copy_regular(const char *src, const char *dst);
 
 // Stage for the boot package scanner without ever uninstalling. The existing APK
@@ -646,7 +652,7 @@ static int lmw_mode_can_reboot(lmw_cli_mode_t m) {
     return 0;
 }
 
-#ifndef LMW_DAEMON_TEST
+#if !defined(LMW_DAEMON_TEST) || defined(LMW_DAEMON_INTEGRATION_TEST)
 
 // ---- device-only side-effecting daemon ------------------------------------
 
@@ -1155,7 +1161,7 @@ static void lmw_ignore_sigpipe(void) {
     sigaction(SIGPIPE, &sa, NULL);
 }
 
-#ifndef LMW_DAEMON_TEST
+#if !defined(LMW_DAEMON_TEST) && !defined(LMW_DAEMON_INTEGRATION_TEST)
 int main(int argc, char **argv) {
     lmw_ignore_sigpipe();
 

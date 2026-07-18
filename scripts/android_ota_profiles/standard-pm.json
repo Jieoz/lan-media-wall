@@ -1,0 +1,8 @@
+{
+  "schema": "android-ota-profile/v1",
+  "name": "standard-pm",
+  "pm": {
+    "success_lines": ["Success"],
+    "fallback_on_exact_lines": {}
+  }
+}

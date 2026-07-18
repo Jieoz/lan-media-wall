@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.17.7] — 2026-07-19
+
+- **Profile-driven Android OTA diagnostics framework** (versionCode **1177**, versionName `1.17.7`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.7+1177`). Mapping: `versionCode = major×1000 + minor×10 + patch`.
+  - **Release asset `android_ota/` in QZX Update Tools.** Ships `android_ota_diag.py` plus profiles `standard-pm.json` (conservative baseline) and `qzx-yunos-4.4.json` (only the field-proven `INSTALL_FAILED_INVALID_INSTALL_LOCATION` → `/data/app` scanner fallback). Core classifier is product-agnostic: no hard-coded ROM, API level, package, or path; profiles supply platform facts. Missing PackageManager receipts stay inconclusive — never guessed success.
+  - **Host legacy transaction simulator.** `scripts/tests/test_android_ota_simulator.c` compiles production `lmw_legacy_stage` with sandbox paths (`LMW_DAEMON_INTEGRATION_TEST` + overridable `LMW_LEGACY_*` macros) and locks second-OTA commit of leftover `.lmw-backup` plus orphan-backup restore without a device.
+  - **Android workflow gates.** Compiles/runs the simulator; packages and verifies `android_ota/` entries inside `LANMediaWall-QZX-Update-Tools.zip`.
+  - **Docs:** `scripts/QZX-KIOSK-TOOLS.md` documents the offline analyzer and how to add vendor profiles only after a captured PM receipt.
+  - **Ops note:** this release is primarily the operator/diagnostic toolkit + host regression harness. Field install-path behavior from v1.17.5/v1.17.6 (Success honesty, leftover-backup commit) remains; boxes that still lack the fixed daemon still need QZX Update Tools / `lmw_setup` for the daemon ELF.
+
 ## [v1.17.6] — 2026-07-18
 
 - Field fix for **second legacy OTA on and-b2b90f28f7-class boxes** (versionCode **1176**, versionName `1.17.6`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.6+1176`). Mapping: `versionCode = major×1000 + minor×10 + patch`.

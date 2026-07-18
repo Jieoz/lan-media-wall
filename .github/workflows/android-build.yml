@@ -154,6 +154,11 @@ jobs:
           gcc -DLMW_DAEMON_TEST -Wall -Wextra -Werror \
             -o /tmp/tdaemon scripts/tests/test_lmw_root_daemon.c
           /tmp/tdaemon
+          # The simulator includes production transaction code with sandbox paths.
+          # It has no daemon main/socket caller, so those helpers are intentionally unused.
+          gcc -Wall -Wextra -Werror -Wno-unused-function \
+            -o /tmp/android-ota-simulator scripts/tests/test_android_ota_simulator.c
+          /tmp/android-ota-simulator
           # 1b) Host regression test for the ELF gate itself: prove it REJECTS a
           #     dynamic binary referencing signal() and ACCEPTS a static one
           #     (the v1.14.0 API19 "cannot locate symbol signal" field failure).
@@ -204,6 +209,9 @@ jobs:
              scripts/qzx_ab_backend.bat scripts/qzx_ab_backend.sh \
              scripts/qzx_verify_update.bat scripts/qzx_verify_update.sh \
              scripts/QZX-KIOSK-TOOLS.md scripts/lmw_root_daemon dist_tools/
+          mkdir -p dist_tools/android_ota/profiles
+          cp scripts/android_ota_diag.py dist_tools/android_ota/
+          cp scripts/android_ota_profiles/*.json dist_tools/android_ota/profiles/
           (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
             lmw_setup.bat lmw_setup.sh \
             lmw_restore.bat lmw_restore.sh \
@@ -211,7 +219,10 @@ jobs:
             qzx_field_check.bat qzx_field_check.sh \
             qzx_ab_backend.bat qzx_ab_backend.sh \
             qzx_verify_update.bat qzx_verify_update.sh \
-            QZX-KIOSK-TOOLS.md lmw_root_daemon)
+            QZX-KIOSK-TOOLS.md lmw_root_daemon \
+            android_ota/android_ota_diag.py \
+            android_ota/profiles/standard-pm.json \
+            android_ota/profiles/qzx-yunos-4.4.json)
           ls -la LANMediaWall-QZX-Update-Tools.zip
 
       - name: Verify QZX restart and package contracts
@@ -222,7 +233,12 @@ jobs:
           python3 - <<'PY'
           import zipfile
           names=set(zipfile.ZipFile('LANMediaWall-QZX-Update-Tools.zip').namelist())
-          required={'qzx_field_check.bat','qzx_field_check.sh','lmw_root_daemon'}
+          required={
+            'qzx_field_check.bat', 'qzx_field_check.sh', 'lmw_root_daemon',
+            'android_ota/android_ota_diag.py',
+            'android_ota/profiles/standard-pm.json',
+            'android_ota/profiles/qzx-yunos-4.4.json',
+          }
           missing=required-names
           if missing: raise SystemExit(f'missing QZX release assets: {sorted(missing)}')
           print('QZX_ZIP_CONTENT_PASS', sorted(required))
