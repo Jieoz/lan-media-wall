@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.17.5] — 2026-07-18
+
+- Field closeout for **remote rename** + **push-upgrade on fail-class boxes** (versionCode **1175**, versionName `1.17.5`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.5+1175`). Mapping: `versionCode = major×1000 + minor×10 + patch`.
+  - **Player — remote rename actually shows on the wall.** Android/Windows `status` now include `device_name` (§5.1/§5.2). `configure_device` hot-updates Discovery announce name and pushes an immediate status so the controller no longer sticks on `device_id` after a successful rename (volume/group already worked).
+  - **Root daemon — OTA `pm_failed` false-fail on and-8b0677b40b-class boxes.** Field evidence: same APK hash downloaded+sha256-OK on both boxes; `and-8b0677b40b` failed at install with `detail=pkg: /data/local/tmp/lmw_update_staged.apk`, while `and-b2b90f28f7` took the legacy path and landed 1174. Daemon now treats an exact `Success` line as install success even when popen/exit status is noisy on 4.4/YunOS, and `pm_failed` detail prefers real `Failure`/`Error` lines over the leading `pkg:` path diagnostic. Host unit tests cover summary selection.
+  - **Ops note:** the OTA install path runs inside `/system/xbin/lmw_root_daemon`. After this release, re-run **QZX Update Tools / `lmw_setup`** (or push the new daemon ELF) on fail-class boxes so the new install logic is live; only updating the Player APK is not enough for the daemon-side fix.
+
 ## [v1.17.4] — 2026-07-18
 
 - Player experience + remote configure closeout (versionCode **1174**, versionName `1.17.4`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.4+1174`). Mapping: `versionCode = major×1000 + minor×10 + patch`.

@@ -282,6 +282,53 @@ static lmw_install_action lmw_install_decision(const char *out) {
     return INSTALL_FAIL;
 }
 
+// Collapse pm's multi-line output to a single greppable token for the reply line.
+// Prefer a real Failure/Error line; skip unhelpful "pkg: ..." path-only lines that
+// PackageManager prints even when the real reason is on a later line
+// (§field-and-8b0677b40b truncated field detail to just the stage path).
+// Pure: host-tested via test_lmw_root_daemon.
+static void lmw_pm_summary(const char *out, char *summary, size_t sz) {
+    const char *src = NULL;
+    const char *f = strstr(out, "Failure");
+    if (f) {
+        src = f;
+    } else {
+        const char *e = strstr(out, "Error");
+        if (e) src = e;
+    }
+    if (!src) {
+        // Walk lines; skip blank / pkg: path-only diagnostics.
+        const char *p = out;
+        while (*p) {
+            const char *line_end = strchr(p, '\n');
+            const char *next = line_end ? line_end + 1 : p + strlen(p);
+            const char *s = p;
+            const char *end = line_end ? line_end : next;
+            while (s < end && (*s == ' ' || *s == '\t' || *s == '\r')) s++;
+            while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+            if (s < end) {
+                size_t len = (size_t)(end - s);
+                if (!(len >= 4 && memcmp(s, "pkg:", 4) == 0)) {
+                    src = s;
+                    break;
+                }
+            }
+            p = next;
+        }
+    }
+    if (!src) src = out;
+    // Trim leading whitespace on the chosen line (out may start with '\t').
+    while (*src == ' ' || *src == '\t' || *src == '\r') src++;
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j < sz - 1; i++) {
+        char c = src[i];
+        if (c == '\n' || c == '\r') break;
+        summary[j++] = c;
+    }
+    summary[j] = '\0';
+    if (j == 0) snprintf(summary, sz, "no-pm-output");
+}
+
 // Ordered `pm install` attempts, tried in sequence before any whole-device
 // reboot is even considered (§field-and-6037055a3d: a warm reboot drops Wi-Fi on
 // QZX_C1). Every entry is a COMPILE-TIME CONSTANT command string — LMW_STAGED_APK
@@ -826,9 +873,13 @@ static int lmw_restart_app(void) {
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
-// Run one pm command, capturing stdout+stderr into out. Returns 1 iff the shell
-// and pm exited cleanly AND an exact, independently trimmed "Success" line was
-// printed (pm's exit code is unreliable on 4.4, so the line is authoritative).
+// Run one pm command, capturing stdout+stderr into out. Returns 1 iff an exact
+// independently trimmed "Success" line was printed. On Android 4.4 / YunOS, pm
+// can print Success while the shell/popen exit status is non-zero (or pclose
+// fails to report a clean exit); the Success line is the only reliable signal
+// (§field-and-8b0677b40b: exit-gated success produced false pm_failed with
+// detail="pkg: /data/local/tmp/..."). Still drain the pipe and call pclose so
+// we don't leave zombies.
 static int lmw_pm_run_one(const char *cmd, char *out, size_t outsz) {
     out[0] = '\0';
     FILE *p = popen(cmd, "r");
@@ -840,9 +891,8 @@ static int lmw_pm_run_one(const char *cmd, char *out, size_t outsz) {
         if (used + len < outsz - 1) { memcpy(out + used, buf, len); used += len; }
     }
     out[used] = '\0';
-    int status = pclose(p);
-    return status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
-           lmw_pm_has_success_line(out);
+    (void)pclose(p);
+    return lmw_pm_has_success_line(out);
 }
 
 // Try each ordered pm command until one reports Success. Returns 1 on the first
@@ -861,20 +911,6 @@ static int lmw_pm_install(char *out, size_t outsz) {
         if (!lmw_pm_is_invalid_install_location(out)) break;
     }
     return 0;
-}
-
-// Collapse pm's multi-line output to a single greppable token for the reply line.
-static void lmw_pm_summary(const char *out, char *summary, size_t sz) {
-    const char *f = strstr(out, "Failure");
-    const char *src = f ? f : out;
-    size_t j = 0;
-    for (size_t i = 0; src[i] && j < sz - 1; i++) {
-        char c = src[i];
-        if (c == '\n' || c == '\r') break;
-        summary[j++] = c;
-    }
-    summary[j] = '\0';
-    if (j == 0) snprintf(summary, sz, "no-pm-output");
 }
 
 // Perform INSTALL: validate + copy to a world-readable stage + `pm install -r` +
@@ -911,7 +947,9 @@ static void lmw_handle_install(int fd, const char *path) {
     char pmout[1024];
     int ok = lmw_pm_install(pmout, sizeof(pmout));
     lmw_install_action action = lmw_install_decision(pmout);
-    if (!ok) {
+    // Prefer text-based decision: Success line alone is enough on 4.4 boxes
+    // even when popen/exit status is noisy (§field-and-8b0677b40b).
+    if (!(ok || action == INSTALL_PM_SUCCESS)) {
         if (action == INSTALL_LEGACY_STAGE) {
             if (!lmw_legacy_stage(path)) {
                 unlink(LMW_STAGED_APK);

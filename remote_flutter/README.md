@@ -1,5 +1,11 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.17.5：远程改名墙面回显 + 推送升级诚实路径。**播放端 `status` 现带
+> `device_name`,改名后设备墙立刻显示新名(控制端既有 `configureDevice` 无需改
+> 协议)。同版 root 守护进程修 4.4 上 `pm` Success/exit 误判与 `pkg:`-only
+> detail;失败类盒子需用 QZX Update Tools 重装 daemon。版本随全端单一真相源
+> `pubspec.yaml` = `1.17.5+1175`。
+>
 > **v1.17.4：单台推送/清空 broker 连接。**设备详情对话框「连接」区可勾选
 > 「一并推送连接」后下发 `configure_device` 的 `broker_host` / `broker_port` /
 > `use_wss` / `psk`(空 host = 清空回发现/P2P,二次确认)。播放端写盘并重建链路;

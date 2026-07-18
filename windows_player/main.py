@@ -392,6 +392,9 @@ class Player:
             }
         await self.ws.send("status", {
             "device_id": self.device_id,
+            # §5.1 / §5.2: identity field; without it the controller wall keeps
+            # showing device_id after a remote configure_device rename.
+            "device_name": self.device_name,
             "online": True,
             "group_id": self.group_id,
             "state": self._effective_state(snap),
@@ -1042,9 +1045,15 @@ class Player:
         if payload.get("device_id") != self.device_id:
             return
         name = payload.get("device_name")
+        name_dirty = False
         if isinstance(name, str) and name.strip():
-            self.device_name = name.strip()
-            self.state.set_device_name(self.device_name)
+            next_name = name.strip()
+            if next_name != self.device_name:
+                self.device_name = next_name
+                self.state.set_device_name(self.device_name)
+                if self.discovery is not None:
+                    self.discovery.update_name(self.device_name)
+                name_dirty = True
         gid = payload.get("group_id")
         if isinstance(gid, str) and gid:
             self.group_id = gid
@@ -1120,6 +1129,12 @@ class Player:
                 self.cfg.get("broker", "use_wss"),
             )
             asyncio.create_task(self._rebuild_transport())
+        elif name_dirty:
+            try:
+                await self._send_status()
+            except Exception:
+                pass
+            log.info("configure_device name=%s", self.device_name)
 
     async def _rebuild_transport(self) -> None:
         """Stop the live WS/discovery link and re-bootstrap from current cfg.

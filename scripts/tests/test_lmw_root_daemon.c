@@ -120,6 +120,30 @@ static void test_pm_success_line(void) {
     CHECK(lmw_pm_has_success_line("") == 0, "empty output rejected");
 }
 
+// §field-and-8b0677b40b: pm_failed detail must surface Failure/Error lines, not
+// the leading "pkg: /path" diagnostic that PackageManager often prints first.
+static void test_pm_summary_prefers_failure(void) {
+    char summary[128];
+    lmw_pm_summary("\tpkg: /data/local/tmp/lmw_update_staged.apk\n"
+                   "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]\n",
+                   summary, sizeof(summary));
+    CHECK(strstr(summary, "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]") == summary,
+          "Failure line wins over pkg: path line");
+
+    lmw_pm_summary("\tpkg: /data/local/tmp/lmw_update_staged.apk\n"
+                   "Error: java.lang.Exception\n",
+                   summary, sizeof(summary));
+    CHECK(strstr(summary, "Error:") == summary, "Error line wins over pkg: path line");
+
+    lmw_pm_summary("\tpkg: /data/local/tmp/lmw_update_staged.apk\nSuccess\n",
+                   summary, sizeof(summary));
+    CHECK(strcmp(summary, "Success") == 0, "pkg-only first line is skipped for Success");
+
+    lmw_pm_summary("\tpkg: /data/local/tmp/lmw_update_staged.apk\n",
+                   summary, sizeof(summary));
+    CHECK(strstr(summary, "pkg:") == summary, "pkg-only output still reported when alone");
+}
+
 static void test_legacy_install_contract(void) {
     CHECK(lmw_pm_is_invalid_install_location("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]\n") == 1,
           "exact invalid install location classified");
@@ -354,6 +378,7 @@ int main(void) {
     test_command_requires_auth();
     test_read_allowed_uid();
     test_pm_success_line();
+    test_pm_summary_prefers_failure();
     test_legacy_install_contract();
     test_pm_install_cmd_order();
     test_am_start_failed();

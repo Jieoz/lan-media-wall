@@ -1,5 +1,9 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.17.5 — 远程改名回显:**`status` 上报 `device_name`;`configure_device`
+> 改名后 `DiscoveryResponder.update_name` + 立即 `_send_status`,控制端墙面
+> 不再卡在 `device_id`。回归见 `tests/test_configure_and_barrier.py`。
+>
 > **v1.17.4 — §19 远程 broker 配置:**`configure_device` 现接受 `broker_host` /
 > `broker_port` / `use_wss` / `psk`;写入 `PersistentState` 后 `apply_state_transport`
 > 叠加到运行时 cfg,再 `_rebuild_transport`(只换 WS,不叠 status 循环)。空 host

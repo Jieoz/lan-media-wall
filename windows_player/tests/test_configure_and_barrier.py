@@ -71,6 +71,37 @@ def test_configure_device_applies_and_persists(tmp_path):
     s2 = C.PersistentState.load(p._state_dir)  # type: ignore[attr-defined]
     assert s2.device_name("x") == "大厅左屏"
     assert s2.group_id == "hall-2"
+    # status must echo the new display name so the controller wall updates
+    status_msgs = [pl for t, pl in p.ws.sent if t == "status"]
+    assert status_msgs, "rename must push an immediate status"
+    assert status_msgs[-1].get("device_name") == "大厅左屏"
+
+
+def test_send_status_includes_device_name(tmp_path):
+    p = _player(tmp_path)
+    p.device_name = "展示名-A"
+    _run(p._send_status())
+    status_msgs = [pl for t, pl in p.ws.sent if t == "status"]
+    assert status_msgs
+    assert status_msgs[-1]["device_name"] == "展示名-A"
+    assert status_msgs[-1]["device_id"] == p.device_id
+
+
+def test_configure_device_updates_discovery_name(tmp_path):
+    p = _player(tmp_path)
+
+    class _Disc:
+        def __init__(self):
+            self.device_name = "old"
+
+        def update_name(self, name: str) -> None:
+            self.device_name = name
+
+    disc = _Disc()
+    p.discovery = disc  # type: ignore[assignment]
+    _run(p._h_configure_device(
+        {"device_id": p.device_id, "device_name": "新名字"}, {}))
+    assert disc.device_name == "新名字"
 
 
 def test_configure_device_ignores_other_device(tmp_path):

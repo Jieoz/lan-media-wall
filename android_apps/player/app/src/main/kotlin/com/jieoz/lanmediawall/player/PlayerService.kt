@@ -523,6 +523,10 @@ class PlayerService : Service() {
         }
         val payload = jsonObj {
             put("device_id", settings.deviceId)
+            // §5.1 / §5.2: device_name is part of the status identity set. Without
+            // it the controller wall falls back to device_id after configure_device
+            // renames the box, so remote rename looks like a no-op.
+            put("device_name", settings.deviceName)
             put("online", true)
             put("group_id", settings.groupId)
             put("state", effectiveState())
@@ -1578,8 +1582,14 @@ class PlayerService : Service() {
      *  PSK 变更要求入站帧已鉴权(env.authed),open 链路拒改密钥。 */
     private fun hConfigureDevice(payload: Json.Obj, env: Envelope.Parsed) {
         if (payload["device_id"].asString() != settings.deviceId) return
+        var nameDirty = false
         payload["device_name"].asString()?.takeIf { it.isNotBlank() }?.let {
-            settings.deviceName = it.trim()
+            val next = it.trim()
+            if (next != settings.deviceName) {
+                settings.deviceName = next
+                discovery?.updateName(next)
+                nameDirty = true
+            }
         }
         payload["group_id"].asString()?.takeIf { it.isNotBlank() }?.let {
             settings.groupId = it
@@ -1652,6 +1662,11 @@ class PlayerService : Service() {
                     logEvent("transport_rebuild_failed $detail")
                 }
             }
+        } else if (nameDirty) {
+            // Push status immediately so the controller wall picks up the new
+            // name without waiting for the 1–2s status loop.
+            try { sendStatus() } catch (_: Exception) {}
+            logEvent("configure_device name=${settings.deviceName}")
         }
     }
 

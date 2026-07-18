@@ -140,6 +140,8 @@ class Discovery(
 
     fun updateIp(newIp: String) { ip = newIp }
     fun updateBrokerHint(hint: String) { brokerHint = hint }
+    /** Keep announce.device_name in sync after §19 configure_device rename. */
+    fun updateName(newName: String) { deviceName = newName }
 
     fun stop() {
         running = false

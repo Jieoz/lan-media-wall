@@ -121,6 +121,10 @@ class DiscoveryResponder:
     def update_ip(self, ip: str) -> None:
         self.ip = ip
 
+    def update_name(self, name: str) -> None:
+        """Keep announce.device_name in sync after §19 configure_device rename."""
+        self.device_name = name
+
     def stop(self) -> None:
         self._stop.set()
         try:

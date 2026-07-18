@@ -1,5 +1,12 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.17.5 — 远程改名回显 + 推送升级诚实判定:**`status` 带上 `device_name`
+> (§5.1/§5.2);`configure_device` 改名后热更新 Discovery announce,并立即
+> `sendStatus`,控制端设备墙不再卡在 `device_id`。root 守护进程以 `pm` 的
+> 精确 `Success` 行为安装成功信号(4.4/YunOS 上 popen exit 不可靠),失败
+> detail 优先 `Failure`/`Error` 而非仅 `pkg:` 暂存路径。**失败类盒子需重装
+> 新 `lmw_root_daemon`(QZX Update Tools / `lmw_setup`),只推 APK 不够。**
+>
 > **v1.17.4 — 播放体验 + 远程 broker 配置:**勾选清理缓存不再因
 > `LiveCacheBackend.PlayerView.cacheSummary()` 同名自递归 StackOverflow
 > (改为调用外层 `buildCacheSummaryMap()`)。API19 单解码器切媒体用近全屏冻结
