@@ -48,6 +48,12 @@ class PlayerController(
     @Volatile private var loopOverlayToken: LoopOverlayOwner.Token? = null
     /** §6.4 root-performance: one cached thumbnail per item (keyed by itemId). */
     private val thumbnailCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, ByteArray>>()
+    /**
+     * Near-fullscreen JPEG used as a freeze overlay while the single VDEC rebuilds
+     * on item-to-item advance (API19 has no PixelCopy). Separate from the small
+     * controller thumb so a 320px preview never becomes the wall mask.
+     */
+    private val freezeFrameCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
 
     /** Which video kernel is active (for diagnostics/status). */
     val backend: PlayerBackend get() = videoBackend.backend
@@ -115,6 +121,9 @@ class PlayerController(
         runOnMain {
             if (transitionState.begin(true) == VideoTransitionStateMachine.Action.SHOW_CACHED_FRAME) {
                 imageView?.let { iv ->
+                    // Cover the full SurfaceView — fitCenter leaves black bars around a
+                    // small freeze/thumbnail and reads as a black flash on kitkat boxes.
+                    iv.scaleType = ImageView.ScaleType.CENTER_CROP
                     iv.setImageBitmap(bmp)
                     iv.visibility = ImageView.VISIBLE
                 }
@@ -162,8 +171,11 @@ class PlayerController(
      * §6.1 image item: decode a local file and show it on the ImageView above the
      * video surface, pausing + hiding the video so a still actually appears (the
      * video kernels can't render one). No-op if the ImageView isn't attached yet.
+     *
+     * When [itemId] is set, also stash a freeze JPEG so a later video advance can
+     * cover the surface without first dropping to black.
      */
-    fun showImage(path: String) = runOnMain {
+    fun showImage(path: String, itemId: String? = null) = runOnMain {
         disarmLoopOverlay()
         val iv = imageView ?: return@runOnMain
         val file = File(path.removePrefix("file://"))
@@ -178,8 +190,19 @@ class PlayerController(
             return@runOnMain
         }
         videoBackend.pause()
+        iv.scaleType = ImageView.ScaleType.FIT_CENTER
         iv.setImageBitmap(bmp)
         iv.visibility = ImageView.VISIBLE
+        if (itemId != null) {
+            // Best-effort freeze for the next video transition (centerCrop covers wall).
+            try {
+                val out = ByteArrayOutputStream(64 * 1024)
+                if (bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)) {
+                    freezeFrameCache[itemId] = out.toByteArray()
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /** Hide the image layer (called when switching back to video). */
@@ -187,6 +210,8 @@ class PlayerController(
         imageView?.let {
             it.visibility = ImageView.GONE
             it.setImageDrawable(null)
+            // Images use fitCenter; transition freezes use centerCrop — restore default.
+            it.scaleType = ImageView.ScaleType.FIT_CENTER
         }
     }
 
@@ -239,11 +264,18 @@ class PlayerController(
     /** §6.4: the thumbnail already captured for [itemId], or null if none yet. */
     fun cachedThumbnail(itemId: String): Pair<Int, ByteArray>? = thumbnailCache[itemId]
 
+    /**
+     * Best freeze JPEG for an item-to-item transition: prefer the near-fullscreen
+     * freeze cache, fall back to the controller thumb (still better than black).
+     */
+    fun cachedFreezeFrame(itemId: String): ByteArray? =
+        freezeFrameCache[itemId] ?: thumbnailCache[itemId]?.second
+
     /** Select an already-captured frame for the current single-item loop source. */
     fun armLoopOverlay(itemId: String?) {
         loopOverlayToken = loopOverlayOwner.arm(itemId)
         loopOverlayItemId = itemId
-        loopOverlayJpeg = itemId?.let { thumbnailCache[it]?.second }
+        loopOverlayJpeg = itemId?.let { cachedFreezeFrame(it) }
         videoBackend.hasLoopBoundaryFrame = loopOverlayJpeg != null
     }
 
@@ -259,18 +291,20 @@ class PlayerController(
     /** Drop cached thumbnails for items no longer referenced (playlist change). */
     fun retainThumbnails(keepItemIds: Set<String>) {
         thumbnailCache.keys.retainAll(keepItemIds)
+        freezeFrameCache.keys.retainAll(keepItemIds)
     }
 
     /**
      * Extract ONE frame from the local cached video and memoize it under [itemId].
      * Decoder-independent (MediaMetadataRetriever), so identical for both kernels.
+     * Also stores a higher-res freeze JPEG for item-to-item transition masks.
      * The caller must only invoke it while the video is NOT actively playing.
      */
     suspend fun captureThumbnail(
         itemId: String,
         sourcePath: String,
         positionMs: Long,
-        maxWidth: Int = 320,
+        maxWidth: Int = ThumbnailPolicy.CONTROLLER_THUMB_MAX_WIDTH,
         quality: Int = 70,
     ): Pair<Int, ByteArray>? = withContext(Dispatchers.IO) {
         thumbnailCache[itemId]?.let { return@withContext it }
@@ -296,6 +330,22 @@ class PlayerController(
                 try { retriever.release() } catch (_: Exception) { }
             } ?: return@withContext null
             val extractMs = SystemClock.elapsedRealtime() - extractStarted
+            // One decode → freeze (near-fullscreen) + controller thumb (small).
+            val freezeTarget = ThumbnailPolicy.captureSize(
+                frame.width, frame.height, ThumbnailPolicy.TRANSITION_FREEZE_MAX_WIDTH,
+            )
+            if (freezeTarget != null && freezeFrameCache[itemId] == null) {
+                val freezeBmp = if (frame.width == freezeTarget.width && frame.height == freezeTarget.height) {
+                    frame
+                } else {
+                    Bitmap.createScaledBitmap(frame, freezeTarget.width, freezeTarget.height, true)
+                }
+                val freezeOut = ByteArrayOutputStream(96 * 1024)
+                if (freezeBmp.compress(Bitmap.CompressFormat.JPEG, 82, freezeOut)) {
+                    freezeFrameCache[itemId] = freezeOut.toByteArray()
+                }
+                if (freezeBmp !== frame) freezeBmp.recycle()
+            }
             val target = ThumbnailPolicy.captureSize(frame.width, frame.height, maxWidth)
             if (target == null) {
                 frame.recycle()
@@ -317,12 +367,13 @@ class PlayerController(
             val runtime = Runtime.getRuntime()
             log("thumb_capture item=$itemId source=file extract_ms=$extractMs encode_ms=$encodeMs " +
                 "bitmap=${bmp.width}x${bmp.height} jpeg_bytes=${jpeg.size} " +
+                "freeze_bytes=${freezeFrameCache[itemId]?.size ?: 0} " +
                 "heap_used=${runtime.totalMemory() - runtime.freeMemory()} heap_max=${runtime.maxMemory()}")
             bmp.recycle()
             val captured = thumbSeq.incrementAndGet() to jpeg
             thumbnailCache[itemId] = captured
             if (loopOverlayItemId == itemId) {
-                loopOverlayJpeg = jpeg
+                loopOverlayJpeg = cachedFreezeFrame(itemId) ?: jpeg
                 videoBackend.hasLoopBoundaryFrame = true
             }
             captured

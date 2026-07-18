@@ -1368,13 +1368,20 @@ class WallState extends ChangeNotifier {
       _send('delete_group',
           Commands.deleteGroup(groupId: groupId, reassignTo: reassignTo));
 
-  /// configure_device(§19)：per-device 配置统一入口(改名/设组/音量/静音)。
+  /// configure_device(§19)：per-device 配置统一入口(改名/设组/音量/静音/连接)。
+  /// 连接字段仅在调用方显式传入时下发；[clearBroker]=true 发空 host 回发现/P2P。
+  /// [psk] 仅在已鉴权链路下应由 UI 开启，播放端仍会二次校验 env.authed。
   void configureDevice({
     required String deviceId,
     String? deviceName,
     String? groupId,
     int? volume,
     bool? muted,
+    String? brokerHost,
+    int? brokerPort,
+    bool? useWss,
+    String? psk,
+    bool clearBroker = false,
   }) =>
       _send(
           'configure_device',
@@ -1384,6 +1391,11 @@ class WallState extends ChangeNotifier {
             groupId: groupId,
             volume: volume,
             muted: muted,
+            brokerHost: brokerHost,
+            brokerPort: brokerPort,
+            useWss: useWss,
+            psk: psk,
+            clearBroker: clearBroker,
           ),
           deviceId: deviceId);
 

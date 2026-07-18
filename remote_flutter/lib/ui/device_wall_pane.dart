@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/playlist_draft.dart';
@@ -743,16 +744,23 @@ Future<void> _confirmDeleteGroup(
 
 /// 单台面板(§v1.13):一处集中该 deviceId 的 状态/版本 展示、播放控制(暂停/恢复/
 /// 停止/上一项/下一项)、重启设备(§9.4,二次确认)、单播推送内容(§9.4b)、单台
-/// 推送升级(§23),外加原有的 改名/设组/音量(§19 configure_device)。
+/// 推送升级(§23),外加原有的 改名/设组/音量/连接(§19 configure_device)。
 ///
-/// 「应用」只提交改名/设组/音量;播放控制与重启是即时动作(点了就下发),推送内容/
-/// 升级会先关本弹窗再在父 context 打开各自的流程弹窗。
+/// 「应用」提交改名/设组/音量,可选一并推送连接;播放控制与重启是即时动作,
+/// 推送内容/升级会先关本弹窗再在父 context 打开各自的流程弹窗。
 Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     WallDevice device, List<WallGroup> groups) async {
   final nameCtl = TextEditingController(text: device.deviceName);
+  final brokerHostCtl = TextEditingController();
+  final brokerPortCtl = TextEditingController(text: '8770');
+  final pskCtl = TextEditingController();
   final st = device.status;
   var groupId = st?.groupId ?? '';
   var volume = (st?.volume ?? 80).toDouble();
+  var useWss = false;
+  var pushTransport = false;
+  var clearBroker = false;
+  final canPushPsk = state.authMode != AuthMode.open;
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => StatefulBuilder(
@@ -826,6 +834,67 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                   child: Text('音量仅本机 · 点「应用配置」后下发',
                       style: Theme.of(ctx).textTheme.bodySmall),
                 ),
+                const Divider(height: 20),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('连接 / 中枢',
+                      style: Theme.of(ctx).textTheme.labelLarge),
+                ),
+                const SizedBox(height: 6),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('一并推送播放端连接配置'),
+                  subtitle: const Text(
+                      '写盘后重建 transport；切 host 会短暂断链，需二次确认'),
+                  value: pushTransport,
+                  onChanged: (v) => setLocal(() {
+                    pushTransport = v;
+                    if (!v) clearBroker = false;
+                  }),
+                ),
+                if (pushTransport) ...[
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('清空 broker，回发现/P2P'),
+                    value: clearBroker,
+                    onChanged: (v) => setLocal(() => clearBroker = v),
+                  ),
+                  if (!clearBroker) ...[
+                    TextField(
+                      controller: brokerHostCtl,
+                      decoration: const InputDecoration(
+                        labelText: 'Broker 主机',
+                        hintText: '如 192.168.1.10',
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: brokerPortCtl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Broker 端口',
+                        hintText: '8770',
+                      ),
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('使用 WSS'),
+                      value: useWss,
+                      onChanged: (v) => setLocal(() => useWss = v),
+                    ),
+                  ],
+                  TextField(
+                    controller: pskCtl,
+                    obscureText: true,
+                    enabled: canPushPsk,
+                    decoration: InputDecoration(
+                      labelText: canPushPsk ? 'PSK（留空则不下发）' : 'PSK（当前 open 链路不可改）',
+                      helperText: canPushPsk
+                          ? '仅鉴权链路可改；播放端仍校验 env.authed'
+                          : 'open 模式禁止远程改密钥',
+                    ),
+                  ),
+                ],
                 const Divider(height: 20),
                 // 分层：常用 → 维护 → 危险。即时动作先关弹窗再走流程。
                 Text('常用', style: Theme.of(ctx).textTheme.labelLarge),
@@ -968,17 +1037,91 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     ),
   );
   if (ok != true) return;
+
+  String? brokerHost;
+  int? brokerPort;
+  bool? useWssOut;
+  String? pskOut;
+  var clearBrokerOut = false;
+  if (pushTransport) {
+    if (clearBroker) {
+      clearBrokerOut = true;
+    } else {
+      brokerHost = brokerHostCtl.text.trim();
+      if (brokerHost.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(
+                content: Text('推送连接时请填写 Broker 主机，或勾选清空回发现/P2P')));
+        }
+        return;
+      }
+      final port = int.tryParse(brokerPortCtl.text.trim());
+      if (port == null || port < 1 || port > 65535) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(content: Text('Broker 端口须为 1–65535')));
+        }
+        return;
+      }
+      brokerPort = port;
+      useWssOut = useWss;
+    }
+    final pskText = pskCtl.text;
+    if (pskText.isNotEmpty) {
+      if (!canPushPsk) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(content: Text('当前 open 链路禁止远程改 PSK')));
+        }
+        return;
+      }
+      pskOut = pskText;
+    }
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认推送连接配置？'),
+        content: Text(clearBrokerOut
+            ? '将清空该播放端 broker，并重建 transport 回发现/P2P。链路会短暂断开。'
+            : '将把 broker=$brokerHost:$brokerPort'
+                '${useWssOut == true ? " (WSS)" : ""}'
+                '${pskOut != null ? " 并更新 PSK" : ""}'
+                ' 写入该播放端并重建 transport。链路会短暂断开。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.orange),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('确认推送')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+  }
+
   try {
     state.configureDevice(
       deviceId: device.deviceId,
       deviceName: nameCtl.text.trim().isEmpty ? null : nameCtl.text.trim(),
       groupId: groupId.isEmpty ? null : groupId,
       volume: volume.round(),
+      brokerHost: brokerHost,
+      brokerPort: brokerPort,
+      useWss: useWssOut,
+      psk: pskOut,
+      clearBroker: clearBrokerOut,
     );
     if (context.mounted) {
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
-        ..showSnackBar(const SnackBar(content: Text('配置命令已投递')));
+        ..showSnackBar(SnackBar(
+            content: Text(pushTransport ? '配置与连接命令已投递' : '配置命令已投递')));
     }
   } catch (e) {
     if (context.mounted) {

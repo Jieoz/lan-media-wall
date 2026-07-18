@@ -77,4 +77,23 @@ class ThumbnailPolicyTest {
             ThumbnailPolicy.decide(isVideo = false, hasCachedThumbnail = false, alreadyAttempted = false),
         )
     }
+
+    // --- P0 seamless freeze frame size --------------------------------
+    // Transition freezes must be near-fullscreen (1280) so centerCrop covers
+    // the SurfaceView; the 320 controller thumb is intentionally separate.
+
+    @Test fun `transition freeze capture is near-fullscreen not controller-thumb`() {
+        val freeze = ThumbnailPolicy.captureSize(
+            1920, 1080, ThumbnailPolicy.TRANSITION_FREEZE_MAX_WIDTH,
+        )
+        assertNotNull(freeze)
+        assertEquals(1280, freeze!!.width)
+        assertEquals(720, freeze.height)
+        val thumb = ThumbnailPolicy.captureSize(
+            1920, 1080, ThumbnailPolicy.CONTROLLER_THUMB_MAX_WIDTH,
+        )
+        assertNotNull(thumb)
+        assertEquals(320, thumb!!.width)
+        assertTrue(freeze.width > thumb.width)
+    }
 }

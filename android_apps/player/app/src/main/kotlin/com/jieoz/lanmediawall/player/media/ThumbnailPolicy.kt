@@ -5,6 +5,14 @@ object ThumbnailPolicy {
     private const val NORMAL_INTERVAL_MS = 5_000L
     private const val LEGACY_VIDEO_INTERVAL_MS = 15_000L
 
+    /**
+     * Controller preview thumbs stay small (bandwidth + UI). Transition freeze
+     * frames cover the full SurfaceView during single-VDEC rebuild (~200–400ms)
+     * and must be near-fullscreen — a 320px fitCenter leaf still shows black.
+     */
+    const val CONTROLLER_THUMB_MAX_WIDTH = 320
+    const val TRANSITION_FREEZE_MAX_WIDTH = 1280
+
     data class Size(val width: Int, val height: Int) {
         val argbBytes: Long get() = width.toLong() * height * 4
     }

@@ -281,9 +281,12 @@ class PlayerService : Service() {
         newLink.start()
         startDiscoveryResponder(plan)
 
-        // loops that depend on the link start now that it exists.
-        scope.launch { statusLoop() }
-        scope.launch { thumbnailLoop() }
+        // loops that depend on the link start once; rebuildTransport reuses them.
+        if (!transportLoopsStarted) {
+            transportLoopsStarted = true
+            scope.launch { statusLoop() }
+            scope.launch { thumbnailLoop() }
+        }
     }
 
     /**
@@ -345,6 +348,8 @@ class PlayerService : Service() {
     }
 
     @Volatile private var started = false
+    /** status/thumbnail loops start once; transport rebuild only swaps the link. */
+    @Volatile private var transportLoopsStarted = false
 
     override fun onDestroy() {
         prepareGeneration.cancel()
@@ -628,11 +633,14 @@ class PlayerService : Service() {
             }
             return out
         }
-        override fun cacheSummary(): Map<String, Any?> = cacheSummary()
+        // MUST call the outer helper. A same-named call here resolves to THIS
+        // override (Kotlin name resolution) and StackOverflows every time
+        // cache_cleanup builds summary_after — the observed selected-cleanup crash.
+        override fun cacheSummary(): Map<String, Any?> = buildCacheSummaryMap()
     }
 
     /** §26 lightweight summary map (shared by status + cleanup summary_after). */
-    private fun cacheSummary(): Map<String, Any?> {
+    private fun buildCacheSummaryMap(): Map<String, Any?> {
         val backend = LiveCacheBackend(playerCacheView, downloader)
         val snapshot = backend.buildSnapshot()
         var readyItems = 0
@@ -665,7 +673,7 @@ class PlayerService : Service() {
         )
     }
 
-    private fun cacheSummaryJson(): Json = summaryMapJson(cacheSummary())
+    private fun cacheSummaryJson(): Json = summaryMapJson(buildCacheSummaryMap())
 
     private fun summaryMapJson(m: Map<String, Any?>): Json = jsonObj {
         for ((k, v) in m) when (v) {
@@ -769,7 +777,7 @@ class PlayerService : Service() {
             "set_mute" -> hSetMute(payload)
             "set_audio_master" -> hSetAudioMaster(payload)
             "assign_group" -> hAssignGroup(payload)
-            "configure_device" -> hConfigureDevice(payload)
+            "configure_device" -> hConfigureDevice(payload, env)
             "update_app" -> hUpdateApp(payload, env)
             "resume_last" -> scope.launch { resumeLast() }
             "welcome" -> hWelcome(payload)
@@ -1161,7 +1169,7 @@ class PlayerService : Service() {
             // §6.1/§6.3: nothing to prime — wait for the sync instant, then show
             // the still and start its dwell so the carousel advances.
             awaitLocal(clock.toLocal(playAt))
-            ctl.showImage(uri)
+            ctl.showImage(uri, itemId = item.itemId)
             playState = "playing"
             MainActivity.instance?.hideIdle()
             armDwell(item)
@@ -1489,16 +1497,16 @@ class PlayerService : Service() {
         val source = readyFile?.absolutePath ?: item.url
         val ctl = controllerRef
         if (item.type == "image") {
-            ctl?.showImage(source)
+            ctl?.showImage(source, itemId = item.itemId)
             armDwell(item)
         } else {
             ctl?.onVideoEnded = { onCurrentEnded() }
-            // API19 SurfaceView has no PixelCopy. Reuse the most recent cached JPEG
-            // in the existing ImageView, then rebuild the ONE MediaPlayer. The
-            // backend's real first-frame callback removes it; any error removes it too.
+            // API19 SurfaceView has no PixelCopy. Prefer the near-fullscreen freeze
+            // JPEG (not the small controller thumb), then rebuild the ONE MediaPlayer.
+            // The backend's real first-frame callback removes it; any error removes it too.
             val strat = TransitionPolicy.transitionStrategy(
                 androidSdk = Build.VERSION.SDK_INT, concurrentDecoders = 1)
-            val held = oldItemId?.let { ctl?.cachedThumbnail(it)?.second }
+            val held = oldItemId?.let { ctl?.cachedFreezeFrame(it) }
             val overlay = ctl?.showTransitionFrame(held) == true
             logEvent("transition to=${item.itemId} idx=$newIndex strategy=$strat " +
                 "overlay_cached=$overlay loop_strategy=${TransitionPolicy.loopStrategy(pl.items.size, pl.loopMode)}")
@@ -1565,9 +1573,10 @@ class PlayerService : Service() {
     }
 
     // --- §19 configure_device ----------------------------------------
-    /** 盒子配置(§19):改显示名 / 设组 / 设音量。仅对本机 device_id 生效,缺省字段不动。
-     *  改动持久化(SharedPreferences),重启后保留。 */
-    private fun hConfigureDevice(payload: Json.Obj) {
+    /** 盒子配置(§19):改显示名 / 设组 / 设音量 / 连接(broker)。仅对本机 device_id 生效,
+     *  缺省字段不动。改动持久化(SharedPreferences),重启后保留。连接字段变更后重建 transport。
+     *  PSK 变更要求入站帧已鉴权(env.authed),open 链路拒改密钥。 */
+    private fun hConfigureDevice(payload: Json.Obj, env: Envelope.Parsed) {
         if (payload["device_id"].asString() != settings.deviceId) return
         payload["device_name"].asString()?.takeIf { it.isNotBlank() }?.let {
             settings.deviceName = it.trim()
@@ -1581,6 +1590,86 @@ class PlayerService : Service() {
             controllerRef?.currentVolumePercent = vol
             controllerRef?.setVolume(vol)
         }
+        payload["muted"].asBoolOrNull()?.let {
+            settings.muted = it
+            controllerRef?.setMuted(it)
+        }
+
+        // Optional transport fields: only rewrite when the key is present.
+        // Empty host clears the broker and returns the box to auto-discover / p2p.
+        var transportDirty = false
+        if ("broker_host" in payload.entries) {
+            val host = payload["broker_host"].asString()?.trim() ?: ""
+            if (host != settings.brokerHost) {
+                settings.brokerHost = host
+                transportDirty = true
+            }
+        }
+        if ("broker_port" in payload.entries) {
+            val port = payload["broker_port"].asIntOrNull()?.takeIf { it in 1..65535 }
+            if (port != null && port != settings.brokerPort) {
+                settings.brokerPort = port
+                transportDirty = true
+            }
+        }
+        if ("use_wss" in payload.entries) {
+            val wss = payload["use_wss"].asBoolOrNull()
+            if (wss != null && wss != settings.useWss) {
+                settings.useWss = wss
+                transportDirty = true
+            }
+        }
+        if ("psk" in payload.entries) {
+            if (!env.authed) {
+                logEvent("configure_device psk rejected: frame not authed")
+            } else {
+                val psk = payload["psk"].asString()
+                if (psk != null) {
+                    val next = if (psk.isBlank()) Settings.DEFAULT_PSK else psk
+                    if (next != settings.psk) {
+                        settings.psk = next
+                        // New key material is global-mode; clear derived leftovers so
+                        // the next transport bootstrap signs with the new PSK.
+                        settings.keyMode = KeyMode.GLOBAL.wire
+                        settings.deviceKeyHex = ""
+                        settings.brokerKeyHex = ""
+                        transportDirty = true
+                    }
+                }
+            }
+        }
+        // A remote broker configure implies the box is configured for that path.
+        if (transportDirty) {
+            if (settings.hasBroker) settings.markConfigured()
+            logEvent("configure_device transport dirty host=${settings.brokerHost} " +
+                "port=${settings.brokerPort} wss=${settings.useWss}")
+            scope.launch {
+                try {
+                    rebuildTransport()
+                } catch (t: Throwable) {
+                    val detail = "${t.javaClass.simpleName}: ${t.message ?: "transport rebuild failed"}"
+                    ConnState.set(ConnState.Phase.START_FAILED, detail)
+                    logEvent("transport_rebuild_failed $detail")
+                }
+            }
+        }
+    }
+
+    /**
+     * Tear down the live coordinator link + discovery, then re-run
+     * [selectAndStartTransport] against the just-persisted Settings. Used by
+     * §19 remote broker configure so the box switches host without a process
+     * restart. status/thumbnail loops keep running; only the link is replaced.
+     */
+    private suspend fun rebuildTransport() {
+        try { discovery?.stop() } catch (_: Exception) {}
+        discovery = null
+        try { link?.stop() } catch (_: Exception) {}
+        link = null
+        controllerPresent = false
+        ConnState.set(ConnState.Phase.CONNECTING_BROKER,
+            if (settings.hasBroker) "${settings.brokerHost}:${settings.brokerPort}" else "auto")
+        selectAndStartTransport()
     }
 
     // --- §22 update_app (remote self-update, root install) -----------
@@ -1852,7 +1941,7 @@ class PlayerService : Service() {
         settings.muted = task.muted
         ctl.currentVolumePercent = task.volume
         if (item.type == "image") {
-            ctl.showImage(source)
+            ctl.showImage(source, itemId = item.itemId)
             armDwell(item)
         } else {
             ctl.onVideoEnded = { onCurrentEnded() }

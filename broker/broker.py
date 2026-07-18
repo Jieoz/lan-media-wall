@@ -639,8 +639,11 @@ class Hub:
     # ---- device config + group management (§18/§19) ---------------------
     async def _on_configure_device(self, conn: ClientConn, env: dict) -> None:
         """§19: unified per-device config. Persists device_name/group_id in the
-        registry and forwards the payload to the target player so it can apply
-        local prefs (volume/muted). group_id here is equivalent to assign_group."""
+        registry and forwards the FULL payload to the target player so it can
+        apply local prefs (volume/muted) and optional transport fields
+        (broker_host/port/use_wss/psk). group_id here is equivalent to
+        assign_group. Broker does not rewrite its own listen endpoint from
+        player transport fields — those are player-local only."""
         if conn.role != "controller":
             return
         p = env["payload"]
@@ -658,7 +661,7 @@ class Hub:
             else:
                 self.reg.save()
             self.mark_wall_dirty()
-        # Forward to the player so it applies local prefs / new group.
+        # Forward full payload (incl. transport fields) to the player.
         target = self.players.get(device_id)
         if target is not None:
             fwd = self.make_env("configure_device", p, f"player:{device_id}")

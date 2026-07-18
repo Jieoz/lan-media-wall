@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -95,6 +96,43 @@ class SettingsActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         ui.removeCallbacks(connTick)
+    }
+
+    /**
+     * 退出设置后一键回播放墙。QZX_C1 等盒子的物理“回主页”键实测发 KEYCODE_SETTINGS(176),
+     * 不是 KEY_HOME；设置页之前没绑任何回墙键，用户退出设置后遥控器找不到一键回墙。
+     * HOME / SETTINGS / BACK 统一 goToWall()：清 kiosk 挂起态 + 把 MainActivity 拉回前台。
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        when (keyCode) {
+            KeyEvent.KEYCODE_HOME,
+            KeyEvent.KEYCODE_SETTINGS,
+            KeyEvent.KEYCODE_BACK,
+            -> {
+                goToWall()
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    /** 回到播放墙并结束设置页，避免设置 Activity 压在栈顶挡住墙。 */
+    private fun goToWall() {
+        KioskState.suspended = false
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                    )
+                },
+            )
+        } catch (_: Throwable) {
+            // 拉墙失败也绝不让设置页崩掉。
+        }
+        try { finish() } catch (_: Throwable) {}
     }
 
     /** Fill every input from the current [settings] (used on open). */

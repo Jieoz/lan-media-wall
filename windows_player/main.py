@@ -81,6 +81,8 @@ class Player:
     def __init__(self, cfg: config_mod.Config, *, cohost: Optional[bool] = None):
         self.cfg = cfg
         self.state = config_mod.PersistentState.load(cfg.state_dir)
+        # §19: remote broker overrides win over yaml defaults for next dial.
+        config_mod.apply_state_transport(self.cfg, self.state)
         self.loop: Optional[asyncio.AbstractEventLoop] = None
 
         self.device_id = self.state.device_id
@@ -130,6 +132,9 @@ class Player:
         # timer. Cancelled by any new prepare/play_at/advance/stop.
         self._dwell_task: Optional[asyncio.Task] = None
         self._cache_dirty = asyncio.Event()
+        # §19: transport rebuild serializes against overlapping configure_device.
+        self._transport_rebuild_lock = asyncio.Lock()
+        self._ws_task: Optional[asyncio.Task] = None
 
         # OS-coupled subsystems (created in start())
         self.watchdog = None
@@ -1031,8 +1036,9 @@ class Player:
 
     # --- §19 configure_device ----------------------------------------
     async def _h_configure_device(self, payload, env) -> None:
-        """盒子配置(§19):改显示名 / 设组 / 设音量。仅对本机 device_id 生效,
-        缺省字段不动。改动持久化,重启后保留。"""
+        """盒子配置(§19):改显示名 / 设组 / 设音量 / 连接(broker)。仅对本机
+        device_id 生效,缺省字段不动。改动持久化,重启后保留。连接字段变更后
+        写盘并重建 transport;psk 要求入站帧已签名(sig 非空)。"""
         if payload.get("device_id") != self.device_id:
             return
         name = payload.get("device_name")
@@ -1047,6 +1053,140 @@ class Player:
         if isinstance(vol, (int, float)):
             self.volume = max(0, min(100, int(vol)))
             await self._mpv("set_volume", self.volume)
+        muted = payload.get("muted")
+        if isinstance(muted, bool):
+            self.muted = muted
+            await self._mpv("set_mute", self.muted)
+
+        transport_dirty = False
+        if "broker_host" in payload:
+            host = payload.get("broker_host")
+            host_s = host.strip() if isinstance(host, str) else ""
+            if not host_s:
+                self.state.clear_broker()
+                # restore auto-discovery path and drop forced host from cfg
+                broker = self.cfg.raw.setdefault("broker", {})
+                broker["host"] = ""
+                topo = self.cfg.raw.setdefault("topology", {})
+                topo["auto"] = True
+                transport_dirty = True
+            else:
+                port = payload.get("broker_port")
+                port_i = int(port) if isinstance(port, (int, float)) else None
+                use_wss = payload.get("use_wss")
+                use_wss_b = bool(use_wss) if isinstance(use_wss, bool) else None
+                self.state.set_broker(host=host_s, port=port_i, use_wss=use_wss_b)
+                transport_dirty = True
+        else:
+            # port / wss alone still apply when host already set
+            if "broker_port" in payload or "use_wss" in payload:
+                port = payload.get("broker_port")
+                port_i = int(port) if isinstance(port, (int, float)) else None
+                use_wss = payload.get("use_wss")
+                use_wss_b = bool(use_wss) if isinstance(use_wss, bool) else None
+                if self.state.broker_host or port_i is not None:
+                    self.state.set_broker(
+                        host=self.state.broker_host,
+                        port=port_i,
+                        use_wss=use_wss_b,
+                    )
+                    transport_dirty = True
+        if "psk" in payload:
+            # Windows envelopes don't carry env.authed; require a non-empty sig.
+            sig = env.get("sig") if isinstance(env, dict) else None
+            if not sig:
+                log.warning("configure_device psk rejected: frame not signed")
+            else:
+                psk = payload.get("psk")
+                if isinstance(psk, str):
+                    next_psk = psk if psk.strip() else None
+                    if next_psk:
+                        self.state.set_psk(next_psk)
+                    else:
+                        self.state.set_psk("")
+                    transport_dirty = True
+
+        if transport_dirty:
+            config_mod.apply_state_transport(self.cfg, self.state)
+            # AuthState keeps its own psk copy — refresh from cfg after overlay.
+            try:
+                self.auth.psk = self.cfg.psk  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            log.info(
+                "configure_device transport dirty host=%s port=%s wss=%s",
+                self.cfg.get("broker", "host"),
+                self.cfg.get("broker", "port"),
+                self.cfg.get("broker", "use_wss"),
+            )
+            asyncio.create_task(self._rebuild_transport())
+
+    async def _rebuild_transport(self) -> None:
+        """Stop the live WS/discovery link and re-bootstrap from current cfg.
+
+        status/thumbnail/kiosk loops keep running; only the coordinator link
+        is replaced so a remote broker_host change takes effect without a
+        process restart.
+        """
+        async with self._transport_rebuild_lock:
+            old_ws = self.ws
+            old_ws_task = self._ws_task
+            try:
+                if self.discovery is not None:
+                    try:
+                        self.discovery.stop()
+                    except Exception:
+                        pass
+                    self.discovery = None
+                if old_ws is not None:
+                    try:
+                        await old_ws.stop()
+                    except Exception:
+                        pass
+                if old_ws_task is not None and not old_ws_task.done():
+                    old_ws_task.cancel()
+                    try:
+                        await old_ws_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                self.ws = None
+                self._ws_task = None
+                self.controller_present = bool(
+                    self.cfg.get("thumbnail", "always_collect", default=False))
+                self.decision = await asyncio.to_thread(self._discover_decision)
+                self.ws = self._build_transport(self.decision)
+                # refresh discovery advertisement for the new topology
+                self._restart_discovery_only()
+                self._ws_task = asyncio.create_task(self.ws.run(), name="ws")
+            except Exception as exc:
+                log.exception("transport rebuild failed: %s", exc)
+                self._errors.append(f"transport_rebuild:{type(exc).__name__}")
+
+    def _restart_discovery_only(self) -> None:
+        """Re-bind DiscoveryResponder after a transport rebuild (§14)."""
+        if DiscoveryResponder is None:
+            return
+        if not self.cfg.get("discovery", "enabled", default=True):
+            return
+        decision = self.decision
+        topo = decision.topology if decision else "dedicated"
+        if decision is not None and topo in (topology_mod.COHOSTED, topology_mod.P2P):
+            port = decision.listen_port or decision.port or 8770
+            bh = f"{self.ip}:{port}"
+        else:
+            host = decision.host if decision is not None else \
+                self.cfg.get("broker", "host")
+            port = decision.port if decision is not None else \
+                self.cfg.get("broker", "port")
+            bh = f"{host}:{port}"
+        self.discovery = DiscoveryResponder(
+            psk=self.cfg.psk, device_id=self.device_id,
+            device_name=self.device_name, ip=self.ip, broker_hint=bh,
+            port=int(self.cfg.get("discovery", "udp_port", default=8772)),
+            auth_mode=self.auth.mode, topology=topo,
+            key_mode=self.auth.key_mode, device_key=self.auth.device_key,
+            verify_keys=self.auth.verify_keys)
+        self.discovery.start()
 
     async def _h_resume_last(self, payload, env) -> None:
         await self._resume_last()
@@ -1161,8 +1301,9 @@ class Player:
         self.start_os_subsystems()
         # apply persisted volume/mute to mpv up front
         await self._mpv("set_volume", self.volume)
+        self._ws_task = asyncio.create_task(self.ws.run(), name="ws")
         tasks = [
-            asyncio.create_task(self.ws.run(), name="ws"),
+            self._ws_task,
             asyncio.create_task(self.status_loop(), name="status"),
             asyncio.create_task(self.thumbnail_loop(), name="thumb"),
             asyncio.create_task(self.kiosk_loop(), name="kiosk"),

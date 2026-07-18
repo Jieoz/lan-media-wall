@@ -694,12 +694,19 @@ class Commands {
       };
 
   /// configure_device（§19）：per-device 配置统一入口（只传要改的字段）。
+  /// 连接字段 broker_host/broker_port/use_wss/psk 可选；空 host 清空回发现/P2P。
+  /// PSK 变更要求已鉴权链路，播放端会拒 open 帧改密钥。
   static Map<String, dynamic> configureDevice({
     required String deviceId,
     String? deviceName,
     String? groupId,
     int? volume,
     bool? muted,
+    String? brokerHost,
+    int? brokerPort,
+    bool? useWss,
+    String? psk,
+    bool clearBroker = false,
   }) =>
       {
         'device_id': deviceId,
@@ -707,6 +714,13 @@ class Commands {
         if (groupId != null) 'group_id': groupId,
         if (volume != null) 'volume': volume.clamp(0, 100),
         if (muted != null) 'muted': muted,
+        if (clearBroker)
+          'broker_host': ''
+        else if (brokerHost != null)
+          'broker_host': brokerHost,
+        if (brokerPort != null) 'broker_port': brokerPort,
+        if (useWss != null) 'use_wss': useWss,
+        if (psk != null) 'psk': psk,
       };
 
   /// update_app（§23）：令目标被控端自更新到 [url] 指向的 APK。

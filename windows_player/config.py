@@ -179,6 +179,29 @@ def load_config(path: Optional[str] = None) -> Config:
     return Config(raw=raw, path=resolved)
 
 
+def apply_state_transport(cfg: Config, state: "PersistentState") -> None:
+    """Overlay §19 remote broker overrides from PersistentState onto cfg.raw.
+
+    A non-empty broker_host forces dedicated mode (topology.auto=False) so the
+    next transport bootstrap dials that host instead of re-discovering.
+    Empty state is a no-op (yaml defaults / previous runtime cfg stay put).
+    Explicit clear is done by the configure_device handler before rebuild.
+    """
+    host = state.broker_host
+    if host:
+        broker = cfg.raw.setdefault("broker", {})
+        broker["host"] = host
+        if state.broker_port is not None:
+            broker["port"] = state.broker_port
+        if state.use_wss is not None:
+            broker["use_wss"] = state.use_wss
+        topo = cfg.raw.setdefault("topology", {})
+        topo["auto"] = False
+    psk = state.psk_override
+    if psk:
+        cfg.raw["psk"] = psk
+
+
 def apply_pairing(cfg: Config, overlay: Dict[str, Any]) -> Config:
     """Deep-merge a pairing overlay (from pairing.pairing_to_config_overlay)
     onto a loaded Config, in place. Returns the same Config for chaining.
@@ -261,6 +284,56 @@ class PersistentState:
 
     def set_group_id(self, group_id: str) -> None:
         self.data["group_id"] = group_id
+        self.save()
+
+    # --- §19 transport overrides (remote configure_device) -------------
+    @property
+    def broker_host(self) -> Optional[str]:
+        host = self.data.get("broker_host")
+        return host if isinstance(host, str) else None
+
+    @property
+    def broker_port(self) -> Optional[int]:
+        port = self.data.get("broker_port")
+        return int(port) if isinstance(port, (int, float)) else None
+
+    @property
+    def use_wss(self) -> Optional[bool]:
+        val = self.data.get("use_wss")
+        return bool(val) if isinstance(val, bool) else None
+
+    @property
+    def psk_override(self) -> Optional[str]:
+        psk = self.data.get("psk")
+        return psk if isinstance(psk, str) and psk else None
+
+    def set_broker(self, *, host: Optional[str] = None, port: Optional[int] = None,
+                   use_wss: Optional[bool] = None) -> None:
+        """Persist broker host/port/wss overrides. host=\"\" clears the override."""
+        if host is not None:
+            if host.strip():
+                self.data["broker_host"] = host.strip()
+            else:
+                self.data.pop("broker_host", None)
+                self.data.pop("broker_port", None)
+                self.data.pop("use_wss", None)
+        if port is not None and 1 <= int(port) <= 65535:
+            self.data["broker_port"] = int(port)
+        if use_wss is not None:
+            self.data["use_wss"] = bool(use_wss)
+        self.save()
+
+    def clear_broker(self) -> None:
+        self.data.pop("broker_host", None)
+        self.data.pop("broker_port", None)
+        self.data.pop("use_wss", None)
+        self.save()
+
+    def set_psk(self, psk: str) -> None:
+        if psk:
+            self.data["psk"] = psk
+        else:
+            self.data.pop("psk", None)
         self.save()
 
     @property
