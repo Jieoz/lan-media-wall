@@ -1,5 +1,14 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.17.4 — 播放体验 + 远程 broker 配置:**勾选清理缓存不再因
+> `LiveCacheBackend.PlayerView.cacheSummary()` 同名自递归 StackOverflow
+> (改为调用外层 `buildCacheSummaryMap()`)。API19 单解码器切媒体用近全屏冻结
+> JPEG(`TRANSITION_FREEZE_MAX_WIDTH=1280` + `cachedFreezeFrame` /
+> `showTransitionFrame`)盖空窗,不是双 VDEC 零缝。设置页绑定物理「回主页」
+> (`KEYCODE_SETTINGS`=176)回墙。`configure_device` 接受 `broker_host` /
+> `broker_port` / `use_wss` / `psk`(空 host 清空回发现/P2P);写盘后只重建
+> transport,不叠 status/thumbnail 循环;PSK 需鉴权帧。
+>
 > **v1.17.1-field-fix — 无 ADB 通用取证(takeover forensics):**现场盒子无 ADB、
 > 竞品 OEM 播放器开机自启且手动退出后又抢屏。一键诊断导出新增 `===== takeover_forensics =====`
 > 段(`player/diag/TakeoverForensics.kt`,**只读、绝不抛异常**),用于设计逐台投屏接管:

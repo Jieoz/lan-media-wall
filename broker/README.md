@@ -12,6 +12,14 @@ This implements the broker-side responsibilities of
 field names and semantics here follow it exactly.
 
 
+## v1.17.4 — configure_device transport fields
+
+`_on_configure_device` forwards optional `broker_host` / `broker_port` /
+`use_wss` / `psk` to the target player unchanged (same §19 unicast path as
+name/group/volume). Empty `broker_host` is a deliberate clear-to-discovery
+signal; the broker does not interpret transport fields itself. Spec:
+`protocol_spec.md` §19.
+
 ## v1.17.0 — cache cleanup / inventory routing
 
 Phase B routes the cache-lifecycle control plane through the broker without

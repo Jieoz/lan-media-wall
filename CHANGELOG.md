@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.17.4] — 2026-07-18
+
+- Player experience + remote configure closeout (versionCode **1174**, versionName `1.17.4`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.4+1174`). Mapping: `versionCode = major×1000 + minor×10 + patch`.
+  - **Player — selected cache cleanup StackOverflow.** `PlayerService` `LiveCacheBackend.PlayerView.cacheSummary()` no longer self-recurses (Kotlin same-name resolution); it calls outer `buildCacheSummaryMap()`, so cleanup `summary_after` no longer kills the process.
+  - **Player — seamless transition P0.** Near-fullscreen freeze JPEG (`TRANSITION_FREEZE_MAX_WIDTH=1280`) + `cachedFreezeFrame` / `showTransitionFrame` cover the single-decoder swap gap on API19 SurfaceView; `showImage` carries `itemId` for freeze association. Not dual-VDEC zero-seam.
+  - **Player — settings remote-home key.** `SettingsActivity` binds QZX_C1-class physical “回主页” (`KEYCODE_SETTINGS`=176) to return to the wall.
+  - **§19 configure_device transport fields.** Controller can push `broker_host` / `broker_port` / `use_wss` / `psk` (or clear host → discovery/P2P) with strong UI confirm; Android/Windows persist then **rebuild transport without stacking status/thumbnail loops**; PSK requires authenticated/signed frames. `protocol_spec` §19 + Windows tests extended.
+
 ## [v1.17.3] — 2026-07-17
 
 - Operator UX polish + **intuitive upgrade versionCode** (versionCode **1173**, versionName `1.17.3`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.3+1173`). Mapping: `versionCode = major×1000 + minor×10 + patch` (e.g. **v1.17.2 → 1172**, **v1.17.3 → 1173**). Legacy small codes (69–72) remain accepted as bare integers for older boxes.
@@ -18,12 +26,6 @@
   - **Player — takeover shortcuts.** Settings screen adds「打开电池白名单/自启」and「选择默认桌面/HOME」system-intent buttons (no silent `pm disable`) plus live `battery_ignored` / `we_are_default_home` status under diagnostics export.
 
 ## [Unreleased]
-
-- Player experience + remote configure closeout (no version bump yet):
-  - **Player — selected cache cleanup StackOverflow.** `PlayerService` `LiveCacheBackend.PlayerView.cacheSummary()` no longer self-recurses (Kotlin same-name resolution); it calls outer `buildCacheSummaryMap()`, so cleanup `summary_after` no longer kills the process.
-  - **Player — seamless transition P0.** Near-fullscreen freeze JPEG (`TRANSITION_FREEZE_MAX_WIDTH=1280`) + `cachedFreezeFrame` / `showTransitionFrame` cover the single-decoder swap gap on API19 SurfaceView; `showImage` carries `itemId` for freeze association. Not dual-VDEC zero-seam.
-  - **Player — settings remote-home key.** `SettingsActivity` binds QZX_C1-class physical “回主页” (`KEYCODE_SETTINGS`=176) to return to the wall.
-  - **§19 configure_device transport fields.** Controller can push `broker_host` / `broker_port` / `use_wss` / `psk` (or clear host → discovery/P2P) with strong UI confirm; Android/Windows persist then **rebuild transport without stacking status/thumbnail loops**; PSK requires authenticated/signed frames. `protocol_spec` §19 + Windows tests extended.
 
 - field-fix (versionCode **71**, versionName `1.17.1-field-fix`): one combined field build closing two operator gaps, single-sourced from `remote_flutter/pubspec.yaml` (`1.17.1-field-fix+71`, strictly newer than boot-probe 70 / formal 69 / field 67); the controller rebuilds too. No change to the 69 OTA/install logic or the 70 `boot_audit` work.
   - **Controller — group playlist read-back.** The orchestration pane could only import a playlist from a *single* device; selecting a group never filled the draft, so operators reported "group playlist cannot be fetched". A new **「载入分组当前清单」** button under the retitled **目标分组（推送/同步目标）** section picks a representative from the group's online members and loads its exact ordered `active_playlist` into the editable draft. Representative policy (pure, in `lib/state/group_playlist_load.dart`): prefer a member whose `active_playlist.group_id` matches the selected group, else any online member with a non-empty active playlist, tie-broken by `playing`/`buffering` over `idle`, then lexicographic `device_id`. The load reports the truth rather than hiding divergence: a per-member fingerprint (`playlist_id` + ordered `item_id` join) is compared against the representative and the snackbar states how many online members are consistent / divergent / missing an active playlist (e.g. `已从代表 and-xxx 载入；组内 2 台一致、1 台不同、1 台未上报`). The single-device path (now **单台当前播放列表（精确回读某一台）**) is unchanged. No new wire types — it reads the existing `status.active_playlist`.
