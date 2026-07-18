@@ -163,6 +163,20 @@ static void test_legacy_install_contract(void) {
     CHECK(lmw_legacy_target_mode() == 0644, "legacy target mode is 0644");
     CHECK(lmw_legacy_backup_state(0) == BACKUP_ABSENT, "missing backup is clean state");
     CHECK(lmw_legacy_backup_state(1) == BACKUP_PENDING_COMMIT, "existing backup remains pending commit");
+    // §field-and-b2b90f28f7: second OTA after a successful legacy stage must
+    // auto-commit the leftover backup (target+backup both present), not fail.
+    CHECK(lmw_legacy_should_commit_stale_backup(1, 1) == 1,
+          "live target + leftover backup → commit before re-stage");
+    CHECK(lmw_legacy_should_commit_stale_backup(1, 0) == 0,
+          "clean live target needs no commit");
+    CHECK(lmw_legacy_should_commit_stale_backup(0, 1) == 0,
+          "orphan backup is restore, not commit");
+    CHECK(lmw_legacy_should_restore_orphan_backup(0, 1) == 1,
+          "backup without target → restore first");
+    CHECK(lmw_legacy_should_restore_orphan_backup(1, 1) == 0,
+          "both present is not an orphan restore");
+    CHECK(lmw_legacy_should_restore_orphan_backup(0, 0) == 0,
+          "nothing to restore");
 
     char tmpl[] = "/tmp/lmw_backup_XXXXXX";
     int fd = mkstemp(tmpl);

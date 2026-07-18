@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.17.6] — 2026-07-18
+
+- Field fix for **second legacy OTA on and-b2b90f28f7-class boxes** (versionCode **1176**, versionName `1.17.6`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.6+1176`). Mapping: `versionCode = major×1000 + minor×10 + patch`.
+  - **Root daemon — leftover `.lmw-backup` no longer permanently blocks re-stage.** First legacy activation (`legacy_staged` / `legacy_activation_dispatched`) leaves `/data/app/<pkg>-1.apk.lmw-backup` until commit. The daemon never auto-committed after reboot, so the next remote push hit fail-closed `legacy_activation_failed` even though the first OTA had worked. `lmw_legacy_stage` now auto-commits when target+backup both exist, restores orphan backup when target is missing, then stages the new APK. Host unit tests lock the pure commit/restore decision.
+  - **Ops note:** install logic lives in `/system/xbin/lmw_root_daemon`. Boxes that already took a legacy path (e.g. `and-b2b90f28f7` on 1174) need **QZX Update Tools / `lmw_setup`** (or push the new daemon ELF) before another remote OTA; APK-only is not enough for this fix. Temporary operator workaround on a stuck box: delete `/data/app/com.jieoz.lanmediawall.player-1.apk.lmw-backup` as root, then retry.
+
 ## [v1.17.5] — 2026-07-18
 
 - Field closeout for **remote rename** + **push-upgrade on fail-class boxes** (versionCode **1175**, versionName `1.17.5`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.17.5+1175`). Mapping: `versionCode = major×1000 + minor×10 + patch`.

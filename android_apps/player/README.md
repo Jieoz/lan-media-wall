@@ -1,5 +1,10 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.17.6 — 二次 legacy OTA:**成功 stage 留下的 `.lmw-backup` 不再永久
+> 挡下一次远程升级(`legacy_activation_failed`)。daemon 在 re-stage 前自动
+> commit( target+backup 都在 ) / restore( 仅 backup )。**已走过 legacy 的
+> 盒子需重装新 `lmw_root_daemon`(QZX Update Tools / `lmw_setup`),只推 APK 不够。**
+>
 > **v1.17.5 — 远程改名回显 + 推送升级诚实判定:**`status` 带上 `device_name`
 > (§5.1/§5.2);`configure_device` 改名后热更新 Discovery announce,并立即
 > `sendStatus`,控制端设备墙不再卡在 `device_id`。root 守护进程以 `pm` 的

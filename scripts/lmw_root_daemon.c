@@ -356,6 +356,19 @@ static const char *lmw_legacy_backup_path(void) { return LMW_LEGACY_BACKUP_APK; 
 static mode_t lmw_legacy_target_mode(void) { return 0644; }
 
 typedef enum { BACKUP_ABSENT = 0, BACKUP_PENDING_COMMIT = 1 } lmw_backup_state;
+// Pure: should a leftover backup from a previous COMPLETED stage be deleted
+// before starting a new stage? target+backup both present means the new APK is
+// already live and the backup is only the pre-upgrade copy waiting for commit.
+// Blocking here permanently bricks the second OTA on legacy-path boxes
+// (§field-and-b2b90f28f7: 1174→1175 → legacy_activation_failed).
+static int lmw_legacy_should_commit_stale_backup(int target_exists, int backup_exists) {
+    return target_exists && backup_exists;
+}
+// Pure: target missing but backup present means a prior stage crashed after
+// target→backup and before temp→target; restore first.
+static int lmw_legacy_should_restore_orphan_backup(int target_exists, int backup_exists) {
+    return !target_exists && backup_exists;
+}
 #ifdef LMW_DAEMON_TEST
 static lmw_backup_state lmw_legacy_backup_state(int backup_exists) {
     return backup_exists ? BACKUP_PENDING_COMMIT : BACKUP_ABSENT;
@@ -374,16 +387,31 @@ static int lmw_copy_regular(const char *src, const char *dst);
 // Stage for the boot package scanner without ever uninstalling. The existing APK
 // is moved to a fixed backup first; every later failure restores it. The new APK
 // is copied/chmodded under a temporary name and atomically renamed into place.
+//
+// Field reality (§field-and-b2b90f28f7): a successful legacy stage leaves
+// `.lmw-backup` until an explicit commit. The daemon historically never auto-
+// committed after reboot, so the SECOND remote OTA hit "stale backup → fail
+// closed" and returned legacy_activation_failed even though the first OTA had
+// worked. Heal that before staging again.
 static int lmw_legacy_stage(const char *verified_apk) {
     struct stat oldst;
+    // Incomplete prior transaction: backup without target → restore first.
+    if (lmw_legacy_should_restore_orphan_backup(
+            lstat(lmw_legacy_target_path(), &oldst) == 0,
+            access(lmw_legacy_backup_path(), F_OK) == 0)) {
+        if (rename(lmw_legacy_backup_path(), lmw_legacy_target_path()) != 0) return 0;
+    }
     int had_old = lstat(lmw_legacy_target_path(), &oldst) == 0;
     if (had_old && (!S_ISREG(oldst.st_mode) || S_ISLNK(oldst.st_mode))) return 0;
     if (unlink(lmw_legacy_temp_path()) != 0 && errno != ENOENT) return 0;
     if (lmw_copy_regular(verified_apk, lmw_legacy_temp_path()) != 0) goto fail;
     if (chmod(lmw_legacy_temp_path(), lmw_legacy_target_mode()) != 0) goto fail;
-    // Never destroy the only backup. A stale backup makes the transaction fail
-    // closed and requires operator inspection.
-    if (had_old && access(lmw_legacy_backup_path(), F_OK) == 0) goto fail;
+    // Previous successful stage left a backup. Commit it so this new stage can
+    // take a fresh backup of the currently-live APK. Do NOT fail-closed forever.
+    if (lmw_legacy_should_commit_stale_backup(
+            had_old, access(lmw_legacy_backup_path(), F_OK) == 0)) {
+        if (unlink(lmw_legacy_backup_path()) != 0) goto fail;
+    }
     if (had_old && rename(lmw_legacy_target_path(), lmw_legacy_backup_path()) != 0) goto fail;
     if (rename(lmw_legacy_temp_path(), lmw_legacy_target_path()) != 0) goto restore;
     sync();
@@ -953,7 +981,9 @@ static void lmw_handle_install(int fd, const char *path) {
         if (action == INSTALL_LEGACY_STAGE) {
             if (!lmw_legacy_stage(path)) {
                 unlink(LMW_STAGED_APK);
-                dprintf(fd, "error install legacy_activation_failed\n");
+                // Keep a greppable reason — field logs previously only saw the
+                // bare token, which hid stale-backup vs copy/chmod failures.
+                dprintf(fd, "error install legacy_activation_failed detail=stage\n");
                 return;
             }
             unlink(LMW_STAGED_APK);

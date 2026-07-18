@@ -1,5 +1,8 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.17.6 — 版本对齐:**与全端 `1.17.6+1176` 同步(本端无 OTA daemon 变更;
+> Android 二次 legacy OTA 见 player/daemon 说明)。
+>
 > **v1.17.5 — 远程改名回显:**`status` 上报 `device_name`;`configure_device`
 > 改名后 `DiscoveryResponder.update_name` + 立即 `_send_status`,控制端墙面
 > 不再卡在 `device_id`。回归见 `tests/test_configure_and_barrier.py`。

@@ -1,9 +1,9 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.17.5+1175: remote rename wall-echo + OTA pm Success/detail fix.
+# v1.17.6+1176: second legacy OTA no longer bricks on leftover .lmw-backup.
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.17.5+1175
+version: 1.17.6+1176
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

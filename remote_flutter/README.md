@@ -1,5 +1,10 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.17.6：二次 legacy OTA 不再因残留 `.lmw-backup` 永久失败。**root
+> 守护进程 re-stage 前自动 commit/restore leftover backup。已走过 legacy 的
+> 盒子需 QZX Update Tools 重装 daemon。版本随全端单一真相源
+> `pubspec.yaml` = `1.17.6+1176`。
+>
 > **v1.17.5：远程改名墙面回显 + 推送升级诚实路径。**播放端 `status` 现带
 > `device_name`,改名后设备墙立刻显示新名(控制端既有 `configureDevice` 无需改
 > 协议)。同版 root 守护进程修 4.4 上 `pm` Success/exit 误判与 `pkg:`-only
