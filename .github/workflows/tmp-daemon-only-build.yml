@@ -1,0 +1,85 @@
+# ============================================================================
+# TEMPORARY WORKFLOW — daemon-only cloud build for the OTA pm fix.
+#
+# Purpose: produce ONE artifact — the cross-compiled armv7 Android root daemon
+#          (scripts/lmw_root_daemon.c) — so it can be pulled from the cloud
+#          without a local Android/NDK toolchain.
+#
+# Scope (intentionally minimal):
+#   * Does NOT build Flutter/Android APKs, Windows tools, or the QZX ZIP.
+#   * Does NOT cut releases, push tags, or touch any product source files.
+#   * Only compiles/runs the daemon host test + cross-compiles the daemon.
+#
+# SAFE TO DELETE once the artifact "lan-media-wall-daemon-ota-pm-fix" has been
+# retrieved. This file exists solely on branch chore/ota-pm-yunos-daemon-cloud.
+# ============================================================================
+name: tmp-daemon-only-build
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  daemon:
+    name: Build armv7 root daemon (temporary)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current commit
+        uses: actions/checkout@v4
+
+      - name: Host unit test (gcc, x86_64)
+        shell: bash
+        run: |
+          # Locks the daemon parser + root-socket security policy. A regression
+          # here fails the build before we ship the cross-compiled binary.
+          gcc -DLMW_DAEMON_TEST -Wall -Wextra -Werror \
+            -o /tmp/tdaemon scripts/tests/test_lmw_root_daemon.c
+          /tmp/tdaemon
+
+      - name: Install Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          local-cache: false
+
+      - name: Cross-compile armv7 static non-PIE daemon
+        shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          # FULLY STATIC + NON-PIE for API19 bionic: a dynamic build resolves
+          # libc against the DEVICE bionic at exec time, and API19 does not
+          # export some symbols modern NDK headers reference (signal) -> the
+          # daemon never starts. Static carries its own libc. -fno-PIE (not
+          # -no-pie, which -static makes a link-only no-op that -Werror rejects)
+          # fixes codegen to a classic non-PIE ET_EXEC.
+          NDK_BIN="$(find "$ANDROID_NDK_HOME" -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin' -type d | sort | tail -1)"
+          if [ -z "$NDK_BIN" ]; then
+            echo "::error::Android NDK linux-x86_64 toolchain not found" >&2
+            exit 1
+          fi
+          CC="$NDK_BIN/armv7a-linux-androideabi21-clang"
+          "$CC" -Os -static -fno-PIE -Wall -Wextra -Werror -s \
+            -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
+          file scripts/lmw_root_daemon
+          # Expose the NDK's llvm-readelf so the ELF gate inspects the arm binary
+          # with an arch-aware reader.
+          echo "$NDK_BIN" >> "$GITHUB_PATH"
+
+      - name: Validate daemon ELF (API19 ship gate)
+        shell: bash
+        run: |
+          # Fails the build unless the armv7 binary is fully static (no
+          # PT_INTERP / DT_NEEDED) and free of API19-unsafe undefined symbols.
+          bash scripts/check_daemon_elf.sh scripts/lmw_root_daemon
+
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-daemon-ota-pm-fix
+          path: scripts/lmw_root_daemon
+          if-no-files-found: error
+          retention-days: 7
