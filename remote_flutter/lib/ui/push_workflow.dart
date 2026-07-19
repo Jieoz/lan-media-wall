@@ -4,7 +4,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../protocol/envelope.dart';
-import '../protocol/loop_mode.dart';
 import '../protocol/messages.dart';
 import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';

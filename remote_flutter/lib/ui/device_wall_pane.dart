@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../protocol/auth_mode.dart';
-import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
 import 'cache_management.dart';
