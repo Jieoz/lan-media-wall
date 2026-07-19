@@ -10,6 +10,7 @@ import '../state/group_playlist_load.dart';
 import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 import 'dwell_picker.dart';
+import 'push_workflow.dart';
 
 /// 播放编排栏(设计合同 §4.1 右栏) —— 主工作区。
 ///
@@ -193,49 +194,24 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         const SizedBox(width: 8),
         FilledButton.icon(
           icon: const Icon(Icons.send),
-          label: const Text('下发到此设备'),
-          onPressed: _deviceId == null
+          label: const Text('推送到此设备'),
+          onPressed: _deviceId == null || _draft.isEmpty
               ? null
-              : () async {
+              // §C 统一工作流：编排栏「推送到此设备」与设备卡「推送内容」共用同一对话框，
+              // 用当前草稿作种子；最终二选一 仅下发并缓存 / 缓存完成后播放。
+              : () {
                   final d = state.wallDevices
                       .where((item) => item.deviceId == _deviceId)
                       .firstOrNull;
-                  final name = d?.deviceName.isNotEmpty == true
-                      ? d!.deviceName
-                      : (_deviceId ?? '');
-                  final ok = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: Text('下发到「$name」?'),
-                      content: const Text(
-                        '将用当前草稿整列替换该机播放列表并开始缓存（不自动起播）。'
-                        '不会删除已缓存文件。',
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx, false),
-                          child: const Text('取消'),
-                        ),
-                        FilledButton(
-                          onPressed: () => Navigator.pop(ctx, true),
-                          child: const Text('确认下发'),
-                        ),
-                      ],
-                    ),
+                  if (d == null) return;
+                  showPushToDeviceDialog(
+                    context,
+                    state,
+                    d,
+                    seedItems: _draft.items,
+                    seedLoopMode: _draft.loopMode,
+                    seedSync: _draft.sync,
                   );
-                  if (ok != true) return;
-                  final group = d?.status?.groupId ?? _groupId ?? '';
-                  state.sendPlaylist(
-                    playlistId: _draft.playlistId ?? _newPlaylistId(),
-                    groupId: group,
-                    sync: _draft.sync,
-                    loopMode: _draft.loopMode,
-                    items: _draft.items,
-                    mode: 'replace',
-                    deviceId: _deviceId,
-                  );
-                  state.cachePrefetch(_draft.items, deviceId: _deviceId);
-                  _toast('已下发到 $name 并开始缓存；未删除缓存文件');
                 },
         ),
       ]),
@@ -315,7 +291,7 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
             onPressed: () => _addUrlDialog('video'),
           ),
           IconButton(
-            tooltip: '清空列表',
+            tooltip: '清空本地草稿',
             icon: const Icon(Icons.clear_all),
             onPressed: _draft.isEmpty || _uploading ? null : _clearDraft,
           ),
@@ -442,8 +418,9 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 onPressed: _canSend ? () => _doAppend(state) : null,
               ),
               OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
                 icon: const Icon(Icons.stop_circle_outlined),
-                label: const Text('清空列表并停播'),
+                label: const Text('停止播放并清空设备列表'),
                 onPressed: _groupId == null
                     ? null
                     : () => _doClearRemote(state),
@@ -602,26 +579,74 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
     ));
   }
 
+  /// §D 纯本地动作：清空本地草稿，绝不触碰任何设备（措辞明确「未改动任何设备」）。
   void _clearDraft() {
     _draft.clear();
     _draft.detachPlaylistId();
-    _toast('已清空编辑列表(未改动任何设备)');
+    _toast('已清空本地草稿(未改动任何设备)');
   }
 
-  /// §6.3a 清空被控端 ACTIVE 播放列表:下发空列表 replace。播放器据此停播、回到
-  /// 黑屏/占位安全态、清当前索引与任务持久化,但**不删除已缓存的媒体文件**。
-  void _doClearRemote(WallState state) {
+  /// §6.3a / §D 停止播放并清空被控端 ACTIVE 播放列表(高危,红色二次确认):下发空
+  /// 列表 replace。播放器据此停播、回黑屏/占位安全态、清当前索引与任务持久化,但
+  /// **不删除已缓存的媒体文件**。确认弹窗如实写明:精确目标(该设备 / 该组 + 已知在线
+  /// 台数)、效果(停播 + 黑屏 + 清列表)、缓存保留;确认键 `停止并清空 …`。下发后回执
+  /// 「命令已发送，等待设备确认」,绝不在 ACK 前声称 已清空/已停止。
+  Future<void> _doClearRemote(WallState state) async {
+    final groupId = _groupId;
+    if (groupId == null) return;
+    // 精确目标与已知在线台数(单台入口锁定该台;整组入口数在线成员)。
+    final String targetLabel;
+    final int onlineCount;
+    if (_deviceId != null) {
+      final d = state.wallDevices
+          .where((item) => item.deviceId == _deviceId)
+          .firstOrNull;
+      final name = d == null || d.deviceName.isEmpty
+          ? (_deviceId ?? '')
+          : d.deviceName;
+      targetLabel = '该设备「$name」';
+      onlineCount = (d?.status?.online == true) ? 1 : 0;
+    } else {
+      final g = state.groupById(groupId);
+      final gname = g == null || g.name.isEmpty ? groupId : g.name;
+      onlineCount =
+          state.membersOf(groupId).where((m) => m.online).length;
+      targetLabel = '该组「$gname」';
+    }
+    final confirmLabel = '停止并清空$targetLabel';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('停止播放并清空$targetLabel?'),
+        content: Text(
+          '将向$targetLabel(当前已知在线 $onlineCount 台)下发停止播放并清空设备列表:'
+          '播放器会停播、回到黑屏并清除当前播放列表与索引。\n'
+          '已缓存到盒子本地的媒体文件不会删除。此操作需要设备执行后才真正生效。',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
     try {
       state.sendPlaylist(
         playlistId: _draft.playlistId ?? _newPlaylistId(),
-        groupId: _groupId!,
+        groupId: groupId,
         sync: _draft.sync,
         loopMode: _draft.loopMode,
         items: const [],
         mode: 'replace',
         deviceId: _deviceId,
       );
-      _toast('已清空${_deviceId == null ? "整组" : "该设备"}播放列表并回到黑屏;缓存文件保留');
+      _toast(sentAwaitingAck('$confirmLabel(缓存文件保留)'));
     } catch (e) {
       _toast('清空失败: $e');
     }
@@ -683,7 +708,8 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
         deviceId: _deviceId,
       );
       state.cachePrefetch(items, groupId: _groupId, deviceId: _deviceId);
-      _toast('已追加 ${items.length} 项到${_deviceId == null ? "整组" : "该设备"}当前列表(按 item_id 去重)');
+      _toast(sentAwaitingAck(
+          '追加 ${items.length} 项到${_deviceId == null ? "整组" : "该设备"}当前列表(按 item_id 去重)'));
     } catch (e) {
       _toast('追加失败: $e');
     }

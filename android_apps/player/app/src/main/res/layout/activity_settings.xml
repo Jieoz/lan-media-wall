@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- §F operator-UX rebuild: PRIMARY 播放端设置 card first (identity / connection /
+     pairing QR / save), then a collapsed 高级网络与诊断 section (broker/WSS/PSK,
+     hardware/self-check, diagnostics, root daemon, export, reset). The advanced
+     block is API19-safe: a plain Button flips advanced_container GONE/VISIBLE, no
+     androidx expandable widget (preserves the 4.4 target). Pairing QR sits BEFORE
+     any diagnostics. Primary visible labels are Chinese/operator-facing; raw
+     tokens/English stay in the collapsed diagnostics + export. -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -30,8 +37,13 @@
             android:textSize="14sp"
             android:paddingBottom="16dp" />
 
-        <!-- §2 zero-config status: LAN IP / device_id / group so the operator
-             can eyeball-verify this box before pairing. -->
+        <!-- ===== PRIMARY: 播放端设置 (device access card) ===== -->
+        <TextView style="@style/SettingLabel"
+            android:text="@string/label_player_access"
+            android:textSize="16sp" />
+
+        <!-- §2 zero-config status: LAN IP / device_id / group / version so the
+             operator can eyeball-verify this box before pairing. -->
         <TextView
             android:id="@+id/text_device_info"
             android:layout_width="match_parent"
@@ -40,41 +52,8 @@
             android:textSize="13sp"
             android:paddingBottom="12dp" />
 
-        <!-- §takeover: 现场一次性接管置顶（默认桌面 + 电池/自启） -->
-        <TextView style="@style/SettingLabel" android:text="@string/label_takeover_section" />
-        <!-- No-ADB field takeover: open system screens the operator must set once.
-             Never silent pm-disable; only system settings intents. -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/idle_text"
-            android:textSize="12sp"
-            android:paddingTop="4dp"
-            android:text="@string/takeover_shortcuts_hint" />
-        <Button
-            android:id="@+id/btn_open_battery"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/action_open_battery" />
-        <Button
-            android:id="@+id/btn_open_home"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/action_open_home" />
-        <TextView
-            android:id="@+id/text_takeover_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/idle_text"
-            android:textSize="12sp"
-            android:paddingTop="4dp"
-            android:paddingBottom="8dp"
-            android:textIsSelectable="true" />
-
-        <!-- §2 一眼可核对: connection status + hardware self-check + junk-package
-             warning, grouped at the top so a screenshot tells the whole story. -->
+        <!-- §2 connection status (primary): what the transport is doing right now,
+             plus a one-tap 刷新连接 that re-selects the transport. -->
         <TextView style="@style/SettingLabel" android:text="@string/label_conn_status" />
         <TextView
             android:id="@+id/text_conn_status"
@@ -83,131 +62,12 @@
             android:textColor="@color/accent"
             android:textSize="13sp"
             android:paddingBottom="8dp" />
-
         <Button
-            android:id="@+id/btn_restart_service"
+            android:id="@+id/btn_refresh_conn"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="8dp"
-            android:text="@string/action_restart_service" />
-
-        <TextView style="@style/SettingLabel" android:text="@string/label_hardware" />
-        <TextView
-            android:id="@+id/text_hardware"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="13sp"
-            android:paddingBottom="8dp" />
-
-        <TextView style="@style/SettingLabel" android:text="@string/label_bloatware" />
-        <TextView
-            android:id="@+id/text_bloatware"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="13sp"
-            android:paddingBottom="12dp" />
-
-        <TextView style="@style/SettingLabel" android:text="@string/label_diag_status" />
-        <TextView
-            android:id="@+id/text_diag_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/accent"
-            android:textSize="13sp"
-            android:paddingBottom="4dp" />
-        <TextView
-            android:id="@+id/text_diag_hint"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/idle_text"
-            android:textSize="12sp"
-            android:paddingBottom="8dp" />
-        <TextView
-            android:id="@+id/text_diag_helper"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="12sp"
-            android:paddingBottom="2dp" />
-        <TextView
-            android:id="@+id/text_diag_restart"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="12sp"
-            android:paddingBottom="2dp" />
-        <TextView
-            android:id="@+id/text_diag_update"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="12sp"
-            android:paddingBottom="2dp" />
-        <TextView
-            android:id="@+id/text_diag_playback"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="12sp"
-            android:paddingBottom="2dp" />
-        <TextView
-            android:id="@+id/text_diag_cache"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="12sp"
-            android:paddingBottom="2dp" />
-        <TextView
-            android:id="@+id/text_diag_errors"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:textSize="12sp"
-            android:paddingBottom="8dp" />
-        <TextView
-            android:id="@+id/text_diag_probe"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/idle_text"
-            android:textSize="12sp"
-            android:paddingBottom="12dp" />
-
-        <Button
-            android:id="@+id/btn_refresh_diag"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/action_refresh_diag" />
-
-        <!-- §2 no-ADB export: write the on-screen diagnostics + startup state +
-             persisted player.log tail to a USB/file-manager-readable file, so a
-             box stuck at 启动中 (no service, no LAN link) is still diagnosable
-             without adb. The resolved path is shown below. -->
-        <Button
-            android:id="@+id/btn_export_diag"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/action_export_diag" />
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/idle_text"
-            android:textSize="12sp"
-            android:paddingTop="2dp"
-            android:text="@string/diag_export_forensics_hint" />
-        <TextView
-            android:id="@+id/text_export_path"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/idle_text"
-            android:textSize="12sp"
-            android:paddingTop="4dp"
-            android:textIsSelectable="true"
-            android:paddingBottom="8dp" />
-
+            android:text="@string/action_refresh_conn" />
 
         <TextView style="@style/SettingLabel" android:text="@string/label_device_name" />
         <EditText
@@ -216,40 +76,46 @@
             android:hint="@string/hint_device_name"
             android:inputType="text" />
 
-        <TextView style="@style/SettingLabel" android:text="@string/label_broker_host" />
-        <EditText
-            android:id="@+id/input_broker_host"
-            style="@style/SettingInput"
-            android:hint="@string/hint_broker_host"
-            android:inputType="text" />
-
-        <TextView style="@style/SettingLabel" android:text="@string/label_broker_port" />
-        <EditText
-            android:id="@+id/input_broker_port"
-            style="@style/SettingInput"
-            android:hint="@string/hint_broker_port"
-            android:inputType="number" />
-
-        <CheckBox
-            android:id="@+id/input_use_wss"
-            android:layout_width="wrap_content"
+        <!-- §1 configuration reversal: this camera-less TV box no longer scans.
+             It DISPLAYS its own enrollment QR (built by QrEncoder) so the phone
+             controller scans it. Placed in the PRIMARY card, BEFORE diagnostics. -->
+        <TextView
+            android:id="@+id/label_pair_qr"
+            style="@style/SettingLabel"
+            android:text="@string/label_pair_qr"
+            android:layout_marginTop="16dp" />
+        <ImageView
+            android:id="@+id/image_pair_qr"
+            android:layout_width="220dp"
+            android:layout_height="220dp"
+            android:layout_gravity="center_horizontal"
+            android:background="@color/white"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:contentDescription="@string/label_pair_qr" />
+        <TextView
+            android:id="@+id/text_pair_uri"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="@color/white"
-            android:text="@string/label_use_wss" />
+            android:textColor="@color/idle_text"
+            android:textSize="11sp"
+            android:paddingTop="8dp"
+            android:gravity="center_horizontal" />
 
-        <TextView style="@style/SettingLabel" android:text="@string/label_group_id" />
+        <Button
+            android:id="@+id/btn_save"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/action_save" />
+        <!-- ===== PRIMARY: playback settings (operator-relevant) ===== -->
+        <TextView style="@style/SettingLabel" android:text="@string/label_group_id"
+            android:layout_marginTop="20dp" />
         <EditText
             android:id="@+id/input_group_id"
             style="@style/SettingInput"
             android:hint="@string/hint_group_id"
             android:inputType="text" />
-
-        <TextView style="@style/SettingLabel" android:text="@string/label_psk" />
-        <EditText
-            android:id="@+id/input_psk"
-            style="@style/SettingInput"
-            android:hint="@string/hint_psk"
-            android:inputType="textPassword" />
 
         <CheckBox
             android:id="@+id/input_always_thumbs"
@@ -259,9 +125,8 @@
             android:text="@string/label_always_thumbs" />
 
         <!-- §backend-ab: pick the video playback kernel. `auto` keeps the
-             legacy-stable default (ExoPlayer); `mediaplayer` is the native
-             android.media.MediaPlayer path for the HiSilicon boxes. Explicit
-             + observable so an operator can A/B on the real box. -->
+             legacy-stable default; `mediaplayer` is the native path for HiSilicon
+             boxes. Explicit + observable so an operator can A/B on the real box. -->
         <TextView style="@style/SettingLabel" android:text="@string/label_video_backend" />
         <TextView
             android:id="@+id/text_video_backend_hint"
@@ -296,53 +161,217 @@
                 android:text="@string/backend_mediaplayer" />
         </RadioGroup>
 
-        <!-- §1 configuration reversal: this camera-less TV box no longer scans.
-             It DISPLAYS its own enrollment QR (built by QrEncoder) so the phone
-             controller scans it. Shown with the LAN connection info below it. -->
+        <!-- §takeover: 现场一次性接管（默认桌面 + 电池/自启） -->
+        <TextView style="@style/SettingLabel" android:text="@string/label_takeover_section"
+            android:layout_marginTop="12dp" />
         <TextView
-            android:id="@+id/label_pair_qr"
-            style="@style/SettingLabel"
-            android:text="@string/label_pair_qr"
-            android:layout_marginTop="24dp" />
-
-        <ImageView
-            android:id="@+id/image_pair_qr"
-            android:layout_width="220dp"
-            android:layout_height="220dp"
-            android:layout_gravity="center_horizontal"
-            android:background="@color/white"
-            android:padding="8dp"
-            android:scaleType="fitCenter"
-            android:contentDescription="@string/label_pair_qr" />
-
-        <TextView
-            android:id="@+id/text_pair_uri"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textColor="@color/idle_text"
-            android:textSize="11sp"
-            android:paddingTop="8dp"
-            android:gravity="center_horizontal" />
-
-        <!-- §4.1 (v1.13.7+): the kiosk player IS the HOME/launcher — the HOME
-             intent-filter lives on MainActivity, so there is no runtime toggle
-             here. This box is a dedicated media wall; grabbing HOME is intended. -->
-
+            android:textSize="12sp"
+            android:paddingTop="4dp"
+            android:text="@string/takeover_shortcuts_hint" />
         <Button
-            android:id="@+id/btn_save"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="@string/action_save" />
-
-        <!-- §9 self-recovery: clear broker config back to zero-config / QR
-             pairing without adb. Sits below Save; confirms before wiping. -->
-        <Button
-            android:id="@+id/btn_reset_conn"
+            android:id="@+id/btn_open_home"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="@string/action_reset_conn" />
+            android:text="@string/action_open_home" />
+        <Button
+            android:id="@+id/btn_open_battery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/action_open_battery" />
+        <TextView
+            android:id="@+id/text_takeover_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/idle_text"
+            android:textSize="12sp"
+            android:paddingTop="4dp"
+            android:paddingBottom="8dp"
+            android:textIsSelectable="true" />
+
+        <!-- ===== SECONDARY: collapsed 高级网络与诊断 =====
+             API19-safe expander: this Button toggles advanced_container's
+             visibility (GONE/VISIBLE); no androidx expandable dependency. -->
+        <Button
+            android:id="@+id/btn_toggle_advanced"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/label_advanced_section" />
+
+        <LinearLayout
+            android:id="@+id/advanced_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+            <!-- Advanced connection: broker/WSS/PSK (secondary to P2P pairing). -->
+            <TextView style="@style/SettingLabel" android:text="@string/label_broker_host" />
+            <EditText
+                android:id="@+id/input_broker_host"
+                style="@style/SettingInput"
+                android:hint="@string/hint_broker_host"
+                android:inputType="text" />
+
+            <TextView style="@style/SettingLabel" android:text="@string/label_broker_port" />
+            <EditText
+                android:id="@+id/input_broker_port"
+                style="@style/SettingInput"
+                android:hint="@string/hint_broker_port"
+                android:inputType="number" />
+
+            <CheckBox
+                android:id="@+id/input_use_wss"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:text="@string/label_use_wss" />
+
+            <TextView style="@style/SettingLabel" android:text="@string/label_psk" />
+            <EditText
+                android:id="@+id/input_psk"
+                style="@style/SettingInput"
+                android:hint="@string/hint_psk"
+                android:inputType="textPassword" />
+
+            <!-- §2 hardware self-check: real MemTotal + /data capacity. -->
+            <TextView style="@style/SettingLabel" android:text="@string/label_hardware"
+                android:layout_marginTop="12dp" />
+            <TextView
+                android:id="@+id/text_hardware"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="13sp"
+                android:paddingBottom="8dp" />
+
+            <TextView style="@style/SettingLabel" android:text="@string/label_bloatware" />
+            <TextView
+                android:id="@+id/text_bloatware"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="13sp"
+                android:paddingBottom="12dp" />
+
+            <!-- §2 local diagnostics (raw tokens/English live here, not primary). -->
+            <TextView style="@style/SettingLabel" android:text="@string/label_diag_status" />
+            <TextView
+                android:id="@+id/text_diag_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/accent"
+                android:textSize="13sp"
+                android:paddingBottom="4dp" />
+            <TextView
+                android:id="@+id/text_diag_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/idle_text"
+                android:textSize="12sp"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:id="@+id/text_diag_helper"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:paddingBottom="2dp" />
+            <TextView
+                android:id="@+id/text_diag_restart"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:paddingBottom="2dp" />
+            <TextView
+                android:id="@+id/text_diag_update"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:paddingBottom="2dp" />
+            <TextView
+                android:id="@+id/text_diag_playback"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:paddingBottom="2dp" />
+            <TextView
+                android:id="@+id/text_diag_cache"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:paddingBottom="2dp" />
+            <TextView
+                android:id="@+id/text_diag_errors"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:paddingBottom="2dp" />
+            <TextView
+                android:id="@+id/text_diag_probe"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/idle_text"
+                android:textSize="12sp"
+                android:paddingBottom="12dp" />
+
+            <Button
+                android:id="@+id/btn_refresh_diag"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/action_refresh_diag" />
+            <Button
+                android:id="@+id/btn_restart_service"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/action_restart_service" />
+
+            <!-- §2 no-ADB export: write diagnostics + startup state + player.log
+                 tail to a USB/file-manager-readable file. Path shown below. -->
+            <Button
+                android:id="@+id/btn_export_diag"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/action_export_diag" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/idle_text"
+                android:textSize="12sp"
+                android:paddingTop="2dp"
+                android:text="@string/diag_export_forensics_hint" />
+            <TextView
+                android:id="@+id/text_export_path"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/idle_text"
+                android:textSize="12sp"
+                android:paddingTop="4dp"
+                android:textIsSelectable="true"
+                android:paddingBottom="8dp" />
+
+            <!-- §9 self-recovery: clear broker config back to zero-config / QR
+                 pairing without adb. Confirms before wiping. -->
+            <Button
+                android:id="@+id/btn_reset_conn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/action_reset_conn" />
+        </LinearLayout>
 
     </LinearLayout>
+</ScrollView>
 </ScrollView>

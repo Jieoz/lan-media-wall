@@ -2,6 +2,11 @@
     <string name="app_name">局域网媒体墙</string>
     <string name="settings_title">播放器设置</string>
 
+    <!-- §F 操作员 UX 重构:主「播放端设置」区 + 折叠「高级网络与诊断」区。 -->
+    <string name="label_player_access">播放端设置</string>
+    <string name="label_advanced_section">高级网络与诊断（点开）</string>
+    <string name="action_refresh_conn">刷新连接</string>
+
     <!-- §4.2/§7 首启中文提示:stopped-state 规则 + 仅内网。 -->
     <string name="first_boot_notice">装完后请先手动打开本应用一次 —— 否则安卓不会下发开机广播,重启后无法自启。仅限内网使用:切勿把本播放器暴露到公网。</string>
     <!-- §2 零配置状态行:本机 IP / device_id / 组名。 -->

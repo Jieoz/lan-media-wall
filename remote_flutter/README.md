@@ -1,5 +1,24 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.18.0：操作员 UX 重构。**P2P 为主链路,Broker 降为高级/次要;无协议、传输、
+> 精确 `device_id` 路由、缓存/OTA/安全合同改动,纯 UX 层。**设置拓扑真相**:新增
+> 连接方式切换「自动发现 / P2P（推荐）」vs「连接 Broker（高级）」并持久化
+> (`settings.connection_mode`;存过 broker 地址的老用户迁到 Broker 模式,否则默认
+> P2P);P2P 模式隐藏 broker host/port/WSS/上传 token;连接标签由实际拓扑+对端/连接
+> 态派生(`P2P · 已连接 N 台` / `P2P · 正在发现设备` / `Broker · 已连接` /
+> `Broker · 重连中`),经单一真相源 `WallState.connectionStatusLabel`,绝不乐观;端口
+> 严格校验 1–65535,非法输入绝不静默回落 8770;保存提示「设置已保存，正在重新连接」。
+> **统一单台推送**:编排栏「推送到此设备」与设备卡「推送内容」共用
+> `lib/ui/push_workflow.dart` 的 `showPushToDeviceDialog`,确认摘要写明目标/条目数/
+> 替换或追加/缓存/是否起播,最终二选一「仅下发并缓存 / 缓存完成后播放」,保留精确
+> 单播路由与上传/缓存栅栏。**措辞真相**:本地清空改名「清空本地草稿」;远程清空改名
+> 「停止播放并清空设备列表」加红色二次确认(精确目标+已知在线台数+停播黑屏+缓存保留);
+> ACK 前一律「命令已发送，等待设备确认」(pause/resume/stop/prev/next、远程清空、追加)。
+> 新增 Dart 测试(`test/connection_status_test.dart`、`push_workflow_test.dart`、
+> `settings_topology_test.dart`,云 CI 跑)+ 本地 Python 静态合同
+> `scripts/tests/test_ux_optimization_contracts.py`。版本随全端单一真相源
+> `pubspec.yaml` = `1.18.0+1180`。
+
 > **v1.17.7：通用 Android OTA 诊断框架随 QZX Update Tools 发布。**离线
 > `android_ota_diag.py` + profile + 主机 legacy 仿真器;版本随全端单一真相源
 > `pubspec.yaml` = `1.17.7+1177`。控制端功能无本版业务改动。

@@ -46,16 +46,14 @@ class _StatusBar extends StatelessWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<WallState>();
-    final topo = state.topology.label;
-    final online =
-        state.wallDevices.where((d) => d.phase == LinkPhase.connected).length;
-    final total = state.wallDevices.length;
-
-    final (dotColor, connText) = state.connected
-        ? (Colors.greenAccent, '已连接')
+    // §B 顶栏连接标签由实际拓扑派生（P2P · 已连接 N 台 / 正在发现设备；Broker · 已连接
+    // / 重连中），与设置页同源，绝不因保存成功乐观显示已连接。
+    final label = state.connectionStatusLabel;
+    final dotColor = state.connected
+        ? Colors.greenAccent
         : (state.conn == ConnState.connecting
-            ? (Colors.orangeAccent, '连接中')
-            : (Colors.redAccent, '未连接'));
+            ? Colors.orangeAccent
+            : Colors.redAccent);
 
     return AppBar(
       title: Row(
@@ -66,7 +64,7 @@ class _StatusBar extends StatelessWidget implements PreferredSizeWidget {
           const SizedBox(width: 12),
           if (wide)
             Text(
-              '$connText · $topo · 在线 $online/$total',
+              label,
               style: Theme.of(context).textTheme.bodySmall,
             ),
         ],

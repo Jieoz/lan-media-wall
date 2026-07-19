@@ -84,6 +84,13 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnExportDiag.setOnClickListener { chooseDiagnosticExportPath() }
         binding.btnOpenBattery.setOnClickListener { openBatteryIgnoreSettings() }
         binding.btnOpenHome.setOnClickListener { openDefaultHomePicker() }
+        // §F primary 刷新连接: re-select the transport (restart service) and refresh
+        // the on-screen connection status — the one-tap recovery an operator needs
+        // without opening the collapsed advanced/diagnostics block.
+        binding.btnRefreshConn.setOnClickListener { refreshConnection() }
+        // §F collapsed 高级网络与诊断: API19-safe GONE/VISIBLE toggle (no androidx
+        // expandable widget), preserving the 4.4 target and TV D-pad reachability.
+        binding.btnToggleAdvanced.setOnClickListener { toggleAdvanced() }
         renderTakeoverStatus()
     }
 
@@ -239,6 +246,23 @@ class SettingsActivity : AppCompatActivity() {
                 else getString(R.string.conn_disconnected)
         }
         binding.textConnStatus.text = text
+    }
+
+    /** §F primary 刷新连接: bounce the transport so it re-discovers / re-dials,
+     *  then re-render the status line. Same restart path as the advanced block's
+     *  restart-service button, surfaced as a primary one-tap recovery. */
+    private fun refreshConnection() {
+        startPlayerService()
+        renderConnStatus()
+    }
+
+    /** §F collapsed advanced: API19-safe GONE/VISIBLE toggle of advanced_container.
+     *  The button label reflects the current state so the operator knows it opens
+     *  more; keeping it a plain Button preserves the 4.4 target + D-pad focus. */
+    private fun toggleAdvanced() {
+        val show = binding.advancedContainer.visibility != android.view.View.VISIBLE
+        binding.advancedContainer.visibility =
+            if (show) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     /** Turn a forever-STARTING OEM failure into an actionable on-screen state. */

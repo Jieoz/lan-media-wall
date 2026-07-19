@@ -14,6 +14,7 @@ import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../protocol/pair_uri.dart';
 import '../protocol/remote_endpoint.dart';
+import '../ui/connection_status.dart';
 import 'cache_ops.dart';
 import 'media_progress.dart';
 
@@ -25,6 +26,7 @@ class _Keys {
   static const psk = 'settings.psk';
   static const mediaUploadToken = 'settings.media_upload_token';
   static const controllerId = 'settings.controller_id';
+  static const connectionMode = 'settings.connection_mode';
 }
 
 /// 一台设备在墙上的接入态（§14.5 可见性）。发现/添加即以占位卡出现，
@@ -90,6 +92,12 @@ class WallState extends ChangeNotifier {
   String psk = '';
   String mediaUploadToken = '';
   String controllerId = '';
+
+  /// 操作员选择的连接方式（§B）。默认 autoP2p（P2P 优先）；迁移见 [_loadSettings]。
+  /// 决定 [_evaluateTopology] 是否拨号手填 broker——想走 P2P 的控制端不会因残留
+  /// broker 地址被动连 broker。
+  ConnectionMode _connectionMode = ConnectionMode.autoP2p;
+  ConnectionMode get connectionMode => _connectionMode;
 
   // ---- 运行态 ----
   late final EnvelopeCodec _codec;
@@ -293,6 +301,10 @@ class WallState extends ChangeNotifier {
   /// p2p 下“已连 N 台”，broker 下沿用连接态。
   bool get connected =>
       isP2p ? _p2pPeers > 0 : _conn == ConnState.connected;
+
+  /// §B 由**实际拓扑 + 对端/连接态**派生的连接标签，绝不因保存成功乐观显示已连接。
+  String get connectionStatusLabel =>
+      connectionLabel(topology: _topology, peers: _p2pPeers, conn: _conn);
   List<String> get logLines => List.unmodifiable(_log);
 
   /// §14.5 墙面统一设备视图（修 Bug 2「添加/发现却看不到设备」）：
@@ -543,6 +555,17 @@ class WallState extends ChangeNotifier {
       controllerId = 'ctl-${uuid4().substring(0, 8)}';
       await prefs.setString(_Keys.controllerId, controllerId);
     }
+    // §B 连接方式迁移：显式持久化值优先；否则由既有设置推断——存过 broker 地址的
+    // 老用户迁到 broker 模式（保持其当前行为），否则默认 autoP2p（P2P 优先）。
+    final storedMode = prefs.getString(_Keys.connectionMode);
+    if (storedMode != null) {
+      _connectionMode = ConnectionModeStore.fromStore(storedMode);
+    } else {
+      _connectionMode = brokerHost.isNotEmpty
+          ? ConnectionMode.broker
+          : ConnectionMode.autoP2p;
+      await prefs.setString(_Keys.connectionMode, _connectionMode.storeKey);
+    }
   }
 
   /// 更新设置并持久化；按需重连。
@@ -553,8 +576,13 @@ class WallState extends ChangeNotifier {
     String? newPsk,
     String? newMediaUploadToken,
     String? newControllerId,
+    ConnectionMode? connectionMode,
   }) async {
     final prefs = await SharedPreferences.getInstance();
+    if (connectionMode != null) {
+      _connectionMode = connectionMode;
+      await prefs.setString(_Keys.connectionMode, connectionMode.storeKey);
+    }
     if (host != null) {
       brokerHost = normalizeRemoteHost(host);
       await prefs.setString(_Keys.broker, brokerHost);
@@ -592,17 +620,22 @@ class WallState extends ChangeNotifier {
   ///  - 用户手填了 broker 地址 → 直接连 broker（模式 A/B）。
   ///  - 否则看发现结果：有 broker_hint → 连 broker；只有一堆 p2p 被控端 → p2p 直连。
   void _evaluateTopology() {
-    // 手填 broker 优先。
-    if (brokerHost.isNotEmpty) {
-      _enterBroker(brokerHost, brokerPort, brokerSecure);
-      return;
-    }
-    // 发现结果里找 broker_hint。
-    for (final a in _discovered) {
-      final ep = a.brokerEndpoint;
-      if (ep != null) {
-        _enterBroker(ep.host, ep.port, brokerSecure);
+    // §B 连接方式是操作员意图的权威：autoP2p 模式**忽略**手填/发现的 broker，走
+    // 发现 → P2P 直连；只有 broker 模式才主动拨号 broker。这样一个想走 P2P 的控制端
+    // 不会因残留 broker 地址被动连 broker。
+    if (_connectionMode == ConnectionMode.broker) {
+      // 手填 broker 优先。
+      if (brokerHost.isNotEmpty) {
+        _enterBroker(brokerHost, brokerPort, brokerSecure);
         return;
+      }
+      // 发现结果里找 broker_hint。
+      for (final a in _discovered) {
+        final ep = a.brokerEndpoint;
+        if (ep != null) {
+          _enterBroker(ep.host, ep.port, brokerSecure);
+          return;
+        }
       }
     }
     // 无 broker → p2p：对每台发现到的被控端各开一条 WS（§14.3）。

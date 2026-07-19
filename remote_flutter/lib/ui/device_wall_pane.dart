@@ -8,13 +8,12 @@ import 'package:provider/provider.dart';
 import '../protocol/auth_mode.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
-import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 import 'cache_management.dart';
 import 'device_wall_filter.dart';
 import 'device_wall_layout.dart';
-import 'dwell_picker.dart';
 import 'invite_screen.dart';
+import 'push_workflow.dart';
 import '../util/version_code.dart';
 
 /// 设备墙栏(设计合同 §4.1 左栏) —— 控制端常驻主视图。
@@ -905,10 +904,10 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                   children: [
                     FilledButton.icon(
                       icon: const Icon(Icons.playlist_play),
-                      label: const Text('编辑当前列表'),
+                      label: const Text('推送内容'),
                       onPressed: () {
                         Navigator.pop(ctx);
-                        _pushContentToDeviceDialog(context, state, device);
+                        showPushToDeviceDialog(context, state, device);
                       },
                     ),
                   ],
@@ -1165,16 +1164,18 @@ class _DeviceTransportRow extends StatelessWidget {
       spacing: 8,
       runSpacing: 8,
       children: [
+        // §D 措辞真相：下发即回执「命令已发送，等待设备确认」，绝不在 ACK 前声称
+        // 已暂停/已恢复/已停止；真实播放态由设备回传的 wall 快照反映。
         btn(Icons.pause, '暂停',
-            () => act(() => state.pause(deviceId: deviceId), '已暂停这一台')),
+            () => act(() => state.pause(deviceId: deviceId), sentAwaitingAck('暂停这一台'))),
         btn(Icons.play_arrow, '恢复',
-            () => act(() => state.resume(deviceId: deviceId), '已恢复这一台')),
+            () => act(() => state.resume(deviceId: deviceId), sentAwaitingAck('恢复这一台'))),
         btn(Icons.stop, '停止',
-            () => act(() => state.stop(deviceId: deviceId), '已停止这一台')),
+            () => act(() => state.stop(deviceId: deviceId), sentAwaitingAck('停止这一台'))),
         btn(Icons.skip_previous, '上一项',
-            () => act(() => state.prev(deviceId: deviceId), '上一项')),
+            () => act(() => state.prev(deviceId: deviceId), sentAwaitingAck('上一项'))),
         btn(Icons.skip_next, '下一项',
-            () => act(() => state.next(deviceId: deviceId), '下一项')),
+            () => act(() => state.next(deviceId: deviceId), sentAwaitingAck('下一项'))),
       ],
     );
   }
@@ -1436,263 +1437,4 @@ class _DeviceStatusView extends StatelessWidget {
     if (d.inHours < 24) return '${d.inHours}h 前';
     return '${dt.year}-${dt.month.toString().padLeft(2, "0")}-${dt.day.toString().padLeft(2, "0")}';
   }
-}
-
-/// §9.4b 单播推送内容:复用编排栏的 上传→下发列表→预缓存→栅栏起播 流程,但目标锁定
-/// 这一台 deviceId(playlist / cache_prefetch / prepare 全走单播 `to: player:<id>`)。
-/// group_id 沿用该台当前组(仅用于 payload 携带,broker/p2p 靠 device_id 收敛目标)。
-Future<void> _pushContentToDeviceDialog(
-    BuildContext context, WallState state, WallDevice device) async {
-  final draft = PlaylistDraft();
-  final active = device.status?.activePlaylist;
-  if (active != null) {
-    draft.load(active, currentIndex: device.status?.currentIndex);
-  }
-  var uploading = false;
-  var uploadHint = '';
-  final name = device.deviceName.isEmpty ? device.deviceId : device.deviceName;
-  final groupId = active?.groupId.isNotEmpty == true
-      ? active!.groupId
-      : device.status?.groupId ?? '';
-
-  await showDialog<void>(
-    context: context,
-    barrierDismissible: false,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setLocal) {
-        Future<void> pick(String type) async {
-          final result = await FilePicker.platform.pickFiles(
-            type: type == 'image' ? FileType.image : FileType.video,
-            allowMultiple: true,
-            withData: false,
-          );
-          if (result == null || result.files.isEmpty) return;
-          // §5 图片必须有停留时长:上传前用秒 UI 确认(默认 8 秒),不再硬编码 8000ms。
-          int? durationMs;
-          if (type == 'image') {
-            durationMs = await showDwellPicker(ctx);
-            if (durationMs == null) return; // 取消即放弃
-          }
-          setLocal(() {
-            uploading = true;
-            uploadHint = '准备上传…';
-          });
-          try {
-            for (final f in result.files) {
-              final path = f.path;
-              if (path == null) continue;
-              setLocal(() => uploadHint = '上传 ${f.name} …');
-              final item = await state.uploadLocalMedia(
-                file: File(path),
-                type: type,
-                name: f.name,
-                durationMs: durationMs,
-                onProgress: (sent, total) {
-                  if (total > 0) {
-                    setLocal(() => uploadHint =
-                        '上传 ${f.name}  ${(sent / total * 100).toStringAsFixed(0)}%');
-                  }
-                },
-              );
-              draft.add(item);
-              setLocal(() {});
-            }
-          } catch (e) {
-            setLocal(() => uploadHint = '上传失败: $e');
-          } finally {
-            setLocal(() => uploading = false);
-          }
-        }
-
-        return PopScope(
-          canPop: !uploading,
-          child: AlertDialog(
-          title: Text('推送内容 → $name'),
-          content: SizedBox(
-            width: 460,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (active != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        '已载入设备当前列表 ${draft.length} 项，可调整顺序、删除或追加后整列应用。',
-                        style: Theme.of(ctx).textTheme.bodySmall,
-                      ),
-                    )
-                  else
-                    Text('只推给这一台(单播)。内容先缓存到该盒子本地,缓存就绪后从头播放。',
-                        style: Theme.of(ctx).textTheme.bodySmall),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      OutlinedButton.icon(
-                        icon: const Icon(Icons.add_photo_alternate),
-                        label: const Text('加图片'),
-                        onPressed: uploading ? null : () => pick('image'),
-                      ),
-                      OutlinedButton.icon(
-                        icon: const Icon(Icons.video_call),
-                        label: const Text('加视频'),
-                        onPressed: uploading ? null : () => pick('video'),
-                      ),
-                    ],
-                  ),
-                  if (uploading)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Row(
-                        children: [
-                          const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child:
-                                  CircularProgressIndicator(strokeWidth: 2)),
-                          const SizedBox(width: 8),
-                          Expanded(child: Text(uploadHint,
-                              style: Theme.of(ctx).textTheme.bodySmall)),
-                        ],
-                      ),
-                    ),
-                  if (draft.isEmpty && !uploading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: Text('尚未添加内容', style: TextStyle(fontSize: 12)),
-                    )
-                  else
-                    ...List.generate(draft.length, (i) {
-                      final it = draft.items[i];
-                      return ListTile(
-                        dense: true,
-                        leading: Icon(it.isImage ? Icons.image : Icons.movie),
-                        title: Text(
-                          '${i + 1}. ${it.name}${draft.currentIndex == i ? " · 当前播放" : ""}',
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: it.isImage
-                            ? Text('图片 · ${dwellSecondsLabel(it.durationMs)}')
-                            : null,
-                        trailing: Wrap(
-                          children: [
-                            if (it.isImage)
-                              IconButton(
-                                tooltip: '改停留时长',
-                                icon: const Icon(Icons.timer_outlined),
-                                onPressed: () async {
-                                  final ms = await showDwellPicker(ctx,
-                                      initialMs: it.durationMs,
-                                      title: '「${it.name}」停留时长');
-                                  if (ms == null) return;
-                                  draft.setDurationMs(i, ms);
-                                  setLocal(() {});
-                                },
-                              ),
-                            IconButton(
-                              tooltip: '上移',
-                              icon: const Icon(Icons.arrow_upward),
-                              onPressed: i == 0
-                                  ? null
-                                  : () {
-                                      draft.move(i, i - 1);
-                                      setLocal(() {});
-                                    },
-                            ),
-                            IconButton(
-                              tooltip: '下移',
-                              icon: const Icon(Icons.arrow_downward),
-                              onPressed: i == draft.length - 1
-                                  ? null
-                                  : () {
-                                      draft.move(i, i + 1);
-                                      setLocal(() {});
-                                    },
-                            ),
-                            IconButton(
-                              tooltip: '删除',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: () {
-                                draft.removeAt(i);
-                                setLocal(() {});
-                              },
-                            ),
-                          ],
-                        ),
-                      );
-                    }),
-                  DropdownButtonFormField<LoopMode>(
-                    isDense: true,
-                    decoration: const InputDecoration(
-                        labelText: '循环模式', border: InputBorder.none,
-                        contentPadding: EdgeInsets.zero),
-                    value: draft.loopMode,
-                    items: const [
-                      DropdownMenuItem(
-                          value: LoopMode.none, child: Text('不循环')),
-                      DropdownMenuItem(
-                          value: LoopMode.all, child: Text('整列循环')),
-                      DropdownMenuItem(
-                          value: LoopMode.one, child: Text('单项循环')),
-                    ],
-                    onChanged: (v) {
-                      draft.setLoopMode(v ?? LoopMode.all);
-                      setLocal(() {});
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: uploading ? null : () => Navigator.pop(ctx),
-                child: const Text('取消')),
-            FilledButton.icon(
-              icon: const Icon(Icons.play_circle),
-              label: const Text('推送并播放'),
-              onPressed: (uploading || draft.isEmpty)
-                  ? null
-                  : () {
-                      try {
-                        final pid =
-                            'pl-${device.deviceId}-${uuid4().substring(0, 6)}';
-                        // 单播:playlist + cache_prefetch + 栅栏 prepare 全锁这一台。
-                        state.sendPlaylist(
-                          playlistId: pid,
-                          groupId: groupId,
-                          sync: false,
-                          loopMode: draft.loopMode,
-                          items: draft.items,
-                          mode: 'replace',
-                          deviceId: device.deviceId,
-                        );
-                        state.cachePrefetch(draft.items, deviceId: device.deviceId);
-                        state.prepareWithBarrier(
-                          playlistId: pid,
-                          groupId: groupId,
-                          deviceId: device.deviceId,
-                        );
-                        Navigator.pop(ctx);
-                        ScaffoldMessenger.of(context)
-                          ..clearSnackBars()
-                          ..showSnackBar(SnackBar(
-                              content: Text(
-                                  '已向「$name」应用 ${draft.length} 项(缓存就绪后播放)')));
-                      } catch (e) {
-                        ScaffoldMessenger.of(context)
-                          ..clearSnackBars()
-                          ..showSnackBar(SnackBar(content: Text('推送失败: $e')));
-                      }
-                    },
-            ),
-          ],
-        ),
-        );
-      },
-    ),
-  );
-  draft.dispose();
 }

@@ -1,5 +1,17 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.18.0 — 播放端设置页重构(操作员 UX):**`activity_settings.xml` 重排为
+> 置顶的**主「播放端设置」卡**(设备名/版本/IP/device_id、实时连接态、一键
+> **「刷新连接」**、大号 P2P 配对二维码、**保存并启动**)+ 面向操作员的播放设置
+> (分组/缩略图/视频内核)+ 一次性现场接管,随后是**折叠的「高级网络与诊断」**区
+> (broker/WSS/PSK、硬件自检、诊断、root 守护、导出、重置)。**配对二维码在任何诊断
+> 之前**。折叠区用 API19 安全的 `GONE/VISIBLE` 按钮切换(`btn_toggle_advanced` →
+> `advanced_container`,不引入 androidx expandable 依赖),保 4.4 目标与 TV 遥控焦点
+> 可达。主界面可见文案在 `values/` 与 `values-zh-rCN/` **双份中文**(`label_player_access`
+> /`label_advanced_section`/`action_refresh_conn`),原始 token/英文只留在折叠诊断与
+> 导出。既有 QrEncoder、诊断/导出/重置逻辑与全部 handler/ID 保持不变。版本随全端
+> `pubspec.yaml` = `1.18.0+1180`。
+
 > **v1.17.7 — 通用 Android OTA 诊断框架:**QZX Update Tools 附带
 > `android_ota/`(离线判定器 + profile + 主机 legacy 仿真)。版本随全端
 > `pubspec.yaml` = `1.17.7+1177`。播放端业务路径无本版功能改动;二次 OTA

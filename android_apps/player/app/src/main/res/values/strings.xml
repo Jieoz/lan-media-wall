@@ -2,6 +2,13 @@
     <string name="app_name">LAN Media Wall</string>
         <string name="settings_title">Player Setup</string>
 
+    <!-- §F operator-UX rebuild: primary device-access section + collapsed advanced.
+         Primary operator-facing labels are Chinese even in the default file, since
+         field boxes may not run a zh locale (see values-zh-rCN for parity). -->
+    <string name="label_player_access">播放端设置</string>
+    <string name="label_advanced_section">高级网络与诊断（点开）</string>
+    <string name="action_refresh_conn">刷新连接</string>
+
     <!-- §4.2/§7 first-boot notice: stopped-state rule + LAN-only warning. -->
     <string name="first_boot_notice">After installing, open this app once manually — otherwise Android won\'t deliver the boot broadcast and it won\'t auto-start after a reboot. LAN use only: do not expose this player to the public internet.</string>
     <!-- §2 zero-config status line: LAN IP / device_id / group. -->
