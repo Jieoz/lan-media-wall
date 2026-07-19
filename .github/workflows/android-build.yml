@@ -8,11 +8,13 @@
 # optional ANDROID_RELEASE_CERT_SHA256 override). Release builds fail closed when
 # any signing Secret is absent or the expected fingerprint cannot be resolved.
 #
-# NOTE: android_apps/player/ is produced by another track. If the Gradle wrapper
-# is not present yet, the build steps no-op gracefully (guarded below) so this
-# workflow does not fail before the project lands. (This guard is exactly why
-# the v1.0.0 release shipped without a player APK — gradlew was not committed at
-# that tag. It is now, so the release APK builds and attaches.)
+# NOTE: android_apps/player/ Gradle wrapper is now committed. Its absence is
+# treated as a real regression — the "Detect Gradle project" step FAILS CLOSED
+# (::error:: + exit 1) rather than green-skipping the APK/QZX artifacts. (An
+# earlier warn-and-continue guard is why the v1.0.0 release shipped without a
+# player APK — gradlew was not committed at that tag. gradlew is committed now,
+# so the release APK builds and attaches, and a future wrapper regression fails
+# the run instead of silently shipping nothing.)
 name: android-build
 
 on:
@@ -109,8 +111,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Detect whether the Gradle project exists yet. Every later build step is
-      # gated on this so the workflow stays green while the app is still landing.
+      # The Gradle wrapper is committed (§ header note), so its absence is a
+      # real regression — a vanished/omitted wrapper, or a tag cut before it
+      # landed. Fail CLOSED: emit an error and exit nonzero rather than the old
+      # `present=false` warn-and-continue, which would green-skip every
+      # APK/QZX artifact and let an empty run be promoted. The APK-lane steps
+      # still gate on `steps.detect.outputs.present == 'true'` (set only on the
+      # success path), so the gate contract downstream is unchanged.
       - name: Detect Gradle project
         id: detect
         shell: bash
@@ -119,8 +126,8 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
             echo "Gradle wrapper found."
           else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::android_apps/player/gradlew not found — skipping Android build (project not generated yet)."
+            echo "::error::android_apps/player/gradlew not found — the Android player Gradle wrapper must be committed; refusing to green-skip the APK/QZX build."
+            exit 1
           fi
 
       - name: Set up JDK 17 (Temurin)

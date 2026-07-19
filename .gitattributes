@@ -5,3 +5,6 @@
 # double-click experience on a stock Windows box. `-text` marks the file as
 # binary for line-ending purposes so Git ships it byte-for-byte.
 scripts/OTA检测.bat -text
+# `-whitespace` stops `git diff --check` from flagging every CRLF's CR as
+# "trailing whitespace": the CRLF endings are intentional here, not an error.
+scripts/OTA检测.bat -whitespace

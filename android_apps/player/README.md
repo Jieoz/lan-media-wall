@@ -103,18 +103,10 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.17.0 / versionCode 67`** — derived from
+> **Current build: `versionName 1.18.1 / versionCode 1181`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.
->
-> **This branch tip is an OTA probe build: `1.17.1-ota-probe+68`** (versionCode
-> 68, strictly newer than the field baseline 67). It is a one-shot field
-> diagnostic — the `update_app` path now emits machine-readable `UPDATE_STAGE=…`
-> markers (daemon_probe / download / sha256 / staged / pm_install / restart_app /
-> legacy_stage / exception) into both `player.log` and `update_status.detail`, and
-> fail-closes at `daemon_probe` before downloading if the root bridge is dead. Not
-> a formal product release; the v1.17.0 narrative above still stands.
 >
 > **v1.14.8** — control-plane + composition fixes. **(1) Ordered playlist
 > replace/append**: the `playlist` frame now carries an explicit `mode`

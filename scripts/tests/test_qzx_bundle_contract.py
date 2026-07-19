@@ -129,6 +129,9 @@ def test_launcher_invoking_python_fails(tmp_path: Path) -> None:
         "@call py android_ota\\android_ota_diag.py",
         "cmd /c python android_ota\\android_ota_diag.py",
         "cmd.exe /c py android_ota\\android_ota_diag.py",
+        "%~dp0python.exe android_ota\\android_ota_diag.py",
+        'cmd /c"python android_ota\\android_ota_diag.py"',
+        "python3.11 android_ota\\android_ota_diag.py",
         '"C:\\Python311\\python.exe" android_ota\\android_ota_diag.py',
     ],
 )
@@ -151,10 +154,55 @@ def test_launcher_interpreter_first_token_fails(tmp_path: Path, command: str) ->
 @pytest.mark.parametrize(
     "command",
     [
+        # Execution chains: an interpreter reached through a real run operator
+        # (&&, ||, |, &) must fail closed, not just a bare first token.
+        "cd android_ota && python android_ota_diag.py",
+        "type banner.txt & py android_ota\\android_ota_diag.py",
+        "verify_env.exe || python3 android_ota\\android_ota_diag.py",
+        "echo start | python android_ota\\android_ota_diag.py",
+        # Conditional / loop control invoking an interpreter.
+        "if exist android_ota\\x.py python android_ota\\android_ota_diag.py",
+        'if not exist out.txt (py android_ota\\android_ota_diag.py)',
+        "for %%f in (*.zip) do py android_ota\\android_ota_diag.py %%f",
+        "for /f %%f in (list.txt) do python android_ota\\android_ota_diag.py %%f",
+        # start-launched interpreter (new window / detached).
+        "start python android_ota\\android_ota_diag.py",
+        'start "" py android_ota\\android_ota_diag.py',
+        # cmd wrappers carrying a chain.
+        "cmd /c copy x y && python android_ota\\android_ota_diag.py",
+        # windowless launchers.
+        "pythonw android_ota\\android_ota_diag.py",
+        "pyw android_ota\\android_ota_diag.py",
+        "pythonw.exe android_ota\\android_ota_diag.py",
+    ],
+)
+def test_launcher_interpreter_in_execution_chain_fails(tmp_path: Path, command: str) -> None:
+    """An interpreter reached through a real Batch execution chain — behind
+    ``&&``/``||``/``|``/``&``, an ``if``/``for`` control head, a ``start``
+    launcher, a ``cmd /c`` wrapper, or as the ``pythonw``/``pyw`` windowless
+    variant — must fail closed. A first-token-only scan misses all of these and
+    would ship a launcher that silently needs Python on the operator's box."""
+    members = _complete()
+    members[LAUNCHER] = ("﻿@echo off\r\n" + command + "\r\npause\r\n").encode("utf-8")
+    path = tmp_path / "tools.zip"
+    path.write_bytes(_bundle(members))
+    with pytest.raises(ValueError, match="interpreter"):
+        MODULE.verify_qzx_bundle(path)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "copy android_ota\\android_ota_diag.py backup.py",
         "xcopy android_ota /E /I",
         "echo 稍后可用 py 运行(仅提示)",
         "android_ota\\android_ota_diag.exe --human analyze %BUNDLE%",
+        # `py`/`python` only as arguments across a chain, never a command token.
+        "copy a.py b.py && del old_python.tmp",
+        "echo pipe python to file | find /i \"py\"",
+        "if exist python.md type python.md",
+        "for %%f in (*.py) do echo %%f",
+        "start notepad android_ota\\android_ota_diag.py",
     ],
 )
 def test_launcher_py_as_plain_text_passes(tmp_path: Path, command: str) -> None:

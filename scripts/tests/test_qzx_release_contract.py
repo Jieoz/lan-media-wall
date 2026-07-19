@@ -46,6 +46,31 @@ assert b"\r\n" in bat_bytes and bat_bytes[3:].replace(b"\r\n", b"").count(b"\n")
     "OTA检测.bat must use CRLF line endings"
 assert b"\n" not in bat_bytes.replace(b"\r\n", b""), "OTA检测.bat must have no bare LF"
 
+# Every early error path must funnel through ONE failure handler that keeps
+# `pause` for interactive use yet returns nonzero for unattended invocation.
+# A fragile inline branch that exits 0 (the old `:hold` tail) would tell an
+# automation harness the check passed when the detector never ran.
+ota_bat_text = bat_bytes[3:].decode("utf-8")  # drop BOM
+assert ":fail" in ota_bat_text, "OTA检测.bat must define a common :fail handler"
+# The old exit-0 catch-all must be gone: no error path may fall through to :eof
+# without a nonzero code.
+assert ota_bat_text.count("goto :hold") == 0, \
+    "OTA检测.bat must not route errors through the exit-0 :hold tail"
+# Every early-error branch jumps to the common failure handler.
+assert ota_bat_text.count("goto :fail") >= 5, \
+    "every early error path must goto :fail"
+# The failure handler returns nonzero for unattended callers.
+assert "exit /b 1" in ota_bat_text, "OTA检测.bat :fail handler must exit nonzero"
+# `pause` is preserved for the interactive operator.
+assert "pause" in ota_bat_text, "OTA检测.bat must keep pause for interactive use"
+# Unattended mode must not hang on pause — it skips straight to the exit.
+assert "LMW_OTA_NONINTERACTIVE" in ota_bat_text, \
+    "OTA检测.bat must still branch on LMW_OTA_NONINTERACTIVE for unattended runs"
+# On a detector failure the UI points operators at RESULT, so stderr must be
+# captured there too rather than disappearing from the promised diagnostic file.
+assert '> "%RESULT%" 2>&1' in ota_bat_text, \
+    "OTA检测.bat must redirect detector stderr into the referenced result file"
+
 # The byte contract above only holds if Git is told NOT to normalise this file.
 # `-text` disables text conversion (CRLF↔LF, BOM stripping) on checkout/checkin,
 # so the shipped launcher keeps its exact UTF-8 BOM + CRLF bytes on every OS.

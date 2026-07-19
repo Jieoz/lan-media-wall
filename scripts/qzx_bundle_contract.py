@@ -19,6 +19,7 @@ The gate checks:
 
 from __future__ import annotations
 
+import re
 import zipfile
 from pathlib import Path
 
@@ -38,15 +39,34 @@ REQUIRED_MEMBERS = (
 # such as "本工具无需安装 Python" (Python mentioned in a comment) does not trip
 # the gate.
 #
-# Detection is by COMMAND TOKEN, not substring: we look at the effective first
-# token after Batch's silent `@`, optional `call`, and `cmd /c` wrappers, then
-# strip surrounding quotes / a path from a fully-qualified interpreter path.
-# A substring scan wrongly passes a bare `py android_ota\...py` (no `-` flag)
-# and wrongly rejects `copy android_ota\...py backup.py`. The name set below is
-# the closed list of Windows Python launchers we refuse to depend on.
-_INTERPRETER_NAMES = frozenset(
-    {"py", "py.exe", "python", "python.exe", "python3", "python3.exe"}
+# Detection is by COMMAND POSITION, not substring: a line is split into
+# execution segments on the real Batch run operators (``&&``, ``||``, ``|``,
+# ``&``); each segment's leading wrappers (``@``, ``call``, ``cmd /c``,
+# ``start``) and control heads (``if …``, ``for … do``) are peeled off, and the
+# resulting command token's basename is compared against the closed interpreter
+# set. A substring scan wrongly passes a bare ``py android_ota\...py`` (no ``-``
+# flag) launched behind ``&&`` and wrongly rejects ``copy android_ota\...py
+# backup.py``. The name set below is the closed list of Windows Python launchers
+# (incl. the windowless ``pythonw``/``pyw`` variants) we refuse to depend on.
+# Anchored command-name pattern, rather than a substring scan: it covers the
+# standard Windows `py`/`python` launchers, versioned forms (python3.11.exe),
+# and windowless variants without treating unrelated names such as
+# ``old_python.tmp`` as interpreters.
+_INTERPRETER_PATTERN = re.compile(
+    r"^(?:pyw?|python(?:w|[23](?:\.\d+)?)?)(?:\.exe)?$", re.IGNORECASE
 )
+
+# Batch run operators that start a NEW command in the same line. Longest first
+# so `&&`/`||` are not mis-split as two single-char `&`/`|` separators. Batch
+# filenames cannot contain these characters, so splitting on them is safe.
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[&|]")
+
+# Control heads whose *argument* is itself a command to run. Once one is seen in
+# command position, the remainder of the segment is scanned for an interpreter
+# token rather than trusting a fixed position (batch `if`/`for` have variable
+# condition arity). `start` launches its target in a new context. Conservative:
+# any interpreter token after one of these is treated as an execution.
+_CONTROL_HEADS = frozenset({"if", "for", "else", "do", "start"})
 
 
 def _is_comment(line: str) -> bool:
@@ -54,32 +74,66 @@ def _is_comment(line: str) -> bool:
     return stripped.startswith("::") or stripped.lower().startswith("rem ") or stripped.lower() == "rem"
 
 
-def _command_token(line: str) -> str | None:
-    """Return the lowercased basename of a line's command token, or None.
-
-    Resolves the simple Batch wrappers that can conceal a command (``@``,
-    ``call``, ``cmd /c``), then strips surrounding quotes and a directory prefix
-    from a fully-qualified path (``C:\\Python311\\python.exe`` →
-    ``python.exe``). The interpreter name is compared, never matched as a
-    substring of an argument.
-    """
-    tokens = line.strip().lstrip("@").split()
-    if not tokens:
-        return None
-    while tokens and tokens[0].lstrip("@").lower() == "call":
-        tokens = tokens[1:]
-    if not tokens:
-        return None
-    first = tokens[0].lstrip("@")
-    first_name = first.strip('"').strip("'").replace("/", "\\").rsplit("\\", 1)[-1].lower()
-    if first_name in {"cmd", "cmd.exe"}:
-        if len(tokens) < 3 or tokens[1].lower() != "/c":
-            return first_name
-        return _command_token(" ".join(tokens[2:]))
-    first = first.strip('"').strip("'")
+def _basename(token: str) -> str:
+    """Lowercased basename of a token: strip quotes, Batch block parens and any
+    path prefix. Batch opens a command block with ``(`` glued to the first
+    command (``if … (py x.py)``), so leading/trailing parens are not part of the
+    interpreter name."""
+    token = token.strip().strip("()").strip('"').strip("'")
+    # `%~dp0python.exe` is the common Batch idiom for a sibling executable. It
+    # has no literal path separator before the executable name, so normalize the
+    # parameter-expansion prefix before taking the basename.
+    token = re.sub(r"^%~dp0", "", token, flags=re.IGNORECASE)
     # Basename regardless of \ or / separators (batch uses backslashes).
-    first = first.replace("/", "\\").rsplit("\\", 1)[-1]
-    return first.lower()
+    return token.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+
+
+def _is_interpreter_name(token: str) -> bool:
+    return bool(_INTERPRETER_PATTERN.fullmatch(_basename(token)))
+
+
+def _segment_invokes_interpreter(segment: str) -> bool:
+    """True if a single execution segment runs a Python interpreter.
+
+    Peels the silent ``@``, ``call``, ``cmd /c`` and ``start`` wrappers, then
+    inspects the effective command token. Under a control head (``if``/``for``/
+    ``do``/``else``/``start``) the whole remainder is scanned, since the command
+    to run appears at a variable offset after the condition.
+    """
+    tokens = segment.strip().lstrip("@").split()
+    while tokens:
+        head = _basename(tokens[0])
+        if head == "call":
+            tokens = tokens[1:]
+            continue
+        if head in {"cmd", "cmd.exe"}:
+            # Skip cmd and its /c /k /s /q … switches, then re-resolve. A
+            # common compact form is `/c"command ..."`; retain the quoted
+            # remainder as the next command token instead of swallowing it as
+            # part of the switch.
+            tokens = tokens[1:]
+            while tokens and tokens[0].startswith("/"):
+                switch = tokens.pop(0)
+                quote = switch.find('"')
+                if quote >= 0 and switch[quote + 1:]:
+                    tokens.insert(0, switch[quote + 1:])
+                    break
+            continue
+        if head in _CONTROL_HEADS:
+            # Variable-arity condition: any interpreter token in the remainder
+            # is an execution (conservative, fail-closed).
+            return any(_is_interpreter_name(t) for t in tokens[1:])
+        # Ordinary command: only the command token itself counts.
+        return _is_interpreter_name(tokens[0])
+    return False
+
+
+def _line_invokes_interpreter(line: str) -> bool:
+    """True if any execution segment of a Batch line runs an interpreter."""
+    return any(
+        _segment_invokes_interpreter(seg)
+        for seg in _SEGMENT_SPLIT.split(line)
+    )
 
 
 def _check_launcher(raw: bytes) -> None:
@@ -95,7 +149,7 @@ def _check_launcher(raw: bytes) -> None:
     for line in text.splitlines():
         if _is_comment(line):
             continue
-        if _command_token(line) in _INTERPRETER_NAMES:
+        if _line_invokes_interpreter(line):
             raise ValueError(
                 f"{LAUNCHER} must not invoke a python interpreter "
                 f"(offending line: {line.strip()!r})"

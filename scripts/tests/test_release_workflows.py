@@ -136,6 +136,27 @@ def test_qzx_steps_are_fail_closed_on_detector_success() -> None:
             f"QZX step {name!r} must require detector success; got {steps[name]['if']!r}"
 
 
+def test_missing_gradle_wrapper_fails_the_workflow() -> None:
+    """A missing ``android_apps/player/gradlew`` must FAIL the workflow, never
+    green-skip every APK/QZX artifact. The Gradle project has landed; the old
+    ``present=false`` warn-and-continue escape hatch would let a run where the
+    wrapper vanished (or was never committed at a tag) pass with zero artifacts
+    and get promoted. The detect step must fail closed (``::error::`` + a
+    nonzero exit) when the wrapper is absent."""
+    text, _ = _load("android-build.yml")
+    steps = _steps_by_name(_android_jobs()["build"])
+    detect = steps["Detect Gradle project"]
+    run = detect["run"]
+    # Must still record presence for the APK lane's downstream gate.
+    assert 'echo "present=true" >> "$GITHUB_OUTPUT"' in run
+    # The absent branch must NOT green-skip by declaring present=false.
+    assert 'present=false' not in run, \
+        "missing gradlew must fail the workflow, not set present=false and continue"
+    # The absent branch must error and exit nonzero.
+    assert "::error::" in run, "missing gradlew must emit a workflow error"
+    assert "exit 1" in run, "missing gradlew must exit nonzero (fail closed)"
+
+
 def test_workflow_stays_red_when_detector_fails() -> None:
     """No job/step may swallow the detector failure: the whole android-build run
     must stay failed (so promotion, which requires a successful run, is gated)."""
