@@ -18,6 +18,7 @@ Real Dart widget/unit tests (connection_status_test.dart, push_workflow_test.dar
 settings_topology_test.dart) additionally run in cloud CI (flutter test).
 """
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 FL = ROOT / "remote_flutter" / "lib"
@@ -159,6 +160,10 @@ def test_sent_ack_helper_defined_once() -> None:
 
 
 # ---- Area 7: Android setup hierarchy ----
+def test_android_settings_layout_is_well_formed_xml() -> None:
+    ET.parse(LAYOUT)
+
+
 def test_android_qr_before_diagnostics() -> None:
     layout = _read(LAYOUT)
     qr = layout.index("image_pair_qr")
