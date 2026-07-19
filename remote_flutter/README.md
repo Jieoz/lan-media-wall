@@ -1,10 +1,15 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.18.2：安全远程配置。**`configure_device` 仅允许设备名、分组、音量和静音，
+> 控制端按 capabilities/snapshot 显示可编辑项，以 revision 防冲突，并等待逐字段
+> `config_patch_result`。连接设置走 `transport_configure`，密钥轮换走
+> `rotate_device_key`；普通快照和结果从不含密钥。
+>
 > **v1.18.1：Windows 无 Python 现场 OTA 检测器。**本版是工具/打包层交付：
 > QZX Update Tools 新增双击启动器 `OTA检测.bat` 与独立
 > `android_ota_diag.exe`，可在 stock Windows x64 上离线生成中文诚实诊断；
-> 不改遥控端协议、传输、路由或 OTA 安装合同。版本随全端单一真相源
-> `pubspec.yaml` = `1.18.1+1181`。
+> 不改遥控端协议、传输、路由或 OTA 安装合同。该历史版本为
+> `1.18.1+1181`；当前版本以本页顶部的 `1.18.2+1182` 为准。
 >
 > **v1.18.0：操作员 UX 重构。**P2P 为主链路,Broker 降为高级/次要;无协议、传输、
 > 精确 `device_id` 路由、缓存/OTA/安全合同改动,纯 UX 层。**设置拓扑真相**:新增
@@ -40,11 +45,10 @@
 > detail;失败类盒子需用 QZX Update Tools 重装 daemon。版本随全端单一真相源
 > `pubspec.yaml` = `1.17.5+1175`。
 >
-> **v1.17.4：单台推送/清空 broker 连接。**设备详情对话框「连接」区可勾选
-> 「一并推送连接」后下发 `configure_device` 的 `broker_host` / `broker_port` /
-> `use_wss` / `psk`(空 host = 清空回发现/P2P,二次确认)。播放端写盘并重建链路;
-> 控制端协议封装见 `lib/protocol/messages.dart` 与 `WallState.configureDevice`。
-> 同版播放端另含 cache SOE 修复、API19 冻结帧与设置页回主页键(见 player README)。
+> **v1.17.4：单台推送/清空 broker 连接。**该版的 `configure_device` 连接/PSK
+> 旁路已由 v1.18.2 取代：普通配置仅安全字段，连接走 `transport_configure`，密钥走
+> `rotate_device_key`。同版播放端另含 cache SOE 修复、API19 冻结帧与设置页回主页键
+> (见 player README)。
 >
 > **v1.17.1-field-fix：分组当前清单回读。**编排栏此前只能从**单台**在线设备载入 `active_playlist`,选中分组无法回填草稿(操作员反映「分组清单拉不到」)。「目标分组(推送/同步目标)」区新增 **「载入分组当前清单」** 按钮:从组内在线成员里选一个**代表**,把其有序 `active_playlist` 载入草稿。代表策略(纯逻辑 `lib/state/group_playlist_load.dart`):优先 `active_playlist.group_id` 与所选组一致者,否则任一在线且非空的成员,平手时 `playing`/`buffering` 优先于 `idle`,再按 `device_id` 字典序稳定取小。载入时如实汇报一致性:按成员指纹(`playlist_id` + 有序 `item_id` join)与代表比较,提示组内多少台一致/不同/未上报(如 `已从代表 and-xxx 载入；组内 2 台一致、1 台不同、1 台未上报`)。单台回读路径(现名「单台当前播放列表(精确回读某一台)」)不变。不新增线协议类型,复用现有 `status.active_playlist`。
 
@@ -83,7 +87,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前版本 `1.18.1+1181`(`pubspec.yaml`)。**CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
+> **当前版本 `1.18.2+1182`(`pubspec.yaml`)。**CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK;播放端 `build.gradle.kts` 也从同一行派生,改 pubspec 即全端同步。发版流程见根 README。
 >
 > **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >

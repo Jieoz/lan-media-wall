@@ -754,7 +754,16 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
   final pskCtl = TextEditingController();
   final st = device.status;
   var groupId = st?.groupId ?? '';
-  var volume = (st?.volume ?? 80).toDouble();
+  final revision = st?.configSnapshot?.revision;
+  final snapshot = st?.configSnapshot;
+  final snapshotValues = <String, dynamic>{
+    if (snapshot?.deviceName != null) 'device_name': snapshot!.deviceName,
+    if (snapshot?.groupId != null) 'group_id': snapshot!.groupId,
+    'volume': snapshot?.volume,
+    'muted': snapshot?.muted,
+  };
+  var volume = ((snapshotValues['volume'] as num?)?.toDouble() ?? (st?.volume ?? 80).toDouble());
+  var muted = snapshotValues['muted'] == true;
   var useWss = false;
   var pushTransport = false;
   var clearBroker = false;
@@ -827,9 +836,15 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                     SizedBox(width: 32, child: Text('${volume.round()}')),
                   ],
                 ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('静音'),
+                  value: muted,
+                  onChanged: (v) => setLocal(() => muted = v),
+                ),
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: Text('音量仅本机 · 点「应用配置」后下发',
+                  child: Text('点「应用配置」后等待播放端确认',
                       style: Theme.of(ctx).textTheme.bodySmall),
                 ),
                 const Divider(height: 20),
@@ -841,9 +856,9 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                 const SizedBox(height: 6),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('一并推送播放端连接配置'),
+                  title: const Text('推送播放端连接配置'),
                   subtitle: const Text(
-                      '写盘后重建 transport；切 host 会短暂断链，需二次确认'),
+                      '独立连接命令会重建 transport；切 host 会短暂断链'),
                   value: pushTransport,
                   onChanged: (v) => setLocal(() {
                     pushTransport = v;
@@ -1104,22 +1119,27 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
   }
 
   try {
-    state.configureDevice(
+    final configRequest = state.configureDevice(
       deviceId: device.deviceId,
       deviceName: nameCtl.text.trim().isEmpty ? null : nameCtl.text.trim(),
       groupId: groupId.isEmpty ? null : groupId,
       volume: volume.round(),
-      brokerHost: brokerHost,
-      brokerPort: brokerPort,
-      useWss: useWssOut,
-      psk: pskOut,
-      clearBroker: clearBrokerOut,
+      muted: muted,
+      baseRevision: revision,
     );
+    if (pushTransport) {
+      state.configureTransport(
+        deviceId: device.deviceId,
+        brokerHost: clearBrokerOut ? '' : brokerHost!,
+        brokerPort: clearBrokerOut ? null : brokerPort,
+        useWss: clearBrokerOut ? null : useWssOut,
+      );
+    }
+    if (pskOut != null) state.rotateDeviceKey(deviceId: device.deviceId, psk: pskOut);
     if (context.mounted) {
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
-        ..showSnackBar(SnackBar(
-            content: Text(pushTransport ? '配置与连接命令已投递' : '配置命令已投递')));
+        ..showSnackBar(SnackBar(content: Text('配置已投递，等待播放端确认 ($configRequest)')));
     }
   } catch (e) {
     if (context.mounted) {

@@ -116,8 +116,10 @@ class Player:
         self.play_state = "idle"
         self.playlist: Optional[Dict[str, Any]] = None
         self.index = 0
-        self.volume = 80
-        self.muted = False
+        # §19: volume/muted are persisted config preferences — restore across
+        # reboots (fall back to the shipped defaults on a fresh device).
+        self.volume = self.state.volume if self.state.volume is not None else 80
+        self.muted = self.state.muted if self.state.muted is not None else False
         self.audio_master = True
         self._cache_generation_lock = threading.RLock()
         self.controller_present = bool(
@@ -415,10 +417,59 @@ class Player:
             "cache_summary": self._cache_summary(),
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1"],
+            # §19 remote config: advertise what the safe patch can touch + the
+            # current authoritative snapshot (revision for optimistic concurrency,
+            # redacted values — never the psk). Old controllers ignore both.
+            "config_capabilities": self._config_capabilities(),
+            "config_snapshot": self._config_snapshot(),
             "clock_offset_ms": self.clock.offset_ms,
             "cpu": self._cpu_percent(),
             "errors": self._errors[-5:],
         })
+
+    # --- §19 remote config: capabilities + redacted snapshot -----------
+    def _config_capabilities(self) -> Dict[str, Any]:
+        """What a controller may change and through which command. Lets the UI
+        render the right editors and disable what a given player can't do."""
+        return {
+            "safe_fields": list(config_mod.SAFE_CONFIG_FIELDS),
+            "transport_fields": list(config_mod.TRANSPORT_CONFIG_FIELDS),
+            # high-risk paths use dedicated, separately-guarded commands rather
+            # than the ordinary safe patch (§19.3/§19.5).
+            "transport_configure": True,
+            "rotate_device_key": True,
+            "config_version": 1,
+        }
+
+    def _config_snapshot(self) -> Dict[str, Any]:
+        """Authoritative view of this device's config for the controller.
+
+        NEVER carries key material: the psk is reduced to a boolean
+        `psk_configured` (redaction boundary, §19.5). `revision` is the
+        optimistic-concurrency token controllers echo back as base_revision."""
+        psk = self.cfg.psk
+        psk_configured = bool(psk) and psk != config_mod.DEFAULT_PSK_PLACEHOLDER
+        return {
+            "revision": self.state.config_revision,
+            "values": {
+                "device_name": self.device_name,
+                "group_id": self.group_id,
+                "volume": self.volume,
+                "muted": self.muted,
+                # presence only — the value itself never leaves the device.
+                "psk_configured": psk_configured,
+            },
+            # transport is a separate high-risk surface; expose non-secret
+            # current wiring so the UI can show it without a rotate round-trip.
+            "transport": {
+                "broker_host": self.state.broker_host,
+                "broker_port": self.state.broker_port,
+                "use_wss": self.state.use_wss,
+                "auto_discovery": self.state.broker_host is None,
+            },
+            "pending": {},
+            "requires_restart": False,
+        }
 
     def _effective_state(self, snap: Dict[str, Any]) -> str:
         # downloading takes visual priority only when nothing is playing
@@ -456,6 +507,8 @@ class Player:
             "set_audio_master": self._h_set_audio_master,
             "assign_group": self._h_assign_group,
             "configure_device": self._h_configure_device,
+            "transport_configure": self._h_transport_configure,
+            "rotate_device_key": self._h_rotate_device_key,
             "debug_snapshot": self._h_debug_snapshot,
             "download_logs": self._h_download_logs,
             "cache_cleanup": self._h_cache_cleanup,
@@ -1044,6 +1097,32 @@ class Player:
         写盘并重建 transport;psk 要求入站帧已签名(sig 非空)。"""
         if payload.get("device_id") != self.device_id:
             return
+        # §19: configure_device is always a safe patch. Transport and secret
+        # fields are rejected regardless of whether an older caller supplies a
+        # request_id; they must use their dedicated command paths below.
+        request_id = payload.get("request_id")
+        rejected: List[Dict[str, Any]] = []
+        applied: Dict[str, Any] = {}
+        base = payload.get("base_revision")
+        if (request_id is not None and isinstance(base, (int, float)) and
+                int(base) != self.state.config_revision):
+            # stale base → lost-update conflict: apply nothing, return current rev.
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "conflict": True, "revision": self.state.config_revision,
+                "applied": {}, "rejected": [{"field": "_revision",
+                                             "reason": "conflict"}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        for key in payload:
+            if key in ("device_id", "request_id", "base_revision"):
+                continue
+            kind = config_mod.classify_config_field(key)
+            if kind != "safe":
+                rejected.append({"field": key, "reason": {
+                    "transport": config_mod.REJECT_HIGH_RISK_TRANSPORT,
+                    "secret": config_mod.REJECT_HIGH_RISK_SECRET,
+                    "unknown": config_mod.REJECT_UNKNOWN_FIELD}[kind]})
         name = payload.get("device_name")
         name_dirty = False
         if isinstance(name, str) and name.strip():
@@ -1054,87 +1133,134 @@ class Player:
                 if self.discovery is not None:
                     self.discovery.update_name(self.device_name)
                 name_dirty = True
+                applied["device_name"] = self.device_name
         gid = payload.get("group_id")
-        if isinstance(gid, str) and gid:
+        if isinstance(gid, str) and gid and gid != self.group_id:
             self.group_id = gid
             self.state.set_group_id(gid)
+            applied["group_id"] = gid
         vol = payload.get("volume")
         if isinstance(vol, (int, float)):
-            self.volume = max(0, min(100, int(vol)))
-            await self._mpv("set_volume", self.volume)
+            next_volume = max(0, min(100, int(vol)))
+            if next_volume != self.volume:
+                self.volume = next_volume
+                await self._mpv("set_volume", self.volume)
+                self.state.set_volume(self.volume)
+                applied["volume"] = self.volume
         muted = payload.get("muted")
-        if isinstance(muted, bool):
+        if isinstance(muted, bool) and muted != self.muted:
             self.muted = muted
             await self._mpv("set_mute", self.muted)
+            self.state.set_muted(self.muted)
+            applied["muted"] = self.muted
 
-        transport_dirty = False
-        if "broker_host" in payload:
-            host = payload.get("broker_host")
-            host_s = host.strip() if isinstance(host, str) else ""
-            if not host_s:
-                self.state.clear_broker()
-                # restore auto-discovery path and drop forced host from cfg
-                broker = self.cfg.raw.setdefault("broker", {})
-                broker["host"] = ""
-                topo = self.cfg.raw.setdefault("topology", {})
-                topo["auto"] = True
-                transport_dirty = True
-            else:
-                port = payload.get("broker_port")
-                port_i = int(port) if isinstance(port, (int, float)) else None
-                use_wss = payload.get("use_wss")
-                use_wss_b = bool(use_wss) if isinstance(use_wss, bool) else None
-                self.state.set_broker(host=host_s, port=port_i, use_wss=use_wss_b)
-                transport_dirty = True
-        else:
-            # port / wss alone still apply when host already set
-            if "broker_port" in payload or "use_wss" in payload:
-                port = payload.get("broker_port")
-                port_i = int(port) if isinstance(port, (int, float)) else None
-                use_wss = payload.get("use_wss")
-                use_wss_b = bool(use_wss) if isinstance(use_wss, bool) else None
-                if self.state.broker_host or port_i is not None:
-                    self.state.set_broker(
-                        host=self.state.broker_host,
-                        port=port_i,
-                        use_wss=use_wss_b,
-                    )
-                    transport_dirty = True
-        if "psk" in payload:
-            # Windows envelopes don't carry env.authed; require a non-empty sig.
-            sig = env.get("sig") if isinstance(env, dict) else None
-            if not sig:
-                log.warning("configure_device psk rejected: frame not signed")
-            else:
-                psk = payload.get("psk")
-                if isinstance(psk, str):
-                    next_psk = psk if psk.strip() else None
-                    if next_psk:
-                        self.state.set_psk(next_psk)
-                    else:
-                        self.state.set_psk("")
-                    transport_dirty = True
-
-        if transport_dirty:
-            config_mod.apply_state_transport(self.cfg, self.state)
-            # AuthState keeps its own psk copy — refresh from cfg after overlay.
-            try:
-                self.auth.psk = self.cfg.psk  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            log.info(
-                "configure_device transport dirty host=%s port=%s wss=%s",
-                self.cfg.get("broker", "host"),
-                self.cfg.get("broker", "port"),
-                self.cfg.get("broker", "use_wss"),
-            )
-            asyncio.create_task(self._rebuild_transport())
-        elif name_dirty:
+        # `configure_device` remains the safe, low-risk path for every caller.
+        # Connection wiring and secrets are only accepted by the dedicated
+        # transport_configure and rotate_device_key handlers below.
+        if name_dirty:
             try:
                 await self._send_status()
             except Exception:
                 pass
             log.info("configure_device name=%s", self.device_name)
+        if request_id is not None:
+            # bump the monotonic revision only when a value actually changed; a
+            # no-op patch leaves it untouched. ok=True means nothing was rejected
+            # (a pure no-op with no rejections is still a success).
+            revision = (self.state.bump_config_revision() if applied
+                        else self.state.config_revision)
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": not rejected, "conflict": False, "revision": revision,
+                "applied": applied, "rejected": rejected,
+                "pending": {}, "requires_restart": False}, to="controller")
+
+    # --- §19.3 transport_configure (high-risk broker wiring) ----------
+    async def _h_transport_configure(self, payload, env) -> None:
+        """Dedicated high-risk path for broker_host/port/use_wss (§19.3). Kept
+        OUT of the safe configure_device patch: it writes state, re-overlays cfg
+        and rebuilds the live transport. An empty broker_host clears the override
+        and restores auto-discovery/P2P. Emits config_patch_result as its
+        terminal ack (never a plain ok)."""
+        if payload.get("device_id") != self.device_id:
+            return
+        request_id = payload.get("request_id")
+        host = payload.get("broker_host")
+        if not isinstance(host, str):
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "revision": self.state.config_revision, "applied": {},
+                "rejected": [{"field": "broker_host",
+                              "reason": config_mod.REJECT_INVALID_VALUE}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        host_s = host.strip()
+        if not host_s:
+            self.state.clear_broker()
+            # apply_state_transport is also the canonical inverse overlay: it
+            # restores the baseline topology rather than leaving a stale broker
+            # config in memory after an explicit clear.
+            config_mod.apply_state_transport(self.cfg, self.state)
+            self.cfg.raw.setdefault("topology", {})["auto"] = True
+            applied = {"broker_host": "", "auto_discovery": True}
+        else:
+            port = payload.get("broker_port")
+            port_i = int(port) if isinstance(port, (int, float)) else None
+            use_wss = payload.get("use_wss")
+            use_wss_b = bool(use_wss) if isinstance(use_wss, bool) else None
+            self.state.set_broker(host=host_s, port=port_i, use_wss=use_wss_b)
+            config_mod.apply_state_transport(self.cfg, self.state)
+            applied = {"broker_host": host_s, "broker_port": self.state.broker_port,
+                       "use_wss": self.state.use_wss}
+        revision = self.state.bump_config_revision()
+        asyncio.create_task(self._rebuild_transport())
+        await self.ws.send("config_patch_result", {
+            "request_id": request_id, "device_id": self.device_id,
+            "ok": True, "revision": revision,
+            "applied": applied, "rejected": [],
+            "pending": {"transport": "reconnecting"}, "requires_restart": False},
+            to="controller")
+
+    # --- §19.5 rotate_device_key (secret material, signed-frame only) --
+    async def _h_rotate_device_key(self, payload, env) -> None:
+        """Dedicated path for the pre-shared key (§19.5). Only a SIGNED inbound
+        frame may rotate the secret; the result NEVER echoes key material back —
+        only a psk_configured flag. Refreshes AuthState and rebuilds transport so
+        the new key takes effect without a restart."""
+        if payload.get("device_id") != self.device_id:
+            return
+        request_id = payload.get("request_id")
+        sig = env.get("sig") if isinstance(env, dict) else None
+        if not sig:
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "revision": self.state.config_revision, "applied": {},
+                "rejected": [{"field": "psk",
+                              "reason": config_mod.REJECT_UNSIGNED_FRAME}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        psk = payload.get("psk")
+        if not isinstance(psk, str) or not psk.strip():
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "revision": self.state.config_revision, "applied": {},
+                "rejected": [{"field": "psk",
+                              "reason": config_mod.REJECT_INVALID_VALUE}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        self.state.set_psk(psk.strip())
+        config_mod.apply_state_transport(self.cfg, self.state)
+        revision = self.state.bump_config_revision()
+        try:
+            self.auth.psk = self.cfg.psk  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        asyncio.create_task(self._rebuild_transport())
+        await self.ws.send("config_patch_result", {
+            "request_id": request_id, "device_id": self.device_id,
+            "ok": True, "revision": revision,
+            "applied": {"psk_configured": True}, "rejected": [],
+            "pending": {}, "requires_restart": False}, to="controller")
 
     async def _rebuild_transport(self) -> None:
         """Stop the live WS/discovery link and re-bootstrap from current cfg.

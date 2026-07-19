@@ -1,6 +1,12 @@
 # Changelog
 
-## [v1.18.1] — 2026-07-19
+## [v1.18.2] — 2026-07-20
+
+- **Safe remote configuration protocol** (versionCode **1182**, versionName `1.18.2`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.18.2+1182`).
+  - `configure_device` is a revisioned low-risk patch only: `device_name`, `group_id`, `volume`, and `muted`. Players advertise `config_capabilities` and a redacted `config_snapshot`; the controller sends `base_revision` and receives per-field `config_patch_result` through either Broker or P2P.
+  - Connection topology changes require `transport_configure`; key replacement requires `rotate_device_key`. Neither command leaks a secret in snapshots, logs, or results. Both advance the same persisted configuration revision as a safe patch.
+  - Broker derives player identity from its authenticated connection rather than a player-supplied `device_id`, preventing a player from reporting another device as ready. Android, Windows, Broker, Flutter, and `protocol_spec.md` use the same command/result contract.
+
 
 - **Windows 无 Python 现场 OTA 检测器** (versionCode **1181**, versionName `1.18.1`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.18.1+1181`). Mapping: `versionCode = major×1000 + minor×10 + patch`. 纯打包/工具层交付,不改协议、传输、路由或 OTA 安装合同。
   - **双击即用的中文启动器 `OTA检测.bat`.** 现场操作员在**未安装 Python** 的 stock Windows x64 机器上双击即可运行:UTF-8 BOM + CRLF,`chcp 65001`,弹出 Windows 文件选择框选诊断 ZIP(默认 `qzx-yunos-4.4` profile),在 ZIP 旁生成中文 `*-OTA检测结果.txt`,每条退出路径都 `pause` 保持窗口。启动器**从不调用 python/py 解释器**,只运行同目录 `android_ota\android_ota_diag.exe`;`LMW_OTA_NONINTERACTIVE` 提供无人值守 opt-out(必须以参数传诊断包)。

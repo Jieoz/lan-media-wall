@@ -106,6 +106,78 @@ void main() {
       expect(d.activePlaylist?.loop, isFalse);
     });
 
+    test('§19 config snapshot parses only redacted values', () {
+      final d = DeviceStatus.fromMap({
+        'device_id': 'and-01',
+        'config_capabilities': {
+          'safe_fields': ['device_name', 'group_id', 'volume', 'muted'],
+          'transport_fields': ['broker_host', 'broker_port', 'use_wss'],
+          'transport_configure': true,
+          'rotate_device_key': true,
+          'config_version': 1,
+        },
+        'config_snapshot': {
+          'revision': 7,
+          'values': {
+            'device_name': 'Hall display',
+            'group_id': 'hall',
+            'volume': 70,
+            'muted': false,
+            'psk_configured': true,
+          },
+          'transport': {
+            'broker_host': '10.0.0.8',
+            'broker_port': 8771,
+            'use_wss': true,
+            'auto_discovery': false,
+          },
+        },
+      });
+      expect(d.configCapabilities?.safeFields, contains('muted'));
+      expect(d.configCapabilities?.supportsTransportConfigure, isTrue);
+      expect(d.configSnapshot?.revision, 7);
+      expect(d.configSnapshot?.brokerHost, '10.0.0.8');
+      expect(d.configSnapshot?.pskConfigured, isTrue);
+    });
+
+    test('§19 commands keep safe patch, transport, and key rotation separate', () {
+      final patch = Commands.configureDevice(
+        deviceId: 'and-01', deviceName: 'Hall display', muted: true,
+        requestId: 'cfg-7', baseRevision: 7,
+      );
+      expect(patch['request_id'], 'cfg-7');
+      expect(patch['base_revision'], 7);
+      expect(patch.containsKey('broker_host'), isFalse);
+      expect(patch.containsKey('psk'), isFalse);
+
+      expect(
+        () => Commands.configPatch(
+          deviceId: 'and-01',
+          patch: {'broker_host': '10.0.0.8'},
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => Commands.configPatch(
+          deviceId: 'and-01',
+          patch: {'psk': 'replacement-key'},
+        ),
+        throwsArgumentError,
+      );
+
+      final transport = Commands.transportConfigure(
+        deviceId: 'and-01', brokerHost: '', brokerPort: 8770,
+        useWss: false, requestId: 'transport-8',
+      );
+      expect(transport['broker_host'], '');
+      expect(transport['request_id'], 'transport-8');
+
+      final key = Commands.rotateDeviceKey(
+        deviceId: 'and-01', psk: 'replacement-key', requestId: 'key-9',
+      );
+      expect(key.keys, containsAll(['device_id', 'psk', 'request_id']));
+    });
+
     test('缺省/缺失字段走默认值', () {
       final d = DeviceStatus.fromMap({'device_id': 'x'});
       expect(d.online, isFalse);

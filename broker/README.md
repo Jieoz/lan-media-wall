@@ -12,13 +12,18 @@ This implements the broker-side responsibilities of
 field names and semantics here follow it exactly.
 
 
-## v1.17.4 — configure_device transport fields
+## v1.18.2 — safe remote configuration
 
-`_on_configure_device` forwards optional `broker_host` / `broker_port` /
-`use_wss` / `psk` to the target player unchanged (same §19 unicast path as
-name/group/volume). Empty `broker_host` is a deliberate clear-to-discovery
-signal; the broker does not interpret transport fields itself. Spec:
-`protocol_spec.md` §19.
+`configure_device` is a low-risk patch only: display name, group, volume, and
+mute. A player advertises capabilities plus a revisioned redacted snapshot, and
+returns a per-field `config_patch_result`. Transport changes are sent only as
+`transport_configure`; PSK replacement is sent only as `rotate_device_key`.
+Neither secrets nor pairing identity appear in snapshots or results.
+
+The broker routes these commands and their results without interpreting secret
+values. It derives player identity from the authenticated connection, not a
+payload `device_id`.
+
 
 ## v1.17.0 — cache cleanup / inventory routing
 

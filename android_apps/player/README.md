@@ -29,14 +29,16 @@
 > detail 优先 `Failure`/`Error` 而非仅 `pkg:` 暂存路径。**失败类盒子需重装
 > 新 `lmw_root_daemon`(QZX Update Tools / `lmw_setup`),只推 APK 不够。**
 >
-> **v1.17.4 — 播放体验 + 远程 broker 配置:**勾选清理缓存不再因
+> **v1.17.4 — 播放体验:**勾选清理缓存不再因
 > `LiveCacheBackend.PlayerView.cacheSummary()` 同名自递归 StackOverflow
 > (改为调用外层 `buildCacheSummaryMap()`)。API19 单解码器切媒体用近全屏冻结
 > JPEG(`TRANSITION_FREEZE_MAX_WIDTH=1280` + `cachedFreezeFrame` /
 > `showTransitionFrame`)盖空窗,不是双 VDEC 零缝。设置页绑定物理「回主页」
-> (`KEYCODE_SETTINGS`=176)回墙。`configure_device` 接受 `broker_host` /
-> `broker_port` / `use_wss` / `psk`(空 host 清空回发现/P2P);写盘后只重建
-> transport,不叠 status/thumbnail 循环;PSK 需鉴权帧。
+> (`KEYCODE_SETTINGS`=176)回墙。
+>
+> **v1.18.2 — 安全远程配置:**`configure_device` 只接收设备名、分组、音量和静音，
+> 以 revision 防冲突并回传逐字段结果。`transport_configure` 单独持久化和重建连接；
+> `rotate_device_key` 单独轮换密钥。状态快照与回执绝不回显密钥。
 >
 > **v1.17.1-field-fix — 无 ADB 通用取证(takeover forensics):**现场盒子无 ADB、
 > 竞品 OEM 播放器开机自启且手动退出后又抢屏。一键诊断导出新增 `===== takeover_forensics =====`
@@ -103,7 +105,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.18.1 / versionCode 1181`** — derived from
+> **Current build: `versionName 1.18.2 / versionCode 1182`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

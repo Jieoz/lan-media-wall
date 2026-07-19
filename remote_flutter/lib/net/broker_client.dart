@@ -48,6 +48,9 @@ class BrokerClient {
   /// §28 收到播放端回传的 cache_inventory_result 终态帧。
   void Function(Map<String, dynamic> payload)? onCacheInventoryResult;
 
+  /// §19 player confirmation for safe config patches and high-risk config paths.
+  void Function(Map<String, dynamic> payload)? onConfigPatchResult;
+
   /// 连接态变化。
   void Function(ConnState state)? onState;
 
@@ -266,6 +269,9 @@ class BrokerClient {
         break;
       case 'cache_inventory_result':
         onCacheInventoryResult?.call(env.payload);
+        break;
+      case 'config_patch_result':
+        onConfigPatchResult?.call(env.payload);
         break;
       case 'ack':
         _log('ack: ${env.payload}');

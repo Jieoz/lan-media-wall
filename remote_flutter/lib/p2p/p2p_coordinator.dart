@@ -118,6 +118,9 @@ class P2pCoordinator {
   void Function(Map<String, dynamic> payload)? onCacheCleanupResult;
   void Function(Map<String, dynamic> payload)? onCacheInventoryResult;
 
+  /// §19 config patch results converge with [BrokerClient] in WallState.
+  void Function(Map<String, dynamic> payload)? onConfigPatchResult;
+
   /// 诊断日志。
   void Function(String line)? onLog;
 
@@ -534,6 +537,9 @@ class P2pCoordinator {
         break;
       case 'cache_inventory_result':
         onCacheInventoryResult?.call(_withDevice(env.payload, deviceId));
+        break;
+      case 'config_patch_result':
+        onConfigPatchResult?.call(_withDevice(env.payload, deviceId));
         break;
       default:
         _log('忽略入站类型($deviceId): ${env.type}');

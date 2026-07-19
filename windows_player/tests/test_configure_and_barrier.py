@@ -21,7 +21,7 @@ class _FakeWs:
     def __init__(self):
         self.sent = []
 
-    async def send(self, type_, payload):
+    async def send(self, type_, payload, **_kwargs):
         self.sent.append((type_, payload))
 
 
@@ -124,7 +124,7 @@ def test_configure_device_partial_update(tmp_path):
 
 
 
-def test_configure_device_broker_host_persists_and_overlays(tmp_path):
+def test_configure_device_rejects_legacy_transport_and_key(tmp_path):
     p = _player(tmp_path)
     rebuilds = []
 
@@ -136,84 +136,25 @@ def test_configure_device_broker_host_persists_and_overlays(tmp_path):
     async def scenario():
         await p._h_configure_device({
             "device_id": p.device_id,
+            "request_id": "legacy-config",
             "broker_host": "10.9.8.7",
             "broker_port": 9001,
             "use_wss": True,
+            "psk": "must-not-persist",
         }, {"sig": "deadbeef"})
-        # create_task schedules on THIS loop — drain before loop closes
         await asyncio.sleep(0.05)
 
     _run(scenario())
-    assert p.state.broker_host == "10.9.8.7"
-    assert p.state.broker_port == 9001
-    assert p.state.use_wss is True
-    assert p.cfg.get("broker", "host") == "10.9.8.7"
-    assert p.cfg.get("broker", "port") == 9001
-    assert p.cfg.get("broker", "use_wss") is True
-    assert p.cfg.get("topology", "auto") is False
-    s2 = C.PersistentState.load(p._state_dir)  # type: ignore[attr-defined]
-    assert s2.broker_host == "10.9.8.7"
-    assert s2.broker_port == 9001
-    assert rebuilds == [True]
-
-
-def test_configure_device_clear_broker_restores_auto(tmp_path):
-    p = _player(tmp_path)
-    rebuilds = []
-
-    async def _fake_rebuild():
-        rebuilds.append(True)
-
-    p._rebuild_transport = _fake_rebuild  # type: ignore[assignment]
-    p.state.set_broker(host="1.2.3.4", port=8770, use_wss=False)
-    C.apply_state_transport(p.cfg, p.state)
-    assert p.cfg.get("topology", "auto") is False
-
-    async def scenario():
-        await p._h_configure_device({
-            "device_id": p.device_id,
-            "broker_host": "",
-        }, {})
-        await asyncio.sleep(0.05)
-
-    _run(scenario())
-    assert p.state.broker_host is None
-    assert p.cfg.get("broker", "host") == ""
-    assert p.cfg.get("topology", "auto") is True
-    assert rebuilds == [True]
-
-
-def test_configure_device_psk_requires_signed_frame(tmp_path):
-    p = _player(tmp_path)
-    rebuilds = []
-
-    async def _fake_rebuild():
-        rebuilds.append(True)
-
-    p._rebuild_transport = _fake_rebuild  # type: ignore[assignment]
-
-    async def reject_unsigned():
-        await p._h_configure_device({
-            "device_id": p.device_id,
-            "psk": "new-secret-key-material",
-        }, {})
-        await asyncio.sleep(0.05)
-
-    _run(reject_unsigned())
-    assert p.state.psk_override is None
+    results = [payload for kind, payload in p.ws.sent if kind == "config_patch_result"]
+    assert results
+    assert results[-1]["ok"] is False
+    assert results[-1]["applied"] == {}
+    assert {entry["field"] for entry in results[-1]["rejected"]} == {
+        "broker_host", "broker_port", "use_wss", "psk",
+    }
     assert rebuilds == []
-
-    async def accept_signed():
-        await p._h_configure_device({
-            "device_id": p.device_id,
-            "psk": "new-secret-key-material",
-        }, {"sig": "abc123"})
-        await asyncio.sleep(0.05)
-
-    _run(accept_signed())
-    assert p.state.psk_override == "new-secret-key-material"
-    assert p.cfg.raw["psk"] == "new-secret-key-material"
-    assert rebuilds == [True]
+    assert p.state.broker_host is None
+    assert p.state.psk_override is None
 
 
 # ---- §21 prefetch barrier ------------------------------------------

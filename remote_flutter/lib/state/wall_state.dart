@@ -176,6 +176,12 @@ class WallState extends ChangeNotifier {
   final Map<String, Completer<File>> _pendingLogDownload = {};
   final Map<String, String> _updateStatus = {};
   final Map<String, String> _updateDetail = {};
+  final Map<String, Map<String, dynamic>> _configPatchResults = {};
+  int _nextConfigRequest = 0;
+
+  /// Latest acknowledged §19 result for a device.
+  Map<String, dynamic>? configPatchResultFor(String deviceId) =>
+      _configPatchResults[deviceId];
 
   /// broker 单播只按 device_id 路由；同一台设备同一时刻只挂一个 pending 请求，
   /// 因此用 device_id 作 key。空 device_id（组播/广播场景）统一落到 '*' 桶，
@@ -489,6 +495,7 @@ class WallState extends ChangeNotifier {
       ..onLogDownload = _onLogDownload
       ..onCacheCleanupResult = _onCacheCleanupResult
       ..onCacheInventoryResult = _onCacheInventoryResult
+      ..onConfigPatchResult = _onConfigPatchResult
       ..onState = _onConn
       ..onAuthMode = _onAuthMode
       ..onKeyMode = _onKeyMode
@@ -508,6 +515,7 @@ class WallState extends ChangeNotifier {
       ..onLogDownload = _onLogDownload
       ..onCacheCleanupResult = _onCacheCleanupResult
       ..onCacheInventoryResult = _onCacheInventoryResult
+      ..onConfigPatchResult = _onConfigPatchResult
       ..onLog = _pushLog;
     _linksReady = true;
 
@@ -943,6 +951,17 @@ class WallState extends ChangeNotifier {
       return;
     }
     _pushLog('[${r.deviceId}] cache_inventory_result: ${r.items.length} 项');
+    notifyListeners();
+  }
+
+  void _onConfigPatchResult(Map<String, dynamic> payload) {
+    final deviceId = payload['device_id']?.toString() ?? '';
+    if (deviceId.isEmpty) return;
+    _configPatchResults[deviceId] = Map<String, dynamic>.from(payload);
+    final ok = payload['ok'] == true;
+    final conflict = payload['conflict'] == true;
+    _pushLog('[$deviceId] config_patch_result ${ok ? 'applied' : conflict ? 'conflict' : 'rejected'} '
+        'rev=${payload['revision'] ?? '?'}');
     notifyListeners();
   }
 
@@ -1401,38 +1420,53 @@ class WallState extends ChangeNotifier {
       _send('delete_group',
           Commands.deleteGroup(groupId: groupId, reassignTo: reassignTo));
 
-  /// configure_device(§19)：per-device 配置统一入口(改名/设组/音量/静音/连接)。
-  /// 连接字段仅在调用方显式传入时下发；[clearBroker]=true 发空 host 回发现/P2P。
-  /// [psk] 仅在已鉴权链路下应由 UI 开启，播放端仍会二次校验 env.authed。
-  void configureDevice({
+  /// Applies only low-risk fields. The player returns `config_patch_result` with
+  /// per-field outcomes; transport and key changes use dedicated commands.
+  String configureDevice({
     required String deviceId,
     String? deviceName,
     String? groupId,
     int? volume,
     bool? muted,
-    String? brokerHost,
+    int? baseRevision,
+  }) {
+    final requestId = 'cfg-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
+    _send('configure_device', Commands.configPatch(
+      deviceId: deviceId,
+      requestId: requestId,
+      baseRevision: baseRevision,
+      patch: {
+        if (deviceName != null) 'device_name': deviceName,
+        if (groupId != null) 'group_id': groupId,
+        if (volume != null) 'volume': volume,
+        if (muted != null) 'muted': muted,
+      },
+    ));
+    return requestId;
+  }
+
+  String configureTransport({
+    required String deviceId,
+    required String brokerHost,
     int? brokerPort,
     bool? useWss,
-    String? psk,
-    bool clearBroker = false,
-  }) =>
-      _send(
-          'configure_device',
-          Commands.configureDevice(
-            deviceId: deviceId,
-            deviceName: deviceName,
-            groupId: groupId,
-            volume: volume,
-            muted: muted,
-            brokerHost: brokerHost,
-            brokerPort: brokerPort,
-            useWss: useWss,
-            psk: psk,
-            clearBroker: clearBroker,
-          ),
-          deviceId: deviceId);
+  }) {
+    final requestId = 'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
+    _send('transport_configure', Commands.transportConfigure(
+      deviceId: deviceId, brokerHost: brokerHost, brokerPort: brokerPort,
+      useWss: useWss, requestId: requestId,
+    ));
+    return requestId;
+  }
 
-  /// 把 APK 暴露成被控端可 GET 的 URL,返回可下发给 update_app 的 (url, sha256)。
+  String rotateDeviceKey({required String deviceId, required String psk}) {
+    final requestId = 'key-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
+    _send('rotate_device_key', Commands.rotateDeviceKey(
+      deviceId: deviceId, psk: psk, requestId: requestId,
+    ));
+    return requestId;
+  }
+
   /// broker 模式优先上传到 broker 媒体库;P2P/无 broker 时复用控制端本机临时 HTTP 服务。
   Future<({String url, String sha256})> uploadApkForUpdate({
     required File apk,

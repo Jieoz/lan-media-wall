@@ -1,11 +1,10 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.18.1+1181: field-diagnostic packaging — standalone Windows x64 OTA
-# detector (OTA检测.bat + PyInstaller android_ota_diag.exe, no Python needed),
-# fail-closed QZX bundle contract, evidence-honest Chinese --human report.
+# v1.18.2+1182: safe remote configuration protocol — config revision/snapshots,
+# structured results across Broker/P2P, and isolated transport/key operations.
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.18.1+1181
+version: 1.18.2+1182
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

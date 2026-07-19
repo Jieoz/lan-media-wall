@@ -123,6 +123,16 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_MUTED, false)
         set(value) { prefs.edit().putBoolean(KEY_MUTED, value).apply() }
 
+    /** Monotonic §19 remote-config revision for optimistic patch conflicts. */
+    var configRevision: Int
+        get() = prefs.getInt(KEY_CONFIG_REVISION, 0)
+        set(value) { prefs.edit().putInt(KEY_CONFIG_REVISION, value.coerceAtLeast(0)).apply() }
+
+    fun bumpConfigRevision(): Int {
+        configRevision += 1
+        return configRevision
+    }
+
     var alwaysCollectThumbnails: Boolean
         get() = prefs.getBoolean(KEY_ALWAYS_THUMBS, false)
         set(value) { prefs.edit().putBoolean(KEY_ALWAYS_THUMBS, value).apply() }
@@ -234,6 +244,7 @@ class Settings(context: Context) {
         private const val KEY_BROKER_KEY = "broker_key"
         private const val KEY_VOLUME = "volume"
         private const val KEY_MUTED = "muted"
+        private const val KEY_CONFIG_REVISION = "config_revision"
         private const val KEY_ALWAYS_THUMBS = "always_thumbs"
         private const val KEY_CACHE_MAX_BYTES = "cache_max_bytes"
         private const val KEY_VIDEO_BACKEND = "video_backend"

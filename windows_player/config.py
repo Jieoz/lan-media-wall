@@ -202,6 +202,48 @@ def apply_state_transport(cfg: Config, state: "PersistentState") -> None:
         cfg.raw["psk"] = psk
 
 
+# --- §19 remote config management: field classification (single source) ----
+# The allowlist that governs the ordinary *safe* config patch (configure_device).
+# These apply live and bump config_revision. Anything else is refused by the
+# safe patch with a structured reason (never silently dropped, never applied).
+SAFE_CONFIG_FIELDS = ("device_name", "group_id", "volume", "muted")
+
+# High-risk transport fields — moved OUT of the safe patch into transport_configure
+# (§19.3). Listing them here lets the safe patch reject them with a precise hint
+# instead of a generic "unknown".
+TRANSPORT_CONFIG_FIELDS = ("broker_host", "broker_port", "use_wss")
+
+# Secret material — only rotate_device_key may change it, and only on a signed
+# frame. Never echoed in any snapshot (redaction boundary, §19.5).
+SECRET_CONFIG_FIELDS = ("psk",)
+
+# Reason codes surfaced to the controller in config_patch_result.rejected[].
+REJECT_HIGH_RISK_TRANSPORT = "high_risk_transport"   # use transport_configure
+REJECT_HIGH_RISK_SECRET = "high_risk_secret"         # use rotate_device_key
+REJECT_UNKNOWN_FIELD = "unknown_field"
+REJECT_INVALID_VALUE = "invalid_value"
+REJECT_UNSIGNED_FRAME = "unsigned_frame"             # secret rotation needs a signed frame
+
+# The shipped placeholder psk (see DEFAULTS["psk"]). Used only to answer
+# "is a real key configured?" in the snapshot WITHOUT ever echoing key material
+# (§19.5 redaction) — an unchanged placeholder reads as psk_configured:false.
+DEFAULT_PSK_PLACEHOLDER = DEFAULTS["psk"]
+
+
+def classify_config_field(field_name: str) -> str:
+    """Map an inbound patch key to one of: safe|transport|secret|unknown.
+
+    `device_id`/`request_id`/`base_revision` are envelope-level control keys,
+    not config values — callers strip them before classifying."""
+    if field_name in SAFE_CONFIG_FIELDS:
+        return "safe"
+    if field_name in TRANSPORT_CONFIG_FIELDS:
+        return "transport"
+    if field_name in SECRET_CONFIG_FIELDS:
+        return "secret"
+    return "unknown"
+
+
 def apply_pairing(cfg: Config, overlay: Dict[str, Any]) -> Config:
     """Deep-merge a pairing overlay (from pairing.pairing_to_config_overlay)
     onto a loaded Config, in place. Returns the same Config for chaining.
@@ -285,6 +327,40 @@ class PersistentState:
     def set_group_id(self, group_id: str) -> None:
         self.data["group_id"] = group_id
         self.save()
+
+    # --- §19 volume/muted preferences (survive reboot) -----------------
+    @property
+    def volume(self) -> Optional[int]:
+        v = self.data.get("volume")
+        return int(v) if isinstance(v, (int, float)) else None
+
+    def set_volume(self, volume: int) -> None:
+        self.data["volume"] = max(0, min(100, int(volume)))
+        self.save()
+
+    @property
+    def muted(self) -> Optional[bool]:
+        v = self.data.get("muted")
+        return bool(v) if isinstance(v, bool) else None
+
+    def set_muted(self, muted: bool) -> None:
+        self.data["muted"] = bool(muted)
+        self.save()
+
+    # --- §19 config revision (monotonic, per-device, persisted) --------
+    @property
+    def config_revision(self) -> int:
+        """Monotonic counter bumped on every accepted *safe* config change.
+        Controllers echo it as base_revision to detect lost-update conflicts.
+        Starts at 0 on a fresh device (no config change ever applied)."""
+        v = self.data.get("config_revision")
+        return int(v) if isinstance(v, (int, float)) else 0
+
+    def bump_config_revision(self) -> int:
+        nxt = self.config_revision + 1
+        self.data["config_revision"] = nxt
+        self.save()
+        return nxt
 
     # --- §19 transport overrides (remote configure_device) -------------
     @property

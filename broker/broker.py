@@ -355,6 +355,11 @@ class Hub:
             "set_audio_master": self._on_route_to_players,
             "assign_group": self._on_assign_group,
             "configure_device": self._on_configure_device,
+            # §19.3/§19.5 dedicated high-risk config paths: forward the full
+            # payload to the target player exactly like configure_device (broker
+            # never rewrites its own listen endpoint from player transport fields).
+            "transport_configure": self._on_configure_device,
+            "rotate_device_key": self._on_configure_device,
             "create_group": self._on_create_group,
             "update_group": self._on_update_group,
             "delete_group": self._on_delete_group,
@@ -373,6 +378,10 @@ class Hub:
             "download_logs": self._on_route_to_players,
             "diagnostic_status": self._on_relay_to_controllers,
             "download_logs_result": self._on_relay_to_controllers,
+            # §19 config patch outcome (safe patch / transport_configure /
+            # rotate_device_key) relays player->controllers, else broker mode
+            # would drop it and the controller's pending request would time out.
+            "config_patch_result": self._on_relay_to_controllers,
             # §27/§28 cache lifecycle: requests fan controller->player; results
             # unicast player->initiating controller (role-safe, no broadcast).
             "cache_cleanup": self._on_cache_request,
@@ -531,7 +540,12 @@ class Hub:
         if conn.role != "player":
             return
         p = env["payload"]
-        device_id = p.get("device_id") or conn.ident
+        # The authenticated envelope identity, not a player-controlled payload
+        # field, owns the source device. This prevents a valid player from
+        # claiming another player's registry/group when reporting readiness.
+        device_id = conn.ident
+        if not device_id:
+            return
         dev = self.reg.get(device_id)
         group_id = dev.group_id if dev else None
         if group_id is None:
@@ -661,10 +675,13 @@ class Hub:
             else:
                 self.reg.save()
             self.mark_wall_dirty()
-        # Forward full payload (incl. transport fields) to the player.
+        # Forward full payload to the player, preserving the original type so
+        # transport_configure / rotate_device_key reach their dedicated player
+        # handlers (registry side-effects above only apply to configure_device
+        # name/group fields — the other two carry none).
         target = self.players.get(device_id)
         if target is not None:
-            fwd = self.make_env("configure_device", p, f"player:{device_id}")
+            fwd = self.make_env(env["type"], p, f"player:{device_id}")
             try:
                 await target.send_env(fwd)
             except Exception:

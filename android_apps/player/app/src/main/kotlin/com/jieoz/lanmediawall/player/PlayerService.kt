@@ -554,6 +554,8 @@ class PlayerService : Service() {
             // broker wall snapshots are rebuilt from status.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
                 "thumbnail", "cache_cleanup_v1", "cache_inventory_v1")))
+            put("config_capabilities", configCapabilitiesJson())
+            put("config_snapshot", configSnapshotJson())
             put("clock_offset_ms", clock.offsetMs)
             put("app_version", Settings.APP_VERSION)
             put("ip", ip)
@@ -782,6 +784,8 @@ class PlayerService : Service() {
             "set_audio_master" -> hSetAudioMaster(payload)
             "assign_group" -> hAssignGroup(payload)
             "configure_device" -> hConfigureDevice(payload, env)
+            "transport_configure" -> hTransportConfigure(payload)
+            "rotate_device_key" -> hRotateDeviceKey(payload, env)
             "update_app" -> hUpdateApp(payload, env)
             "resume_last" -> scope.launch { resumeLast() }
             "welcome" -> hWelcome(payload)
@@ -1576,98 +1580,130 @@ class PlayerService : Service() {
         payload["group_id"].asString()?.let { settings.groupId = it }
     }
 
-    // --- §19 configure_device ----------------------------------------
-    /** 盒子配置(§19):改显示名 / 设组 / 设音量 / 连接(broker)。仅对本机 device_id 生效,
-     *  缺省字段不动。改动持久化(SharedPreferences),重启后保留。连接字段变更后重建 transport。
-     *  PSK 变更要求入站帧已鉴权(env.authed),open 链路拒改密钥。 */
+    // --- §19 remote configuration ------------------------------------
+    private fun configCapabilitiesJson() = jsonObj {
+        put("safe_fields", jsonStrArr(listOf("device_name", "group_id", "volume", "muted")))
+        put("transport_fields", jsonStrArr(listOf("broker_host", "broker_port", "use_wss")))
+        put("transport_configure", true)
+        put("rotate_device_key", true)
+        put("config_version", 1)
+    }
+
+    private fun configSnapshotJson() = jsonObj {
+        put("revision", settings.configRevision)
+        put("values", jsonObj {
+            put("device_name", settings.deviceName); put("group_id", settings.groupId)
+            put("volume", settings.volume); put("muted", settings.muted)
+            put("psk_configured", settings.psk != Settings.DEFAULT_PSK)
+        })
+        put("transport", jsonObj {
+            put("broker_host", settings.brokerHost); put("broker_port", settings.brokerPort)
+            put("use_wss", settings.useWss); put("auto_discovery", !settings.hasBroker)
+        })
+        put("pending", jsonObj {}); put("requires_restart", false)
+    }
+
+    private fun sendConfigResult(requestId: String?, ok: Boolean, applied: Json.Obj = jsonObj {},
+        rejected: Json = jsonArr(emptyList<Json>()), conflict: Boolean = false,
+        pending: Json.Obj = jsonObj {}) {
+        link?.send("config_patch_result", jsonObj {
+            requestId?.let { put("request_id", it) }
+            put("device_id", settings.deviceId); put("ok", ok); put("conflict", conflict)
+            put("revision", settings.configRevision); put("applied", applied); put("rejected", rejected)
+            put("pending", pending); put("requires_restart", false)
+        })
+    }
+
+    /** Safe patch: fields are deliberately limited to name/group/audio. */
     private fun hConfigureDevice(payload: Json.Obj, env: Envelope.Parsed) {
         if (payload["device_id"].asString() != settings.deviceId) return
-        var nameDirty = false
-        payload["device_name"].asString()?.takeIf { it.isNotBlank() }?.let {
-            val next = it.trim()
+        val requestId = payload["request_id"].asString()
+        val base = payload["base_revision"].asIntOrNull()
+        if (requestId != null && base != null && base != settings.configRevision) {
+            sendConfigResult(requestId, false, rejected = jsonArr(listOf(jsonObj {
+                put("field", "_revision"); put("reason", "conflict")
+            })), conflict = true)
+            return
+        }
+        val allowed = setOf("device_id", "request_id", "base_revision", "device_name", "group_id", "volume", "muted")
+        val rejected = payload.entries.keys.filter { it !in allowed }.map { key -> jsonObj {
+            put("field", key); put("reason", when (key) {
+                "broker_host", "broker_port", "use_wss" -> "high_risk_transport"
+                "psk" -> "high_risk_secret"
+                else -> "unknown_field"
+            })
+        } }
+        val changed = LinkedHashMap<String, Json>()
+        payload["device_name"].asString()?.trim()?.takeIf { it.isNotBlank() }?.let { next ->
             if (next != settings.deviceName) {
-                settings.deviceName = next
-                discovery?.updateName(next)
-                nameDirty = true
+                settings.deviceName = next; discovery?.updateName(next); changed["device_name"] = Json.Str(next)
             }
         }
-        payload["group_id"].asString()?.takeIf { it.isNotBlank() }?.let {
-            settings.groupId = it
+        payload["group_id"].asString()?.trim()?.takeIf { it.isNotBlank() }?.let { next ->
+            if (next != settings.groupId) { settings.groupId = next; changed["group_id"] = Json.Str(next) }
         }
-        payload["volume"].asIntOrNull()?.let {
-            val vol = it.coerceIn(0, 100)
-            settings.volume = vol
-            controllerRef?.currentVolumePercent = vol
-            controllerRef?.setVolume(vol)
+        payload["volume"].asIntOrNull()?.let { next ->
+            val vol = next.coerceIn(0, 100)
+            if (vol != settings.volume) {
+                settings.volume = vol; controllerRef?.currentVolumePercent = vol; controllerRef?.setVolume(vol)
+                changed["volume"] = Json.Num.of(vol)
+            }
         }
-        payload["muted"].asBoolOrNull()?.let {
-            settings.muted = it
-            controllerRef?.setMuted(it)
+        payload["muted"].asBoolOrNull()?.let { next ->
+            if (next != settings.muted) { settings.muted = next; controllerRef?.setMuted(next); changed["muted"] = Json.Bool(next) }
         }
+        if (changed.isNotEmpty()) settings.bumpConfigRevision()
+        if (changed.isNotEmpty()) try { sendStatus() } catch (_: Exception) {}
+        if (requestId != null) sendConfigResult(requestId, rejected.isEmpty(), Json.Obj(changed), jsonArr(rejected))
+    }
 
-        // Optional transport fields: only rewrite when the key is present.
-        // Empty host clears the broker and returns the box to auto-discover / p2p.
-        var transportDirty = false
-        if ("broker_host" in payload.entries) {
-            val host = payload["broker_host"].asString()?.trim() ?: ""
-            if (host != settings.brokerHost) {
-                settings.brokerHost = host
-                transportDirty = true
+    private fun hTransportConfigure(payload: Json.Obj) {
+        if (payload["device_id"].asString() != settings.deviceId) return
+        val requestId = payload["request_id"].asString()
+        val host = payload["broker_host"].asString()
+        if (host == null) {
+            sendConfigResult(requestId, false, rejected = jsonArr(listOf(jsonObj {
+                put("field", "broker_host"); put("reason", "invalid_value")
+            })));
+            return
+        }
+        val next = host.trim()
+        if (next.isEmpty()) {
+            settings.brokerHost = ""
+        } else {
+            settings.brokerHost = next
+            payload["broker_port"].asIntOrNull()?.takeIf { it in 1..65535 }?.let { settings.brokerPort = it }
+            payload["use_wss"].asBoolOrNull()?.let { settings.useWss = it }
+            settings.markConfigured()
+        }
+        settings.bumpConfigRevision()
+        scope.launch {
+            try { rebuildTransport() } catch (t: Throwable) {
+                ConnState.set(ConnState.Phase.START_FAILED, t.message ?: "transport rebuild failed")
             }
         }
-        if ("broker_port" in payload.entries) {
-            val port = payload["broker_port"].asIntOrNull()?.takeIf { it in 1..65535 }
-            if (port != null && port != settings.brokerPort) {
-                settings.brokerPort = port
-                transportDirty = true
-            }
+        sendConfigResult(requestId, true, jsonObj {
+            put("broker_host", settings.brokerHost); put("broker_port", settings.brokerPort)
+            put("use_wss", settings.useWss); put("auto_discovery", !settings.hasBroker)
+        }, pending = jsonObj { put("transport", "reconnecting") })
+    }
+
+    private fun hRotateDeviceKey(payload: Json.Obj, env: Envelope.Parsed) {
+        if (payload["device_id"].asString() != settings.deviceId) return
+        val requestId = payload["request_id"].asString()
+        val psk = payload["psk"].asString()
+        if (!env.authed || psk.isNullOrBlank()) {
+            sendConfigResult(requestId, false, rejected = jsonArr(listOf(jsonObj {
+                put("field", "psk"); put("reason", if (!env.authed) "unsigned_frame" else "invalid_value")
+            })))
+            return
         }
-        if ("use_wss" in payload.entries) {
-            val wss = payload["use_wss"].asBoolOrNull()
-            if (wss != null && wss != settings.useWss) {
-                settings.useWss = wss
-                transportDirty = true
-            }
-        }
-        if ("psk" in payload.entries) {
-            if (!env.authed) {
-                logEvent("configure_device psk rejected: frame not authed")
-            } else {
-                val psk = payload["psk"].asString()
-                if (psk != null) {
-                    val next = if (psk.isBlank()) Settings.DEFAULT_PSK else psk
-                    if (next != settings.psk) {
-                        settings.psk = next
-                        // New key material is global-mode; clear derived leftovers so
-                        // the next transport bootstrap signs with the new PSK.
-                        settings.keyMode = KeyMode.GLOBAL.wire
-                        settings.deviceKeyHex = ""
-                        settings.brokerKeyHex = ""
-                        transportDirty = true
-                    }
-                }
-            }
-        }
-        // A remote broker configure implies the box is configured for that path.
-        if (transportDirty) {
-            if (settings.hasBroker) settings.markConfigured()
-            logEvent("configure_device transport dirty host=${settings.brokerHost} " +
-                "port=${settings.brokerPort} wss=${settings.useWss}")
-            scope.launch {
-                try {
-                    rebuildTransport()
-                } catch (t: Throwable) {
-                    val detail = "${t.javaClass.simpleName}: ${t.message ?: "transport rebuild failed"}"
-                    ConnState.set(ConnState.Phase.START_FAILED, detail)
-                    logEvent("transport_rebuild_failed $detail")
-                }
-            }
-        } else if (nameDirty) {
-            // Push status immediately so the controller wall picks up the new
-            // name without waiting for the 1–2s status loop.
-            try { sendStatus() } catch (_: Exception) {}
-            logEvent("configure_device name=${settings.deviceName}")
-        }
+        settings.psk = psk.trim(); settings.keyMode = KeyMode.GLOBAL.wire
+        settings.deviceKeyHex = ""; settings.brokerKeyHex = ""
+        settings.bumpConfigRevision()
+        scope.launch { try { rebuildTransport() } catch (_: Throwable) {} }
+        sendConfigResult(requestId, true, jsonObj { put("psk_configured", true) },
+            pending = jsonObj { put("transport", "reconnecting") })
     }
 
     /**
@@ -2014,7 +2050,8 @@ class PlayerService : Service() {
         private val ACKABLE = setOf(
             "prepare", "pause", "resume", "stop", "next", "prev", "restart", "reboot",
             "set_volume", "set_mute", "set_audio_master", "assign_group",
-            "configure_device", "cache_prefetch", "playlist", "update_app",
+            "configure_device", "transport_configure", "rotate_device_key",
+            "cache_prefetch", "playlist", "update_app",
             "debug_snapshot", "download_logs",
         )
 

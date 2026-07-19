@@ -7,11 +7,9 @@
 > 改名后 `DiscoveryResponder.update_name` + 立即 `_send_status`,控制端墙面
 > 不再卡在 `device_id`。回归见 `tests/test_configure_and_barrier.py`。
 >
-> **v1.17.4 — §19 远程 broker 配置:**`configure_device` 现接受 `broker_host` /
-> `broker_port` / `use_wss` / `psk`;写入 `PersistentState` 后 `apply_state_transport`
-> 叠加到运行时 cfg,再 `_rebuild_transport`(只换 WS,不叠 status 循环)。空 host
-> 清空覆盖并 `topology.auto=True` 回发现/P2P;PSK 需签名帧。测试见
-> `tests/test_configure_and_barrier.py`。
+> **v1.18.2 — §19 安全远程配置:**`configure_device` 只允许 `device_name` /
+> `group_id` / `volume` / `muted`，带 revision 并逐字段回执。连接变更只能走
+> `transport_configure`，密钥只能走 `rotate_device_key`；快照与回执均不含密钥。
 >
 > **v1.17.0 Phase B — 缓存清理已接线:**入站 `cache_cleanup` / `cache_inventory`
 > 已接到 live adapter,发射 `status.cache_summary`,并在 `hello.capabilities`
@@ -55,7 +53,7 @@ the player side of [`../protocol_spec.md`](../protocol_spec.md) v1.
 | §10 | `ack`, `resume_last` (local last-task persistence) | `main.py`, `config.py` |
 | §11 | mpv borderless-fullscreen-ontop, black/placeholder when idle, taskbar hidden | `mpv_controller.py`, `kiosk_win.py` |
 | §11 | watchdog: restart mpv within 5s on crash/hang + resume_last | `watchdog.py` |
-| §19 (v1.4 / v1.17.4) | `configure_device` → name/group/volume **and** remote broker transport (`broker_host`/`port`/`use_wss`/`psk`), persisted + transport rebuild | `main.py`, `config.py` |
+| §19 (v1.18.2) | `configure_device` → name/group/volume/muted safe patch with revision + structured result; `transport_configure` handles broker wiring; `rotate_device_key` handles secrets | `main.py`, `config.py` |
 | §21 (v1.4) | prefetch-barrier `prepare(prefetch:true)`: don't answer `ready:false` when uncached — defer, await cache complete, then `ready:true` (120s timeout → `ready:false`) | `main.py` |
 | §24 (v1.13.8) | targeted `debug_snapshot` / `download_logs` with bounded `diagnostic_status` / `download_logs_result` replies | `main.py` |
 

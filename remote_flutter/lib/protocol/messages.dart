@@ -181,6 +181,93 @@ class CacheSummary {
   }
 }
 
+/// §19 远程配置能力集。播放端在 status 里广告"安全补丁能改哪些字段"以及是否支持
+/// 独立高危通道（transport_configure / rotate_device_key）。控制端据此渲染正确的
+/// 编辑器并对不支持的端禁用入口。老端不上报时为 null，UI 防御式处理。
+class ConfigCapabilities {
+  final List<String> safeFields;
+  final List<String> transportFields;
+  final bool supportsTransportConfigure;
+  final bool supportsRotateDeviceKey;
+  final int configVersion;
+
+  const ConfigCapabilities({
+    this.safeFields = const [],
+    this.transportFields = const [],
+    this.supportsTransportConfigure = false,
+    this.supportsRotateDeviceKey = false,
+    this.configVersion = 0,
+  });
+
+  static ConfigCapabilities? fromMap(Map<String, dynamic>? m) {
+    if (m == null || m.isEmpty) return null;
+    return ConfigCapabilities(
+      safeFields: ((m['safe_fields'] as List?) ?? const [])
+          .map((e) => e.toString())
+          .toList(),
+      transportFields: ((m['transport_fields'] as List?) ?? const [])
+          .map((e) => e.toString())
+          .toList(),
+      supportsTransportConfigure: _asBool(m['transport_configure']),
+      supportsRotateDeviceKey: _asBool(m['rotate_device_key']),
+      configVersion: _asInt(m['config_version']),
+    );
+  }
+}
+
+/// §19 配置快照。控制端的权威视图：`revision` 是乐观并发令牌（回发为 base_revision
+/// 检测丢失更新）；脱敏值——**绝不含 psk 明文**，只有 [pskConfigured] 标记是否已配
+/// 真钥（§19.5 脱敏边界）。传输字段单列，便于 UI 展示当前接入而无需 rotate 往返。
+class ConfigSnapshot {
+  final int revision;
+  final String? deviceName;
+  final String? groupId;
+  final int volume;
+  final bool muted;
+  final bool pskConfigured;
+  final String? brokerHost;
+  final int? brokerPort;
+  final bool? useWss;
+  final bool autoDiscovery;
+  final bool requiresRestart;
+
+  const ConfigSnapshot({
+    this.revision = 0,
+    this.deviceName,
+    this.groupId,
+    this.volume = 0,
+    this.muted = false,
+    this.pskConfigured = false,
+    this.brokerHost,
+    this.brokerPort,
+    this.useWss,
+    this.autoDiscovery = true,
+    this.requiresRestart = false,
+  });
+
+  static ConfigSnapshot? fromMap(Map<String, dynamic>? m) {
+    if (m == null || m.isEmpty) return null;
+    final values = (m['values'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final transport =
+        (m['transport'] as Map?)?.cast<String, dynamic>() ?? const {};
+    return ConfigSnapshot(
+      revision: _asInt(m['revision']),
+      deviceName: values['device_name'] as String?,
+      groupId: values['group_id'] as String?,
+      volume: _asInt(values['volume']),
+      muted: _asBool(values['muted']),
+      pskConfigured: _asBool(values['psk_configured']),
+      brokerHost: transport['broker_host'] as String?,
+      brokerPort: transport['broker_port'] == null
+          ? null
+          : _asInt(transport['broker_port']),
+      useWss: transport['use_wss'] is bool ? transport['use_wss'] as bool : null,
+      autoDiscovery: _asBool(transport['auto_discovery'], true),
+      requiresRestart: _asBool(m['requires_restart']),
+    );
+  }
+}
+
 /// 单台设备状态（§5.1 / §5.2 devices 子集）。
 class DeviceStatus {
   final String deviceId;
@@ -218,6 +305,10 @@ class DeviceStatus {
   /// truth, E0001）。控制端据此启用/禁用缓存清理入口，绝不对不支持的端静默超时。
   final List<String> capabilities;
 
+  /// §19 远程配置能力集/快照（可选）。老端不上报时为 null，UI 防御式处理。
+  final ConfigCapabilities? configCapabilities;
+  final ConfigSnapshot? configSnapshot;
+
   /// 被控端上报的应用版本号（§4 hello / §5 status 的 `app_version`）。
   /// 单台状态弹窗展示用；缺失时为 null（老端/未上报，防御式处理）。
   final String? appVersion;
@@ -248,6 +339,8 @@ class DeviceStatus {
     this.updateVersionCode,
     this.cacheSummary,
     this.capabilities = const [],
+    this.configCapabilities,
+    this.configSnapshot,
   });
 
   /// §27 缓存清理能力真值：仅当播放端广告 `cache_cleanup_v1`（其确有 live handler
@@ -296,6 +389,10 @@ class DeviceStatus {
       capabilities: ((m['capabilities'] as List?) ?? const [])
           .map((e) => e.toString())
           .toList(),
+      configCapabilities: ConfigCapabilities.fromMap(
+          (m['config_capabilities'] as Map?)?.cast<String, dynamic>()),
+      configSnapshot: ConfigSnapshot.fromMap(
+          (m['config_snapshot'] as Map?)?.cast<String, dynamic>()),
     );
   }
 
@@ -335,6 +432,8 @@ class DeviceStatus {
         updateVersionCode: updateVersionCode,
         cacheSummary: cacheSummary,
         capabilities: capabilities,
+        configCapabilities: configCapabilities,
+        configSnapshot: configSnapshot,
       );
 }
 
@@ -693,20 +792,16 @@ class Commands {
         'reassign_to': reassignTo,
       };
 
-  /// configure_device（§19）：per-device 配置统一入口（只传要改的字段）。
-  /// 连接字段 broker_host/broker_port/use_wss/psk 可选；空 host 清空回发现/P2P。
-  /// PSK 变更要求已鉴权链路，播放端会拒 open 帧改密钥。
+  /// configure_device (§19): safe per-device patch only. Transport wiring and
+  /// key rotation deliberately use their dedicated builders below.
   static Map<String, dynamic> configureDevice({
     required String deviceId,
     String? deviceName,
     String? groupId,
     int? volume,
     bool? muted,
-    String? brokerHost,
-    int? brokerPort,
-    bool? useWss,
-    String? psk,
-    bool clearBroker = false,
+    String? requestId,
+    int? baseRevision,
   }) =>
       {
         'device_id': deviceId,
@@ -714,14 +809,63 @@ class Commands {
         if (groupId != null) 'group_id': groupId,
         if (volume != null) 'volume': volume.clamp(0, 100),
         if (muted != null) 'muted': muted,
-        if (clearBroker)
-          'broker_host': ''
-        else if (brokerHost != null)
-          'broker_host': brokerHost,
-        if (brokerPort != null) 'broker_port': brokerPort,
-        if (useWss != null) 'use_wss': useWss,
-        if (psk != null) 'psk': psk,
+        if (requestId != null) 'request_id': requestId,
+        if (baseRevision != null) 'base_revision': baseRevision,
       };
+
+  static const _safeConfigFields = {
+    'device_name',
+    'group_id',
+    'volume',
+    'muted',
+  };
+
+  /// Builds a safe §19 patch from a dynamic editor map. The whitelist is
+  /// deliberate: callers cannot smuggle transport or secret fields through the
+  /// generic editor path.
+  static Map<String, dynamic> configPatch({
+    required String deviceId,
+    required Map<String, dynamic> patch,
+    String? requestId,
+    int? baseRevision,
+  }) {
+    final unsupported = patch.keys
+        .where((key) => !_safeConfigFields.contains(key))
+        .toList(growable: false);
+    if (unsupported.isNotEmpty) {
+      throw ArgumentError.value(
+        unsupported,
+        'patch',
+        'configure_device only accepts safe configuration fields',
+      );
+    }
+    return {
+      'device_id': deviceId,
+      ...patch,
+      if (requestId != null) 'request_id': requestId,
+      if (baseRevision != null) 'base_revision': baseRevision,
+    };
+  }
+
+  static Map<String, dynamic> transportConfigure({
+    required String deviceId,
+    required String brokerHost,
+    int? brokerPort,
+    bool? useWss,
+    String? requestId,
+  }) => {
+    'device_id': deviceId,
+    'broker_host': brokerHost,
+    if (brokerPort != null) 'broker_port': brokerPort,
+    if (useWss != null) 'use_wss': useWss,
+    if (requestId != null) 'request_id': requestId,
+  };
+
+  static Map<String, dynamic> rotateDeviceKey({
+    required String deviceId,
+    required String psk,
+    required String requestId,
+  }) => {'device_id': deviceId, 'psk': psk, 'request_id': requestId};
 
   /// update_app（§23）：令目标被控端自更新到 [url] 指向的 APK。
   /// [versionCode] 必须严格大于被控端当前版本（被控端会二次校验，防降级/重放）；
