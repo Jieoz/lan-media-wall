@@ -281,10 +281,21 @@ static int lmw_pm_is_invalid_install_location(const char *out) {
         "Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]");
 }
 
+// YunOS 4.4's PM parses the APK path (and prints its `pkg:` diagnostic) but then
+// rejects the request with this exact message instead of the standard location
+// failure. This is the same ROM-level activation limitation: pm cannot install,
+// while the boot package scanner can. Require both exact lines so unrelated PM
+// errors, including signing/version failures, cannot reach the legacy path.
+static int lmw_pm_is_no_package_specified(const char *out) {
+    return lmw_pm_has_exact_line(out, "pkg: " LMW_STAGED_APK) &&
+           lmw_pm_has_exact_line(out, "Error: no package specified");
+}
+
 typedef enum { INSTALL_FAIL = 0, INSTALL_PM_SUCCESS = 1, INSTALL_LEGACY_STAGE = 2 } lmw_install_action;
 static lmw_install_action lmw_install_decision(const char *out) {
     if (lmw_pm_has_success_line(out)) return INSTALL_PM_SUCCESS;
-    if (lmw_pm_is_invalid_install_location(out)) return INSTALL_LEGACY_STAGE;
+    if (lmw_pm_is_invalid_install_location(out) || lmw_pm_is_no_package_specified(out))
+        return INSTALL_LEGACY_STAGE;
     return INSTALL_FAIL;
 }
 

@@ -149,9 +149,17 @@ static void test_legacy_install_contract(void) {
           "exact invalid install location classified");
     CHECK(lmw_pm_is_invalid_install_location("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION_EXTRA]\n") == 0,
           "lookalike invalid location rejected");
+    CHECK(lmw_pm_is_no_package_specified("pkg: /data/local/tmp/lmw_update_staged.apk\n"
+                                        "Error: no package specified\n") == 1,
+          "YunOS pm missing-package signature classified");
+    CHECK(lmw_pm_is_no_package_specified("Error: no package specified extra\n") == 0,
+          "lookalike missing-package signature rejected");
     CHECK(lmw_install_decision("Success\n") == INSTALL_PM_SUCCESS, "pm success stays primary path");
     CHECK(lmw_install_decision("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]\n") == INSTALL_LEGACY_STAGE,
-          "only exact invalid location selects legacy stage");
+          "invalid install location selects legacy stage");
+    CHECK(lmw_install_decision("pkg: /data/local/tmp/lmw_update_staged.apk\n"
+                               "Error: no package specified\n") == INSTALL_LEGACY_STAGE,
+          "YunOS missing-package signature selects legacy stage");
     CHECK(lmw_install_decision("Failure [INSTALL_FAILED_VERSION_DOWNGRADE]\n") == INSTALL_FAIL,
           "ordinary install failure does not enter legacy stage");
     CHECK(strcmp(lmw_legacy_target_path(), "/data/app/com.jieoz.lanmediawall.player-1.apk") == 0,
