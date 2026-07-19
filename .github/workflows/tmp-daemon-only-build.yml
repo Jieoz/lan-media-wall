@@ -16,6 +16,15 @@
 name: tmp-daemon-only-build
 
 on:
+  # Branch-scoped push trigger: any push to this temporary branch starts exactly
+  # one daemon-only run. This is the primary route to a cloud run, because a
+  # workflow_dispatch REST call 404s while the file lives only on this branch
+  # (the Actions API only lists workflows present on the default branch).
+  push:
+    branches:
+      - chore/ota-pm-yunos-daemon-cloud
+  # Retained so the run can be manually re-triggered later (e.g. from the UI on
+  # this branch, or via REST once the workflow reaches the default branch).
   workflow_dispatch: {}
 
 permissions:
