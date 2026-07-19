@@ -1179,13 +1179,7 @@ static void lmw_ignore_sigpipe(void) {
 }
 
 #if !defined(LMW_DAEMON_TEST) && !defined(LMW_DAEMON_INTEGRATION_TEST)
-// Static NDK bionic aborts before main on ARM when PT_TLS p_align is below 32.
-// lld uses the largest TLS object's alignment for that segment; this referenced
-// object pins the shipped daemon at the API19-compatible minimum.
-static __thread char lmw_tls_align_pad __attribute__((aligned(32)));
-
 int main(int argc, char **argv) {
-    lmw_tls_align_pad = 1;
     lmw_ignore_sigpipe();
 
     // Dispatch on the pure CLI-mode policy (host-tested): this is the SINGLE place

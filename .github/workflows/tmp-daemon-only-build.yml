@@ -41,7 +41,8 @@ jobs:
           test -n "$ndk_bin"
           "$ndk_bin/armv7a-linux-androideabi21-clang" \
             -Os -static -fno-PIE -Wall -Wextra -Werror -s \
-            -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
+            -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c \
+            scripts/lmw_tls_alignment_anchor.S
           echo "$ndk_bin" >> "$GITHUB_PATH"
 
       - name: Enforce API19 ARM ELF contract
