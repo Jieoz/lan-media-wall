@@ -20,4 +20,50 @@ for required in (
     "scripts/tests/test_android_ota_simulator.c",
 ):
     assert required in workflow, f"{required} must be present in android-build workflow"
+
+# Windows no-Python OTA detector wiring: a dedicated Windows job builds the real
+# PE EXE with a PINNED PyInstaller, the build job consumes it (never rebuilt at
+# tag time), the Chinese launcher + EXE ship in the ZIP, and the fail-closed
+# bundle contract gates the package.
+for required in (
+    "ota-detector:",
+    "runs-on: windows-2022",
+    "pyinstaller==6.11.1",
+    "--onefile",
+    "lan-media-wall-ota-detector",
+    "needs: ota-detector",
+    "Download standalone OTA detector EXE",
+    "android_ota/android_ota_diag.exe",
+    "OTA检测.bat",
+    "scripts/qzx_bundle_contract.py",
+):
+    assert required in workflow, f"{required} must be present in android-build workflow"
+
+# The launcher on disk must itself satisfy the shippable-launcher byte contract.
+bat_bytes = (ROOT / "scripts/OTA检测.bat").read_bytes()
+assert bat_bytes.startswith(b"\xef\xbb\xbf"), "OTA检测.bat must start with a UTF-8 BOM"
+assert b"\r\n" in bat_bytes and bat_bytes[3:].replace(b"\r\n", b"").count(b"\n") == 0, \
+    "OTA检测.bat must use CRLF line endings"
+assert b"\n" not in bat_bytes.replace(b"\r\n", b""), "OTA检测.bat must have no bare LF"
+
+# The byte contract above only holds if Git is told NOT to normalise this file.
+# `-text` disables text conversion (CRLF↔LF, BOM stripping) on checkout/checkin,
+# so the shipped launcher keeps its exact UTF-8 BOM + CRLF bytes on every OS.
+gitattributes = (ROOT / ".gitattributes")
+assert gitattributes.is_file(), ".gitattributes must exist to pin OTA检测.bat bytes"
+ga_lines = gitattributes.read_text(encoding="utf-8").splitlines()
+assert "scripts/OTA检测.bat -text" in ga_lines, \
+    ".gitattributes must carry the exact entry 'scripts/OTA检测.bat -text'"
+
+# release-promote must fetch the Android artifacts BY NAME so the intermediate
+# ota-detector EXE artifact never reaches promotion (no unexpected dir, no
+# rebuild), while the release APK is still downloaded.
+promote_wf = (ROOT / ".github/workflows/release-promote.yml").read_text(encoding="utf-8")
+for required in (
+    "name: lan-media-wall-qzx-update-tools",
+    "name: lan-media-wall-player-android-release",
+):
+    assert required in promote_wf, f"{required} must be named in release-promote workflow"
+assert "lan-media-wall-ota-detector" not in promote_wf, \
+    "release-promote must NOT download the intermediate OTA detector artifact"
 print("QZX_RELEASE_CONTRACT_PASS")

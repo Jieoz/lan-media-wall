@@ -24,7 +24,85 @@ permissions:
   contents: read
 
 jobs:
+  # --- Standalone Windows OTA detector EXE ---------------------------------
+  # A field operator must double-click OTA检测.bat on a stock Windows x64 box
+  # with NO Python installed. That requires a REAL PE executable, so we build
+  # it on a Windows runner with a PINNED PyInstaller and hand it to the Ubuntu
+  # `build` job below via an intra-run artifact (no tag-time rebuild, no
+  # cross-workflow dependency cycle). android_ota_diag.py is pure-stdlib, so
+  # this is a fast --onefile bundle with no third-party deps.
+  ota-detector:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned PyInstaller
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          pip install "pyinstaller==6.11.1"
+
+      - name: Build standalone android_ota_diag.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pyinstaller --onefile --console --name android_ota_diag scripts/android_ota_diag.py
+          if (-not (Test-Path "dist/android_ota_diag.exe")) {
+            throw "PyInstaller did not produce dist/android_ota_diag.exe"
+          }
+
+      - name: Prove it is a real PE and runs with NO Python
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "dist/android_ota_diag.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)[0..1]
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw "$exe is not a PE executable (missing 'MZ' header)"
+          }
+          # Run against a synthetic bundle with the interpreter removed from PATH
+          # so a hidden dependency on system Python would fail here.
+          New-Item -ItemType Directory -Force -Path probe | Out-Null
+          "Success" | Out-File -Encoding utf8 probe/pm.txt
+          $env:PATH = "$env:SystemRoot;$env:SystemRoot\System32"
+          & $exe --profile scripts/android_ota_profiles/qzx-yunos-4.4.json --human analyze probe | Tee-Object -Variable out
+          if ($LASTEXITCODE -ne 0) { throw "detector exe exited $LASTEXITCODE" }
+          # Tee-Object captures stdout as an ARRAY of lines. `$array -notmatch re`
+          # returns the FILTERED array (all non-matching lines), which is truthy
+          # whenever any single line lacks the pattern — so testing the array
+          # directly would throw on every run. Join to ONE string first so
+          # -notmatch yields a real boolean over the whole report.
+          $joined = $out | Out-String
+          if ($joined -notmatch "无法证明|不确定") {
+            throw "human report failed the lone-Success honesty contract"
+          }
+
+      - name: Upload OTA detector EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-ota-detector
+          path: dist/android_ota_diag.exe
+          if-no-files-found: error
+
   build:
+    # `needs` orders build after the Windows detector and lets build consume its
+    # EXE artifact. GitHub otherwise applies an implicit `success()` check to a
+    # job with `needs`, so `always() && !cancelled()` is required for the APK
+    # lane to run even when the detector FAILS — a Windows/PyInstaller outage
+    # must not wash out the Android APK build/test/upload. The QZX-ZIP steps below re-gate on
+    # `needs.ota-detector.result == 'success'` so the ZIP stays fail-closed, and
+    # because a failed `needs` still surfaces in the run's overall conclusion the
+    # whole workflow stays RED (promotion, which requires a successful run,
+    # cannot then pick up a missing/stale QZX package).
+    needs: ota-detector
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
 
     steps:
@@ -197,10 +275,20 @@ jobs:
           bash scripts/check_daemon_elf.sh scripts/lmw_root_daemon
           chmod 755 scripts/lmw_root_daemon
 
+      # Pull the standalone Windows OTA detector EXE built by the ota-detector
+      # job in THIS run (never rebuilt at tag time).
+      - name: Download standalone OTA detector EXE
+        if: steps.detect.outputs.present == 'true' && needs.ota-detector.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: lan-media-wall-ota-detector
+          path: ota_detector_exe
+
       - name: Package QZX updater tools
-        if: steps.detect.outputs.present == 'true'
+        if: steps.detect.outputs.present == 'true' && needs.ota-detector.result == 'success'
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist_tools
           cp scripts/lmw_setup.bat scripts/lmw_setup.sh \
              scripts/lmw_restore.bat scripts/lmw_restore.sh \
@@ -209,9 +297,14 @@ jobs:
              scripts/qzx_ab_backend.bat scripts/qzx_ab_backend.sh \
              scripts/qzx_verify_update.bat scripts/qzx_verify_update.sh \
              scripts/QZX-KIOSK-TOOLS.md scripts/lmw_root_daemon dist_tools/
+          # Chinese double-click launcher at the ZIP root (UTF-8 BOM + CRLF).
+          cp "scripts/OTA检测.bat" dist_tools/
           mkdir -p dist_tools/android_ota/profiles
           cp scripts/android_ota_diag.py dist_tools/android_ota/
           cp scripts/android_ota_profiles/*.json dist_tools/android_ota/profiles/
+          # The real PE executable — no Python needed on the operator's box.
+          test -s ota_detector_exe/android_ota_diag.exe
+          cp ota_detector_exe/android_ota_diag.exe dist_tools/android_ota/
           (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
             lmw_setup.bat lmw_setup.sh \
             lmw_restore.bat lmw_restore.sh \
@@ -220,21 +313,31 @@ jobs:
             qzx_ab_backend.bat qzx_ab_backend.sh \
             qzx_verify_update.bat qzx_verify_update.sh \
             QZX-KIOSK-TOOLS.md lmw_root_daemon \
+            "OTA检测.bat" \
+            android_ota/android_ota_diag.exe \
             android_ota/android_ota_diag.py \
             android_ota/profiles/standard-pm.json \
             android_ota/profiles/qzx-yunos-4.4.json)
           ls -la LANMediaWall-QZX-Update-Tools.zip
 
       - name: Verify QZX restart and package contracts
-        if: steps.detect.outputs.present == 'true'
+        if: steps.detect.outputs.present == 'true' && needs.ota-detector.result == 'success'
         shell: bash
         run: |
+          set -euo pipefail
           python3 scripts/tests/test_qzx_release_contract.py
+          # Fail-closed structural gate: the Chinese launcher (BOM+CRLF, no
+          # interpreter), the real PE detector EXE ('MZ'), the Python source,
+          # and both profiles must all be present in the shipped ZIP.
+          python3 scripts/qzx_bundle_contract.py LANMediaWall-QZX-Update-Tools.zip
+          # Belt-and-braces: the legacy member list check stays too.
           python3 - <<'PY'
           import zipfile
           names=set(zipfile.ZipFile('LANMediaWall-QZX-Update-Tools.zip').namelist())
           required={
             'qzx_field_check.bat', 'qzx_field_check.sh', 'lmw_root_daemon',
+            'OTA检测.bat',
+            'android_ota/android_ota_diag.exe',
             'android_ota/android_ota_diag.py',
             'android_ota/profiles/standard-pm.json',
             'android_ota/profiles/qzx-yunos-4.4.json',
@@ -245,7 +348,7 @@ jobs:
           PY
 
       - name: Upload QZX updater tools
-        if: steps.detect.outputs.present == 'true'
+        if: steps.detect.outputs.present == 'true' && needs.ota-detector.result == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: lan-media-wall-qzx-update-tools

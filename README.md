@@ -1,5 +1,16 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.18.1 (Windows no-Python OTA detector):**
+> QZX Update Tools now includes the UTF-8-BOM/CRLF launcher `OTA检测.bat`
+> and a standalone Windows x64 `android_ota_diag.exe`. Operators can
+> double-click the launcher on a stock Windows machine, select a diagnostic
+> bundle, and receive an evidence-honest Chinese report beside that bundle.
+> A lone PackageManager `Success` without matching version/stage evidence stays
+> inconclusive. Build and promotion both fail closed if the ZIP lacks the PE,
+> launcher, source, profiles, or exact launcher byte contract. This release
+> changes diagnostic packaging only; protocol, transport, routing, and OTA
+> installation contracts are unchanged.
+>
 > **v1.17.7 (profile-driven Android OTA diagnostics):**
 > QZX Update Tools now ships `android_ota/` — a product-agnostic offline
 > classifier (`android_ota_diag.py`) plus profiles (`standard-pm`,

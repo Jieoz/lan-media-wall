@@ -1,5 +1,11 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.18.1：Windows 无 Python 现场 OTA 检测器。**本版是工具/打包层交付：
+> QZX Update Tools 新增双击启动器 `OTA检测.bat` 与独立
+> `android_ota_diag.exe`，可在 stock Windows x64 上离线生成中文诚实诊断；
+> 不改遥控端协议、传输、路由或 OTA 安装合同。版本随全端单一真相源
+> `pubspec.yaml` = `1.18.1+1181`。
+>
 > **v1.18.0：操作员 UX 重构。**P2P 为主链路,Broker 降为高级/次要;无协议、传输、
 > 精确 `device_id` 路由、缓存/OTA/安全合同改动,纯 UX 层。**设置拓扑真相**:新增
 > 连接方式切换「自动发现 / P2P（推荐）」vs「连接 Broker（高级）」并持久化

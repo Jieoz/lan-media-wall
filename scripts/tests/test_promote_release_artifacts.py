@@ -18,11 +18,27 @@ def _write(root: Path, relative: str, data: bytes = b"artifact") -> None:
     path.write_bytes(data)
 
 
+def _valid_qzx_zip() -> bytes:
+    """A minimal QZX ZIP that satisfies verify_qzx_bundle (fail-closed gate)."""
+    import io
+    import zipfile
+
+    bat = "﻿@echo off\r\nandroid_ota\\android_ota_diag.exe --human\r\npause\r\n"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("OTA检测.bat", bat.encode("utf-8"))
+        archive.writestr("android_ota/android_ota_diag.exe", b"MZ" + b"\x00" * 64)
+        archive.writestr("android_ota/android_ota_diag.py", b"# source\n")
+        archive.writestr("android_ota/profiles/standard-pm.json", b"{}\n")
+        archive.writestr("android_ota/profiles/qzx-yunos-4.4.json", b"{}\n")
+    return buffer.getvalue()
+
+
 def _complete_artifacts(root: Path) -> None:
     _write(root, "lmw-broker/lmw-broker", b"broker-linux")
     _write(root, "lmw-broker.exe/lmw-broker.exe", b"broker-windows")
     _write(root, "lan-media-wall-player-android-release/app-release.apk", b"player")
-    _write(root, "lan-media-wall-qzx-update-tools/LANMediaWall-QZX-Update-Tools.zip", b"tools")
+    _write(root, "lan-media-wall-qzx-update-tools/LANMediaWall-QZX-Update-Tools.zip", _valid_qzx_zip())
     _write(root, "lan-media-wall-controller-android-release/app-arm64-v8a-release.apk", b"arm64")
     _write(root, "lan-media-wall-controller-android-release/app-armeabi-v7a-release.apk", b"armv7")
     _write(root, "lan-media-wall-controller-android-release/app-x86_64-release.apk", b"x86")
@@ -121,6 +137,30 @@ def test_promote_rejects_unmapped_file(tmp_path: Path) -> None:
     _write(source, "lmw-broker/debug-symbols.txt", b"unknown")
 
     with pytest.raises(ValueError, match="unmapped artifact files"):
+        MODULE.promote(source, output, "v1.13.10")
+
+
+def test_promote_rejects_qzx_bundle_missing_detector_exe(tmp_path: Path) -> None:
+    import io
+    import zipfile
+
+    source = tmp_path / "artifacts"
+    output = tmp_path / "release"
+    _complete_artifacts(source)
+    # Rewrite the QZX ZIP without the standalone PE detector EXE.
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("OTA检测.bat", "﻿@echo off\r\npause\r\n".encode("utf-8"))
+        archive.writestr("android_ota/android_ota_diag.py", b"# source\n")
+        archive.writestr("android_ota/profiles/standard-pm.json", b"{}\n")
+        archive.writestr("android_ota/profiles/qzx-yunos-4.4.json", b"{}\n")
+    _write(
+        source,
+        "lan-media-wall-qzx-update-tools/LANMediaWall-QZX-Update-Tools.zip",
+        buffer.getvalue(),
+    )
+
+    with pytest.raises(ValueError, match="android_ota_diag.exe"):
         MODULE.promote(source, output, "v1.13.10")
 
 

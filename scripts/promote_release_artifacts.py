@@ -5,11 +5,25 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
+
+
+def _load_qzx_bundle_contract():
+    """Load the pure QZX bundle gate as a sibling module (no package needed)."""
+    path = Path(__file__).resolve().parent / "qzx_bundle_contract.py"
+    spec = importlib.util.spec_from_file_location("qzx_bundle_contract", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_QZX_CONTRACT = _load_qzx_bundle_contract()
 
 
 ARTIFACTS = (
@@ -199,6 +213,11 @@ def promote(source: Path, output: Path, tag: str) -> list[Path]:
     consumed: set[Path] = set()
     for artifact, pattern, label, extension in ARTIFACTS:
         src = _find_one(source, artifact, pattern)
+        # Fail closed before publishing: the QZX ZIP must carry the Chinese
+        # launcher (BOM+CRLF, no interpreter), a real PE detector EXE, the
+        # Python source, and both profiles.
+        if label == "QZX-Update-Tools":
+            _QZX_CONTRACT.verify_qzx_bundle(src)
         selected.append((src, label, extension))
         consumed.add(src.resolve())
 

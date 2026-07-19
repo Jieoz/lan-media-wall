@@ -80,12 +80,28 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts
 
-      - name: Download Android artifacts from verified run
+      # Download ONLY the two release artifacts the android-build run publishes,
+      # by name. That run also produces an intermediate OTA-detector EXE
+      # artifact (consumed in-run to build the QZX ZIP); a blanket run-id
+      # download would pull it in and promote.py would reject it as an
+      # unexpected artifact directory. Naming the two release artifacts keeps
+      # promotion's source set exact and avoids any rebuild — the detector EXE
+      # is already baked into the QZX ZIP.
+      - name: Download Android release APK from verified run
         uses: actions/download-artifact@v4
         with:
+          name: lan-media-wall-player-android-release
           run-id: ${{ steps.runs.outputs.android }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: artifacts
+          path: artifacts/lan-media-wall-player-android-release
+
+      - name: Download QZX update tools from verified run
+        uses: actions/download-artifact@v4
+        with:
+          name: lan-media-wall-qzx-update-tools
+          run-id: ${{ steps.runs.outputs.android }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/lan-media-wall-qzx-update-tools
 
       - name: Download Windows artifact from verified run
         uses: actions/download-artifact@v4

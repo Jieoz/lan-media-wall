@@ -20,9 +20,21 @@ HiSilicon / root adb），包集几乎一样，**一份脚本两批通用**。
 | `qzx_ab_backend.bat` / `.sh` | **一键 A/B 对比两个视频内核**（ExoPlayer vs 原生 MediaPlayer，v1.14.2）。逐内核：写 `/data/local/tmp/lmw_video_backend` → 重启播放墙(盒子自动 `resume_last` 重放上次素材) → 放一会 → 拉 `player.log`+logcat+meminfo 到一个文件夹；最后删覆盖文件并重启,盒子恢复原内核。**只写那一个覆盖文件 + 重启本 App,结束即还原**——不装/不重启系统/不动素材配置。(注:`qzx_field_check` 把重启证据 + A/B 合成一键,新体检优先用它) |
 | `qzx_verify_update.bat` / `.sh` | **真机验收：升级免整机重启**（v1.14.2）。用你给的 APK 复现守护进程的 `pm install -r` 流程,核验两件事:①包 `versionCode` 变了(新代码已激活、PM 上报新版本)②整机 uptime 没归零(没重启)。只装你指定的 APK,不重启/不卸载/不动素材配置,结束删暂存文件 |
 | `qzx_control_plane_diag.sh` | ⭐ **只读控制面诊断**（v1.14.8）。回答 v1.14.8 根因问题:P2P/broker 控制面是否真在路由并**消费** `status/time_sync/ready`,还是设备墙停在 `online=null`、汇总与日志对拓扑各执一词?拉本机 `player.log`+过滤后的 logcat,把 E0001 要求的信号蒸馏进一个 `report.txt`:路由决策+对端/拓扑身份、收到/被忽略的控制消息、更新下发/安装结果、播放列表 index 迁移、同步时序,并给启发式 verdict(如「无 `update_app` 行 = 控制端从未给本盒下发更新」)。**极保守只读**:不 reboot/不重启 App/不装/不卸载/不清数据/不清 logcat,只广播本 App 自有的日志导出、拉文件、读 logcat。产出 `report.txt` + ZIP。 |
+| **`OTA检测.bat`** | ⭐ **Windows 双击离线诊断入口（v1.18.1）**。无需安装 Python；调用包内独立 `android_ota\\android_ota_diag.exe`，弹窗选择诊断 ZIP，默认使用 `qzx-yunos-4.4` profile，并在 ZIP 旁生成中文 `*-OTA检测结果.txt`。每条退出路径都会留窗。 |
 | `android_ota/android_ota_diag.py` | **通用 Android OTA 离线判定器**。核心不绑定 ROM、API 级别、包名或设备路径；通过 profile 解释 `pm` 回执和厂商 fallback。`standard-pm` 是保守基线，`qzx-yunos-4.4` 仅对已证实的 `INSTALL_FAILED_INVALID_INSTALL_LOCATION` 选择 scanner fallback。输出机器可读 JSON，证据缺失不会猜测成功。 |
 
 ## Profile-driven Android OTA diagnostics
+
+### Windows 现场双击用法（无需 Python）
+
+1. 解压 `LANMediaWall-QZX-Update-Tools.zip`，不要单独移动 `OTA检测.bat`。
+2. 双击 `OTA检测.bat`，在文件选择框中选择设备诊断 ZIP（也可把诊断路径作为参数传入）。
+3. 脚本默认使用 `qzx-yunos-4.4` profile；结果写到诊断包同目录的
+   `*-OTA检测结果.txt`，失败也会明确报错并保持窗口。
+
+报告遵循证据诚实原则：单独出现 PackageManager `Success`，但没有匹配的
+`versionCode` 和安装阶段证据时，只能判为“不确定 / 无法证明升级成功”。
+自动化环境可设置 `LMW_OTA_NONINTERACTIVE=1`，但此时必须显式传入诊断包路径。
 
 `android_ota/` is a release asset, not a one-off QZX investigation. It separates:
 

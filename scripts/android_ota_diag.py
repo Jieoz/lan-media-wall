@@ -93,9 +93,86 @@ def analyze(files: dict[str, str], profile: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+# --- Human-readable Chinese report ------------------------------------------
+# The field operator double-clicks a launcher and reads THIS. The cardinal rule
+# (§Success-honesty): a lone PackageManager `Success` line, absent a matching
+# versionCode AND time-correlated stage evidence, is NOT proof the OTA upgrade
+# activated — it is 不确定 / 无法证明升级成功. The report never converts such a
+# receipt into "升级已完成/确认升级成功".
+_VERDICT_LABELS = {
+    "package_manager_success_receipt_observed": "观察到 PackageManager 成功回执(需进一步佐证)",
+    "fallback_activation_required": "需要 fallback 激活路径",
+    "package_manager_failed": "PackageManager 安装失败",
+    "stopped_before_package_manager_receipt": "在拿到 PackageManager 回执前中止",
+    "inconclusive": "证据不足,无法判定",
+}
+
+
+def human_report(result: dict[str, Any], profile: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("===== Android OTA 离线诊断结果 =====")
+    lines.append(f"使用 profile:{result.get('profile')}(包名:{result.get('package') or '未知'})")
+    lines.append("")
+    files = result.get("input_files") or []
+    lines.append(f"已分析文件({len(files)} 个):")
+    for name in files:
+        lines.append(f"  - {name}")
+    if not files:
+        lines.append("  (无)")
+    lines.append("")
+    stages = result.get("observed_stages") or []
+    lines.append(f"观察到的升级阶段:{'、'.join(stages) if stages else '无'}")
+    version_code = result.get("version_code")
+    lines.append(f"日志中的 versionCode:{version_code if version_code is not None else '未出现'}")
+    pm = result.get("pm") or {}
+    lines.append(f"PackageManager 回执:{pm.get('decision')}(证据:{pm.get('evidence')})")
+    lines.append("")
+
+    verdict = result.get("verdict", "inconclusive")
+    lines.append(f"判定结论:{_VERDICT_LABELS.get(verdict, verdict)}")
+
+    # The honest headline. A success RECEIPT is never an upgrade-success CLAIM
+    # unless versionCode + stage evidence corroborate it — and even then the
+    # binding to the requested APK is only asserted, so the caveat stays.
+    if verdict == "package_manager_success_receipt_observed":
+        proven = version_code is not None and ("pm_install" in stages)
+        if proven:
+            lines.append(
+                "→ 拿到了 PackageManager 成功回执,且日志含 versionCode 与安装阶段。"
+                "但仍需核对该 versionCode 与目标 APK 是否一致、时间是否吻合,"
+                "才能把这条回执绑定到本次升级。"
+            )
+        else:
+            lines.append(
+                "→ 仅有一条 PackageManager `Success` 回执,缺少匹配的 versionCode 或"
+                "时间吻合的升级阶段证据,无法证明本次 OTA 升级成功,判定为不确定。"
+            )
+    elif verdict == "package_manager_failed":
+        lines.append("→ PackageManager 明确返回失败,本次升级未成功。")
+    elif verdict == "fallback_activation_required":
+        lines.append("→ 命中厂商 fallback 规则,需要走 fallback 激活路径。")
+    elif verdict == "stopped_before_package_manager_receipt":
+        lines.append("→ 有升级阶段痕迹,但没有 PackageManager 回执,升级结果不确定。")
+    else:
+        lines.append("→ 未捕获到稳定的升级阶段或 PackageManager 回执,无法判定。")
+
+    limitations = result.get("limitations") or []
+    if limitations:
+        lines.append("")
+        lines.append("局限与注意:")
+        for item in limitations:
+            lines.append(f"  * {item}")
+    lines.append("")
+    lines.append("提示:本判定仅基于所提供的日志/诊断包。要证明升级成功,"
+                 "需设备侧 PackageManager 回执 + 匹配的 versionCode + 时间吻合的阶段证据三者齐备。")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, type=Path)
+    parser.add_argument("--human", action="store_true",
+                        help="print a Chinese human-readable report instead of JSON")
     sub = parser.add_subparsers(dest="command", required=True)
     inspect = sub.add_parser("analyze", help="classify a diagnostic directory or ZIP")
     inspect.add_argument("bundle", type=Path)
@@ -108,7 +185,14 @@ def main() -> int:
     else:
         result = {"schema": "android-ota-diagnostic/v1", "profile": profile["name"],
                   "pm": pm_decision(args.pm_output.read_text(encoding="utf-8", errors="replace"), profile)}
-    print(json.dumps(result, ensure_ascii=True, indent=2))
+    if args.human and args.command == "analyze":
+        text = human_report(result, profile)
+        # UTF-8 bytes so redirection to a file (the .bat writes *-OTA检测结果.txt)
+        # keeps Chinese intact regardless of the Windows console code page.
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.write(b"\n")
+    else:
+        print(json.dumps(result, ensure_ascii=True, indent=2))
     return 0
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.18.1] — 2026-07-19
+
+- **Windows 无 Python 现场 OTA 检测器** (versionCode **1181**, versionName `1.18.1`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.18.1+1181`). Mapping: `versionCode = major×1000 + minor×10 + patch`. 纯打包/工具层交付,不改协议、传输、路由或 OTA 安装合同。
+  - **双击即用的中文启动器 `OTA检测.bat`.** 现场操作员在**未安装 Python** 的 stock Windows x64 机器上双击即可运行:UTF-8 BOM + CRLF,`chcp 65001`,弹出 Windows 文件选择框选诊断 ZIP(默认 `qzx-yunos-4.4` profile),在 ZIP 旁生成中文 `*-OTA检测结果.txt`,每条退出路径都 `pause` 保持窗口。启动器**从不调用 python/py 解释器**,只运行同目录 `android_ota\android_ota_diag.exe`;`LMW_OTA_NONINTERACTIVE` 提供无人值守 opt-out(必须以参数传诊断包)。
+  - **真正的独立 PE 可执行文件.** 新增 `android-build.yml` 的 `ota-detector`(Windows 2022 runner,**固定** `pyinstaller==6.11.1` `--onefile`)构建 `android_ota_diag.exe`,自检 `MZ` 头并在剥离 Python 的 PATH 下跑一次证据-诚实合约;产物经 intra-run artifact 交给 Ubuntu `build` 作业打进 QZX ZIP——**不在 tag 时重建**,无跨 workflow 依赖环。`release-promote` 按名下载 APK 与 QZX 两个发布物,中间的 detector EXE artifact 绝不进入晋级源。Android release APK 仍照常上传。
+  - **证据-诚实的中文报告 (`--human`).** `android_ota_diag.py` 新增 `--human`:一条孤立的 PackageManager `Success` 回执,若缺少匹配的 `versionCode` 与时间吻合的阶段证据,判定为**不确定 / 无法证明升级成功**,绝不改写成"升级已完成/确认升级成功"。
+  - **fail-closed 打包合约.** 新增纯函数 `scripts/qzx_bundle_contract.py` + `test_qzx_bundle_contract.py`:QZX ZIP 缺少启动器 / EXE / 源码 / 任一 profile,或 EXE 无 `MZ` 头,或启动器缺 BOM+CRLF,或启动器在非注释行调用解释器 → 一律报错。`android-build` 打包步骤与 `promote_release_artifacts.py` 晋级前都调用它。
+  - **Docs:** `scripts/QZX-KIOSK-TOOLS.md` 记录双击 `OTA检测.bat` 的现场用法与 profile 选择;README 当前版本锚更新为 `v1.18.1`。
+
 ## [v1.18.0] — 2026-07-19
 
 - **Operator-UX rebuild** (versionCode **1180**, versionName `1.18.0`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.18.0+1180`). Mapping: `versionCode = major×1000 + minor×10 + patch`. P2P stays the primary path; Broker remains advanced/secondary. No protocol, transport, exact-device `device_id` routing, cache/OTA/safety contract changed — this is a UX-layer rebuild.
