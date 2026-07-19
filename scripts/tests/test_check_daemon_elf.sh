@@ -42,22 +42,76 @@ else
   echo "SKIP: host could not build a dynamic test binary." >&2
 fi
 
-# (B) fully static binary — must be ACCEPTED (if the host can build static).
+# (B) A host static binary is not a shippable daemon: target identity must
+# reject it rather than confusing an x86 artifact with the ARM32 box binary.
 cat > "$TMP/stat.c" <<'EOF'
 int main(void){ return 0; }
 EOF
 if "$CC" -static -o "$TMP/stat" "$TMP/stat.c" 2>/dev/null; then
   if bash "$GATE" "$TMP/stat" >/dev/null 2>&1; then
-    echo "ok: gate accepted a fully static binary."
-  else
-    echo "FAIL: gate REJECTED a fully static binary (should accept)."
+    echo "FAIL: gate ACCEPTED a host x86 static binary (should reject wrong target)."
     fails=$((fails+1))
+  else
+    echo "ok: gate rejected a host static binary as non-ARM target."
   fi
 else
-  echo "SKIP: host lacks static libc; static-accept case exercised in cloud CI." >&2
+  echo "SKIP: host lacks static libc; target identity is exercised by fixtures." >&2
 fi
 
-# (C) usage / missing-arg must fail closed.
+# (C) The API19 ARM TLS failure must be rejected without requiring a cross
+# compiler. A fake readelf returns a static ARM32 ET_EXEC with PT_TLS Align=0x8.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/llvm-readelf" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  -h) cat <<'OUT'
+ELF Header:
+  Class:                             ELF32
+  Type:                              EXEC (Executable file)
+  Machine:                           ARM
+OUT
+      ;;
+  -l)
+      case "${FIXTURE_TLS:-0x8}" in
+        none) cat <<'OUT'
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  LOAD           0x000000 0x00000000 0x00000000 0x00000 0x00000 R E 0x1000
+OUT
+              ;;
+        *) cat <<OUT
+Program Headers:
+  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  TLS            0x001000 0x00000000 0x00000000 0x00000 0x00004 R   ${FIXTURE_TLS}
+OUT
+              ;;
+      esac
+      ;;
+  -d|--dyn-syms) : ;;
+esac
+EOF
+chmod +x "$TMP/bin/llvm-readelf"
+: > "$TMP/arm-static-fixture"
+if PATH="$TMP/bin:$PATH" bash "$GATE" "$TMP/arm-static-fixture" >/dev/null 2>&1; then
+  echo "FAIL: gate ACCEPTED an ARM PT_TLS Align=0x8 fixture (should reject)."
+  fails=$((fails+1))
+else
+  echo "ok: gate rejected an underaligned ARM PT_TLS fixture."
+fi
+if ! FIXTURE_TLS=0x20 PATH="$TMP/bin:$PATH" bash "$GATE" "$TMP/arm-static-fixture" >/dev/null 2>&1; then
+  echo "FAIL: gate REJECTED an ARM PT_TLS Align=0x20 fixture (should accept)."
+  fails=$((fails+1))
+else
+  echo "ok: gate accepted an aligned ARM PT_TLS fixture."
+fi
+if ! FIXTURE_TLS=none PATH="$TMP/bin:$PATH" bash "$GATE" "$TMP/arm-static-fixture" >/dev/null 2>&1; then
+  echo "FAIL: gate REJECTED an ARM fixture without PT_TLS (should accept)."
+  fails=$((fails+1))
+else
+  echo "ok: gate accepted an ARM fixture without PT_TLS."
+fi
+
+# (D) usage / missing-arg must fail closed.
 if bash "$GATE" >/dev/null 2>&1; then
   echo "FAIL: gate returned success with no argument (should fail closed)."
   fails=$((fails+1))

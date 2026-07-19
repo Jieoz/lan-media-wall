@@ -277,8 +277,14 @@ static int lmw_pm_has_success_line(const char *out) {
 }
 
 static int lmw_pm_is_invalid_install_location(const char *out) {
-    return lmw_pm_has_exact_line(out,
-        "Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]");
+    if (lmw_pm_has_exact_line(out, "Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]")) {
+        return 1;
+    }
+    // YunOS 4.4 Pm receives the staged APK path, then emits this exact parser
+    // failure and exits zero. It cannot activate the APK; use the guarded
+    // scanner-stage transaction, but never for a different path or error.
+    return lmw_pm_has_exact_line(out, "pkg: " LMW_STAGED_APK) &&
+           lmw_pm_has_exact_line(out, "Error: no package specified");
 }
 
 typedef enum { INSTALL_FAIL = 0, INSTALL_PM_SUCCESS = 1, INSTALL_LEGACY_STAGE = 2 } lmw_install_action;
@@ -1162,7 +1168,13 @@ static void lmw_ignore_sigpipe(void) {
 }
 
 #if !defined(LMW_DAEMON_TEST) && !defined(LMW_DAEMON_INTEGRATION_TEST)
+// Static NDK bionic aborts before main on ARM when PT_TLS p_align is below 32.
+// lld uses the largest TLS object's alignment for that segment; this referenced
+// object pins the shipped daemon at the API19-compatible minimum.
+static __thread char lmw_tls_align_pad __attribute__((aligned(32)));
+
 int main(int argc, char **argv) {
+    lmw_tls_align_pad = 1;
     lmw_ignore_sigpipe();
 
     // Dispatch on the pure CLI-mode policy (host-tested): this is the SINGLE place

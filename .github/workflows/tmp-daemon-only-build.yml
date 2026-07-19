@@ -1,0 +1,79 @@
+name: tmp-daemon-only-build
+
+on:
+  push:
+    branches:
+      - chore/ota-pm-yunos-daemon-cloud
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host daemon and ELF-gate tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcc -DLMW_DAEMON_TEST -Wall -Wextra -Werror \
+            -o /tmp/tdaemon scripts/tests/test_lmw_root_daemon.c
+          /tmp/tdaemon
+          bash scripts/tests/test_check_daemon_elf.sh
+
+      - name: Install Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          local-cache: false
+
+      - name: Cross-compile ARMv7 daemon
+        shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          ndk_bin="$(find "$ANDROID_NDK_HOME" -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin' -type d | sort | tail -1)"
+          test -n "$ndk_bin"
+          "$ndk_bin/armv7a-linux-androideabi21-clang" \
+            -Os -static -fno-PIE -Wall -Wextra -Werror -s \
+            -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
+          echo "$ndk_bin" >> "$GITHUB_PATH"
+
+      - name: Enforce API19 ARM ELF contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check_daemon_elf.sh scripts/lmw_root_daemon
+
+      - name: Smoke-test ARM startup under qemu
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+          set +e
+          output="$(qemu-arm scripts/lmw_root_daemon -probe 2>&1)"
+          rc=$?
+          set -e
+          printf '%s\n' "$output"
+          case "$output" in
+            *'TLS segment is underaligned'*) exit 1 ;;
+          esac
+          if [ "$rc" -eq 134 ]; then
+            echo 'daemon aborted before serving probe' >&2
+            exit 1
+          fi
+          # No daemon socket exists in CI, so connection failure is expected.
+
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-media-wall-daemon-ota-pm-fix
+          path: scripts/lmw_root_daemon
+          if-no-files-found: error
+          retention-days: 7

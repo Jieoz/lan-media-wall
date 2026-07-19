@@ -71,7 +71,50 @@ else
   echo "ok[static]: no DT_NEEDED shared-library dependencies."
 fi
 
-# ---- Check 2: no API19-unsafe UNDEFINED dynamic symbols --------------------
+# ---- Check 2: target identity + ARM TLS layout ------------------------------
+# The daemon is shipped only to the legacy 32-bit ARM QZX boxes. Keeping this
+# explicit catches a wrong-arch/PIE artifact before it reaches /system/xbin.
+elf_header="$("$READELF" -h "$BIN" 2>/dev/null || true)"
+if ! printf '%s\n' "$elf_header" | grep -Eq 'Class:[[:space:]]+ELF32'; then
+  echo "FAIL[target]: daemon is not ELF32." >&2
+  fail=1
+fi
+if ! printf '%s\n' "$elf_header" | grep -Eqi 'Machine:[[:space:]]+ARM($|[[:space:]])'; then
+  echo "FAIL[target]: daemon is not ARM." >&2
+  fail=1
+fi
+if ! printf '%s\n' "$elf_header" | grep -Eq 'Type:[[:space:]]+EXEC'; then
+  echo "FAIL[target]: daemon is not ET_EXEC (non-PIE static executable)." >&2
+  fail=1
+fi
+
+# Static NDK bionic validates the ARM TLS layout before main. PT_TLS alignment
+# below 32 makes the daemon abort even though it has no dynamic dependencies.
+tls_align="$(printf '%s\n' "$prog_headers" | awk '$1 == "TLS" { print $NF; exit }')"
+if [ -n "$tls_align" ]; then
+  case "$tls_align" in
+    0x*|0X*) tls_align_value=$((tls_align));;
+    *[!0-9]*)
+      echo "FAIL[tls]: unable to parse PT_TLS alignment '$tls_align'." >&2
+      fail=1
+      tls_align_value=0
+      ;;
+    *) tls_align_value=$tls_align;;
+  esac
+  if [ "$tls_align_value" -lt 32 ]; then
+    echo "FAIL[tls]: PT_TLS p_align=$tls_align is below ARM bionic's required 32." >&2
+    fail=1
+  else
+    echo "ok[tls]: PT_TLS p_align=$tls_align (>= 32)."
+  fi
+else
+  echo "ok[tls]: no PT_TLS program header."
+fi
+if [ "$fail" -eq 0 ]; then
+  echo "ok[target]: ELF32 ARM ET_EXEC."
+fi
+
+# ---- Check 3: no API19-unsafe UNDEFINED dynamic symbols --------------------
 # These libc symbols are absent or late-exported on API19 bionic and are the
 # class of failure this gate exists to stop:
 #   * signal   — on old bionic <signal.h> made signal() a static-inline shim over

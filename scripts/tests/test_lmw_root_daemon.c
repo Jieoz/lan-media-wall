@@ -149,6 +149,15 @@ static void test_legacy_install_contract(void) {
           "exact invalid install location classified");
     CHECK(lmw_pm_is_invalid_install_location("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION_EXTRA]\n") == 0,
           "lookalike invalid location rejected");
+    CHECK(lmw_pm_is_invalid_install_location("pkg: /data/local/tmp/lmw_update_staged.apk\n"
+                                           "Error: no package specified\n") == 1,
+          "exact YunOS pm parser failure selects legacy stage");
+    CHECK(lmw_pm_is_invalid_install_location("pkg: /data/local/tmp/other.apk\n"
+                                           "Error: no package specified\n") == 0,
+          "YunOS pm error for another path is rejected");
+    CHECK(lmw_pm_is_invalid_install_location("pkg: /data/local/tmp/lmw_update_staged.apk\n"
+                                           "Error: install failed\n") == 0,
+          "other pm error for staged path is rejected");
     CHECK(lmw_install_decision("Success\n") == INSTALL_PM_SUCCESS, "pm success stays primary path");
     CHECK(lmw_install_decision("Failure [INSTALL_FAILED_INVALID_INSTALL_LOCATION]\n") == INSTALL_LEGACY_STAGE,
           "only exact invalid location selects legacy stage");
