@@ -79,6 +79,21 @@ static void test_ota_rootfix_contract(void) {
     CHECK(lmw_pm_path_names_target("package:/data/app/x.apk\n", "/data/app/x.apk"), "pm path adoption proof");
 }
 
+static void test_daemon_candidate_becomes_executable(void) {
+    char path[] = "/tmp/lmw_candidate_exec_XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0, "candidate fixture created");
+    if (fd < 0) return;
+    CHECK(write(fd, "elf", 3) == 3, "candidate fixture populated");
+    close(fd);
+    CHECK(chmod(path, 0600) == 0, "candidate starts non-executable like APK extraction");
+    CHECK(lmw_prepare_candidate_exec(path) == 1, "daemon makes fixed candidate executable");
+    struct stat st;
+    CHECK(stat(path, &st) == 0 && (st.st_mode & S_IXUSR) != 0,
+          "candidate owner execute bit set");
+    unlink(path);
+}
+
 static void test_install_path_policy(void) {
     CHECK(lmw_install_path_status(LMW_CANONICAL_APK) == PATH_OK, "canonical path ok");
     CHECK(lmw_install_path_status("") == PATH_ERR_EMPTY, "empty rejected");
@@ -413,6 +428,7 @@ int main(void) {
     test_parse_restart_app();
     test_parse_install();
     test_ota_rootfix_contract();
+    test_daemon_candidate_becomes_executable();
     test_install_path_policy();
     test_peer_authorized();
     test_command_requires_auth();

@@ -651,6 +651,10 @@ static lmw_selfupdate_action lmw_selfupdate_decide(int candidate_regular,
     return SELFUPDATE_APPLY;
 }
 
+static int lmw_prepare_candidate_exec(const char *candidate_path) {
+    return candidate_path && chmod(candidate_path, 0700) == 0;
+}
+
 #if !defined(LMW_DAEMON_TEST) || defined(LMW_DAEMON_INTEGRATION_TEST)
 static int lmw_copy_regular(const char *src, const char *dst);
 
@@ -1186,6 +1190,14 @@ static lmw_candidate_probe lmw_run_candidate_probe(const char *candidate_path) {
     char sockname[64];
     if (lmw_candidate_probe_sockname((long)getpid(), sockname, sizeof(sockname)) < 0)
         return result;
+
+    // The Player stages this file from an APK asset under its private cache. A
+    // newly-created FileOutputStream leaves it 0600 on Android/YunOS, so hashing
+    // succeeds but execve() fails with EACCES. Make only this fixed, already
+    // hashed/allowlisted candidate executable before the isolated runtime probe.
+    // The live daemon is root and performs the chmod itself; the app never gets a
+    // generic privileged chmod primitive.
+    if (!lmw_prepare_candidate_exec(candidate_path)) return result;
 
     pid_t pid = fork();
     if (pid < 0) return result;
