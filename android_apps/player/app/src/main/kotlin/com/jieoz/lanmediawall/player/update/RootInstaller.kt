@@ -27,7 +27,8 @@ import java.io.File
 object RootInstaller {
     private const val TAG = "lmw.RootInstaller"
     private const val PROBE_CACHE_MS = 30_000L
-    private const val CONNECT_TIMEOUT_MS = 4_000
+    private const val DEFAULT_RESPONSE_TIMEOUT_MS = 4_000
+    const val daemonUpdateResponseTimeoutMs = 15_000
     @Volatile private var cachedProbe: Probe? = null
     @Volatile private var cachedProbeAtMs = 0L
 
@@ -83,7 +84,7 @@ object RootInstaller {
             socket.connect(
                 LocalSocketAddress(RootDaemonProtocol.SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT),
             )
-            socket.soTimeout = CONNECT_TIMEOUT_MS
+            socket.soTimeout = responseTimeoutMs(line)
             socket.outputStream.write((line + "\n").toByteArray())
             socket.outputStream.flush()
             socket.shutdownOutput()
@@ -95,6 +96,10 @@ object RootInstaller {
             try { socket.close() } catch (_: Exception) {}
         }
     }
+
+    internal fun responseTimeoutMs(request: String): Int =
+        if (request.startsWith("UPDATE_DAEMON ")) daemonUpdateResponseTimeoutMs
+        else DEFAULT_RESPONSE_TIMEOUT_MS
 
     /**
      * §restart-semantics: ask the daemon to force-stop + relaunch ONLY the Player

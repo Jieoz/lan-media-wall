@@ -88,6 +88,18 @@ class RootDaemonProtocolTest {
     }
 
     @Test
+    fun daemon_update_timeout_outlives_candidate_probe_budget() {
+        // The daemon may spend up to 5 seconds starting/probing the candidate.
+        // The client must not time out first and delete the candidate mid-proof.
+        assertTrue(RootInstaller.daemonUpdateResponseTimeoutMs > 5_000)
+        assertTrue(
+            RootInstaller.responseTimeoutMs(
+                RootDaemonProtocol.updateDaemonRequest("a".repeat(64)),
+            ) > RootInstaller.responseTimeoutMs(RootDaemonProtocol.probeRequest()),
+        )
+    }
+
+    @Test
     fun parse_probe_ready_requires_ready_prefix_and_euid0() {
         val r = RootDaemonProtocol.parseProbe(
             "ready daemon_euid=0 peer_uid=10020 allowed_uid=10020 pkg=com.jieoz.lanmediawall.player")
