@@ -58,7 +58,7 @@ class AppUpdater(
         expectedSha256: String,
         log: (String) -> Unit = {},
     ): Result {
-        val daemonReady = ensureCurrentDaemon(log)
+        val daemonReady = reconcileDaemon(log)
         if (daemonReady is Result.Failed) return daemonReady
         val dir = File(cacheDir, "update").apply { mkdirs() }
         try {
@@ -152,7 +152,7 @@ class AppUpdater(
         }
     }
 
-    private fun ensureCurrentDaemon(log: (String) -> Unit): Result? {
+    fun reconcileDaemon(log: (String) -> Unit = {}): Result? {
         val provider = daemonAssetProvider ?: return null
         val dir = File(cacheDir, "update").apply { mkdirs() }
         val candidate = File(RootInstaller.canonicalDaemonCandidatePath)

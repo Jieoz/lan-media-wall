@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -15,6 +16,7 @@ import '../protocol/messages.dart';
 import '../protocol/pair_uri.dart';
 import '../protocol/remote_endpoint.dart';
 import '../ui/connection_status.dart';
+import '../util/apk_manifest.dart';
 import 'cache_ops.dart';
 import 'media_progress.dart';
 
@@ -1468,10 +1470,18 @@ class WallState extends ChangeNotifier {
   }
 
   /// broker 模式优先上传到 broker 媒体库;P2P/无 broker 时复用控制端本机临时 HTTP 服务。
-  Future<({String url, String sha256})> uploadApkForUpdate({
+  Future<({String url, String sha256, int versionCode, String? versionName})>
+      uploadApkForUpdate({
     required File apk,
     void Function(int sent, int total)? onProgress,
   }) async {
+    final archive =
+        ZipDecoder().decodeBytes(await apk.readAsBytes(), verify: true);
+    final manifestBytes = archive.findFile('AndroidManifest.xml')?.readBytes();
+    if (manifestBytes == null) {
+      throw const FormatException('APK 缺少 AndroidManifest.xml');
+    }
+    final manifest = validatePlayerApkManifest(parseApkManifest(manifestBytes));
     if (!isP2p && brokerHost.isNotEmpty) {
       final item = await MediaUpload.uploadToBroker(
         file: apk,
@@ -1481,7 +1491,12 @@ class WallState extends ChangeNotifier {
         uploadToken: mediaUploadToken,
         onProgress: onProgress,
       );
-      return (url: item.url, sha256: item.sha256 ?? '');
+      return (
+        url: item.url,
+        sha256: item.sha256 ?? '',
+        versionCode: manifest.versionCode,
+        versionName: manifest.versionName,
+      );
     }
 
     final item = await uploadLocalMedia(
@@ -1490,7 +1505,12 @@ class WallState extends ChangeNotifier {
       name: apk.uri.pathSegments.last,
       onProgress: onProgress,
     );
-    return (url: item.url, sha256: item.sha256 ?? '');
+    return (
+      url: item.url,
+      sha256: item.sha256 ?? '',
+      versionCode: manifest.versionCode,
+      versionName: manifest.versionName,
+    );
   }
 
   /// update_app(§23)：令目标被控端自更新到 [url] 指向的 APK。

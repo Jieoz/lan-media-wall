@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.18.3 OTA Test] — 2026-07-20
+
+- **Startup daemon reconcile** (versionCode **1183**, versionName `1.18.3`). A newly activated Player immediately verifies and reconciles its APK-embedded root daemon through the existing SHA-256, root/protocol probe, atomic replacement, post-install verification, and rollback path.
+- **Manifest-derived OTA target.** The controller parses the selected Player APK's binary `AndroidManifest.xml`, rejects the wrong package/malformed metadata, and sends the APK's real `versionCode`/`versionName`; target versions can no longer be typed independently of the APK.
+- **Scope:** test candidate for one-device `1182 → 1183` OTA and daemon self-update validation; not a formal Release.
+
 ## [v1.18.2] — 2026-07-20
 
 - **Safe remote configuration protocol** (versionCode **1182**, versionName `1.18.2`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.18.2+1182`).

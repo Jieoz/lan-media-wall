@@ -120,6 +120,24 @@ class PlayerService : Service() {
      *  timer. Cancelled by any new prepare/play_at/advance/stop. */
     private val dwellTimer = AtomicReference<Job?>(null)
     private var deviceIp = "0.0.0.0"
+    private val startupDaemonReconciler by lazy {
+        com.jieoz.lanmediawall.player.update.StartupDaemonReconciler(
+            reconcile = {
+                val updater = com.jieoz.lanmediawall.player.update.AppUpdater(
+                    cacheDir,
+                    daemonAssetProvider = {
+                        assets.open(com.jieoz.lanmediawall.player.update.AppUpdater.DAEMON_ASSET_ENTRY)
+                    },
+                )
+                val result = updater.reconcileDaemon(log = { logEvent(it) })
+                if (result is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Failed) {
+                    logEvent("daemon_startup_reconcile reason=${result.reason}")
+                    false
+                } else true
+            },
+            log = { logEvent(it) },
+        )
+    }
 
     val controllerRef: PlayerController? get() = MainActivity.playerController
 
@@ -162,6 +180,10 @@ class PlayerService : Service() {
         // the screen shows the last task ASAP after a (re)boot (§10/§11).
         scope.launch { watchdogLoop() }
         scope.launch { resumeLast() }
+        // Every newly activated Player reconciles the daemon embedded in its own
+        // APK immediately. Do not defer this until the next update_app command:
+        // that leaves legacy boxes running stale privileged code indefinitely.
+        scope.launch(Dispatchers.IO) { startupDaemonReconciler.runOnce() }
         // §14.5: choose + build the transport off the main thread (the discovery
         // probe blocks), then start the link and the loops that talk to it.
         scope.launch {
