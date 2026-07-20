@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit
  */
 class AppUpdater(
     private val cacheDir: File,
+    private val daemonAssetProvider: (() -> java.io.InputStream)? = null,
     timeoutSeconds: Long = 60,
 ) {
     private val client = OkHttpClient.Builder()
@@ -52,17 +53,14 @@ class AppUpdater(
      * hash mismatch deletes the file and returns [Result.Failed] before any su.
      */
     fun downloadVerifyInstall(
-        pkg: String,
+        packageName: String,
         url: String,
         expectedSha256: String,
         log: (String) -> Unit = {},
     ): Result {
+        val daemonReady = ensureCurrentDaemon(log)
+        if (daemonReady is Result.Failed) return daemonReady
         val dir = File(cacheDir, "update").apply { mkdirs() }
-        // ONE fixed canonical filename — the daemon only ever installs this exact
-        // path (RootDaemonProtocol.CANONICAL_APK_PATH / LMW_CANONICAL_APK). Using
-        // "$pkg-update.apk" keeps that contract regardless of the pushed package.
-        val apk = File(dir, "$pkg-update.apk")
-        val part = File(dir, "$pkg-update.apk.part")
         try {
             // §probe fail-closed: verify the root daemon is reachable + genuinely
             // root BEFORE spending bandwidth on the APK. A dead root bridge fails
@@ -75,6 +73,9 @@ class AppUpdater(
             }
             stage(log, "daemon_probe", "ready=true detail=${probe.detail}")
 
+            // ONE fixed canonical filename — the daemon only ever installs this exact path.
+            val apk = File(dir, "$packageName-update.apk")
+            val part = File(dir, "$packageName-update.apk.part")
             var existing = if (part.exists()) part.length() else 0L
             val builder = Request.Builder().url(url).get()
             if (existing > 0) builder.header("Range", "bytes=$existing-")
@@ -128,7 +129,7 @@ class AppUpdater(
             // fallback — on the target su denies the app UID and setuid is a
             // no-op under no_new_privs, so the daemon is the only path that works.
             stage(log, "pm_install", "daemon_send path=${apk.absolutePath}")
-            val installed = RootInstaller.install(pkg, apk, log)
+            val installed = RootInstaller.install(packageName, apk, log)
             return when (installed.state) {
                 RootDaemonProtocol.InstallState.PM_SUCCESS -> {
                     stage(log, "restart_app", "pm_success detail=${installed.detail}")
@@ -151,6 +152,35 @@ class AppUpdater(
         }
     }
 
+    private fun ensureCurrentDaemon(log: (String) -> Unit): Result? {
+        val provider = daemonAssetProvider ?: return null
+        val dir = File(cacheDir, "update").apply { mkdirs() }
+        val candidate = File(RootInstaller.canonicalDaemonCandidatePath)
+        return try {
+            val parent = candidate.parentFile
+            if (parent == null || parent.canonicalFile != dir.canonicalFile) {
+                Result.Failed("daemon-update-invalid-candidate-path")
+            } else {
+                provider().use { input -> candidate.outputStream().use { input.copyTo(it) } }
+                if (!candidate.isFile || candidate.length() <= 0L) {
+                    candidate.delete()
+                    Result.Failed("daemon-asset-missing")
+                } else {
+                    val sha = sha256File(candidate)
+                    stage(log, "daemon_update", "candidate_sha256=$sha")
+                    if (RootInstaller.updateDaemon(candidate, sha, log)) null
+                    else {
+                        candidate.delete()
+                        Result.Failed("daemon-update-failed:verification_failed")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            candidate.delete()
+            Result.Failed("daemon-update-failed:${e.javaClass.simpleName}")
+        }
+    }
+
     private fun sha256File(file: File): String {
         val md = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { ins ->
@@ -166,6 +196,7 @@ class AppUpdater(
 
     companion object {
         private const val TAG = "lmw.AppUpdater"
+        const val DAEMON_ASSET_ENTRY = "lmw_root_daemon"
 
         /**
          * §probe: map a [Result.Failed] reason string to the UPDATE_STAGE it
@@ -180,7 +211,8 @@ class AppUpdater(
          *   else                       -> failed
          */
         fun stageForReason(reason: String): String = when {
-            reason.startsWith("daemon-not-ready") -> "daemon_probe"
+            reason.startsWith("daemon-update-") || reason == "daemon-asset-missing" -> "daemon_update"
+            reason.startsWith("daemon-not-ready:") -> "daemon_probe"
             reason.startsWith("http-") || reason == "no-body" -> "download"
             reason == "sha256-mismatch" -> "sha256"
             reason.contains("pm_failed") || reason.startsWith("daemon:") -> "pm_install"

@@ -104,6 +104,40 @@ if [ "$fail" -eq 0 ]; then
   echo "ok[symbol]: no API19-unsafe undefined dynamic symbols."
 fi
 
+# ---- Check 3: PT_TLS alignment >= 32 (ARM Bionic) --------------------------
+# WHY (real v1.18.1 field failure): the shipped daemon carried a thread-local
+# (PT_TLS) segment aligned to only 8. On the QZX_C1 (API19 ARM Bionic) the loader
+# rejected it at exec with:
+#   "TLS segment is underaligned: alignment is 8, needs to be at least 32 for ARM Bionic"
+# so the daemon died BEFORE binding its socket and the Player saw daemon_probe
+# ready=false / daemon-unreachable. ARM Bionic requires TLS alignment >= 32. A
+# daemon with NO PT_TLS (the ideal — nothing thread-local) trivially passes; if a
+# future change ever reintroduces a thread-local, this gate blocks shipping one
+# whose alignment would strand the box the same way.
+#
+# Parse: in `readelf -l` the program-header table prints each entry over two lines;
+# the second line's LAST token is the segment Align. Grab the token on the line
+# AFTER the one whose first field is exactly "TLS". Hex (0x20) or decimal (32).
+tls_align="$(printf '%s\n' "$prog_headers" | awk 'f{print $NF; exit} $1=="TLS"{f=1}')"
+if [ -z "$tls_align" ]; then
+  echo "ok[tls]: no PT_TLS segment (nothing thread-local to underalign)."
+else
+  # Normalize hex (0x20) or decimal to a comparable integer.
+  case "$tls_align" in
+    0x*|0X*) tls_align_dec=$(( tls_align )) ;;
+    *)       tls_align_dec=$(( tls_align )) ;;
+  esac
+  if [ "$tls_align_dec" -lt 32 ]; then
+    echo "FAIL[tls]: PT_TLS segment aligned $tls_align (=$tls_align_dec) < 32. ARM Bionic" >&2
+    echo "           (API19) refuses to exec this — 'TLS segment is underaligned: alignment" >&2
+    echo "           is $tls_align_dec, needs to be at least 32 for ARM Bionic'. The daemon would" >&2
+    echo "           die before binding its socket (the v1.18.1 field failure). Not shippable." >&2
+    fail=1
+  else
+    echo "ok[tls]: PT_TLS segment aligned $tls_align (>= 32, ARM-Bionic-safe)."
+  fi
+fi
+
 echo "----"
 if [ "$fail" -ne 0 ]; then
   echo "check_daemon_elf: FAILED — this binary would break on API19. Not shippable." >&2

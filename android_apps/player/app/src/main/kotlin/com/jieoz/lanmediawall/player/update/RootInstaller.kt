@@ -33,6 +33,8 @@ object RootInstaller {
 
     /** The single canonical APK path the daemon will install (see AppUpdater). */
     val canonicalApkPath: String get() = RootDaemonProtocol.CANONICAL_APK_PATH
+    val canonicalDaemonCandidatePath: String
+        get() = RootDaemonProtocol.CANONICAL_DAEMON_CANDIDATE_PATH
 
     data class Probe(val ready: Boolean, val detail: String)
 
@@ -158,6 +160,35 @@ object RootInstaller {
             state = parsed.state,
             rebootRequired = parsed.rebootRequired,
         )
+    }
+
+    /**
+     * Replace the daemon's own binary from the one fixed candidate path. The
+     * daemon independently checks the expected SHA, executes the candidate on an
+     * isolated probe socket, and atomically rolls back on any failed proof.
+     */
+    fun updateDaemon(candidate: File, expectedSha256: String, log: (String) -> Unit = {}): Boolean {
+        if (candidate.absolutePath != canonicalDaemonCandidatePath ||
+            !candidate.isFile || candidate.length() <= 0L) {
+            log("daemon_update_reject reason=invalid-candidate path=${candidate.absolutePath}")
+            return false
+        }
+        val command = try {
+            RootDaemonProtocol.updateDaemonRequest(expectedSha256)
+        } catch (_: IllegalArgumentException) {
+            log("daemon_update_reject reason=invalid-sha256")
+            return false
+        }
+        val probe = probe(force = true)
+        if (!probe.ready) {
+            log("daemon_update_reject reason=daemon-not-ready detail=${probe.detail}")
+            return false
+        }
+        val response = request(command) ?: ""
+        val parsed = RootDaemonProtocol.parseDaemonUpdate(response)
+        log("daemon_update_reply ok=${parsed.ok} detail=${parsed.detail}")
+        if (parsed.ok) cachedProbe = null
+        return parsed.ok
     }
 
     /** Whole-device reboot — the separate HIGH-RISK action, only for the explicit

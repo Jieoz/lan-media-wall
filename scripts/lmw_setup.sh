@@ -43,6 +43,7 @@ BEFORE_FILE=/data/local/tmp/lmw_before_version
 # process started AS root that stays root and exposes a restricted local socket).
 DAEMON_SRC=/data/local/tmp/lmw_root_daemon.new
 DAEMON_DST=/system/xbin/lmw_root_daemon
+DAEMON_BACKUP=/system/xbin/lmw_root_daemon.setup-backup
 # Root-owned file holding the single authorized Player uid (SO_PEERCRED check).
 # Matches LMW_UID_FILE in lmw_root_daemon.c.
 DAEMON_UID=/data/local/tmp/lmw_root_daemon.uid
@@ -152,6 +153,20 @@ install_daemon() {
     echo "  ERROR: $DAEMON_SRC missing; root daemon not installed (the bat pushes it)." >&2
     return 1
   fi
+  # Execute/probe the uploaded candidate on this ROM before touching the live path.
+  # The isolated socket cannot collide with @lmw_root_daemon.
+  candidate_socket="lmw_setup_candidate_$$"
+  chmod 0755 "$DAEMON_SRC" || { echo "  ERROR: daemon candidate chmod failed" >&2; return 1; }
+  "$DAEMON_SRC" -candidate-probe "$candidate_socket" >/dev/null 2>&1 &
+  candidate_pid=$!
+  sleep 1
+  candidate_out="$("$DAEMON_SRC" -probe-socket "$candidate_socket" 2>&1)"; candidate_rc=$?
+  wait "$candidate_pid" 2>/dev/null
+  echo "  daemon candidate probe: $candidate_out"
+  if [ "$candidate_rc" != 0 ]; then
+    echo "  ERROR: uploaded daemon candidate failed execution/protocol proof." >&2
+    return 1
+  fi
   mount -o remount,rw /system 2>/dev/null || mount -o rw,remount /system 2>/dev/null || {
     echo "  ERROR: cannot remount /system read-write for root daemon." >&2
     return 1
@@ -159,9 +174,16 @@ install_daemon() {
   # Binary: plain root-owned executable — NO setuid bit (it is started as root,
   # never elevated by exec). system:system 0755 is enough to run + be readable.
   daemon_stage="$DAEMON_DST.installing"
-  rm -f "$daemon_stage"
+  rm -f "$daemon_stage" "$DAEMON_BACKUP"
   cp "$DAEMON_SRC" "$daemon_stage" || { echo "  ERROR: daemon copy failed" >&2; return 1; }
-  mv "$daemon_stage" "$DAEMON_DST" || { echo "  ERROR: daemon install failed" >&2; return 1; }
+  if [ -f "$DAEMON_DST" ]; then
+    mv "$DAEMON_DST" "$DAEMON_BACKUP" || { echo "  ERROR: daemon backup failed" >&2; return 1; }
+  fi
+  mv "$daemon_stage" "$DAEMON_DST" || {
+    [ -f "$DAEMON_BACKUP" ] && mv "$DAEMON_BACKUP" "$DAEMON_DST"
+    echo "  ERROR: daemon install failed; rollback attempted" >&2
+    return 1
+  }
   chown 0:0 "$DAEMON_DST" 2>/dev/null || chown root:root "$DAEMON_DST" 2>/dev/null || {
     echo "  ERROR: daemon chown root:root failed" >&2; return 1; }
   chmod 0755 "$DAEMON_DST" || { echo "  ERROR: daemon chmod 0755 failed" >&2; return 1; }
@@ -183,6 +205,7 @@ install_daemon() {
   install_boot_hook   # best-effort cold-boot persistence (see function)
   mount -o remount,ro /system 2>/dev/null || mount -o ro,remount /system 2>/dev/null || true
 
+  stop_daemon
   start_daemon
   # VERIFY over the real protocol: the daemon's own -probe client connects to the
   # abstract socket, sends PROBE, and exits 0 only on "ready ... daemon_euid=0".
@@ -190,11 +213,26 @@ install_daemon() {
   probe_out="$("$DAEMON_DST" -probe 2>&1)"; probe_rc=$?
   echo "  daemon probe: $probe_out"
   if [ "$probe_rc" != 0 ]; then
-    echo "  ERROR: root daemon did not answer a valid PROBE (rc=$probe_rc)." >&2
+    echo "  ERROR: root daemon did not answer a valid PROBE (rc=$probe_rc); rolling back." >&2
+    stop_daemon
+    mount -o remount,rw /system 2>/dev/null || mount -o rw,remount /system 2>/dev/null || true
+    rm -f "$DAEMON_DST"
+    if [ -f "$DAEMON_BACKUP" ]; then
+      mv "$DAEMON_BACKUP" "$DAEMON_DST" && chmod 0755 "$DAEMON_DST" && start_daemon
+    fi
+    mount -o remount,ro /system 2>/dev/null || mount -o ro,remount /system 2>/dev/null || true
     echo "         remote restart/update is NOT available; not writing completion." >&2
     return 1
   fi
+  mount -o remount,rw /system 2>/dev/null || mount -o rw,remount /system 2>/dev/null || true
+  rm -f "$DAEMON_BACKUP"
+  mount -o remount,ro /system 2>/dev/null || mount -o ro,remount /system 2>/dev/null || true
   echo "  root daemon running + verified for uid=$uid (socket @lmw_root_daemon)."
+}
+
+stop_daemon() {
+  for pid in $(pidof lmw_root_daemon 2>/dev/null); do kill "$pid" 2>/dev/null; done
+  sleep 1
 }
 
 # Start the daemon as root NOW (double-forks + detaches itself).

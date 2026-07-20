@@ -64,6 +64,30 @@ class RootDaemonProtocolTest {
     }
 
     @Test
+    fun daemon_candidate_path_and_update_request_are_fixed_and_hash_only() {
+        assertEquals(
+            "/data/data/com.jieoz.lanmediawall.player/cache/update/lmw_root_daemon.candidate",
+            RootDaemonProtocol.CANONICAL_DAEMON_CANDIDATE_PATH,
+        )
+        val sha = "A".repeat(64)
+        assertEquals("UPDATE_DAEMON $sha", RootDaemonProtocol.updateDaemonRequest(sha))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun daemon_update_request_rejects_non_sha256_argument() {
+        RootDaemonProtocol.updateDaemonRequest("../../system/xbin/lmw_root_daemon")
+    }
+
+    @Test
+    fun daemon_update_reply_requires_verified_installed_state() {
+        assertTrue(RootDaemonProtocol.parseDaemonUpdate(
+            "ok update_daemon verified installed sha256=${"a".repeat(64)}").ok)
+        assertFalse(RootDaemonProtocol.parseDaemonUpdate(
+            "error update_daemon apply_failed rollback=restored").ok)
+        assertFalse(RootDaemonProtocol.parseDaemonUpdate("ok update_daemon staged").ok)
+    }
+
+    @Test
     fun parse_probe_ready_requires_ready_prefix_and_euid0() {
         val r = RootDaemonProtocol.parseProbe(
             "ready daemon_euid=0 peer_uid=10020 allowed_uid=10020 pkg=com.jieoz.lanmediawall.player")

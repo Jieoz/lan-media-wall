@@ -62,6 +62,23 @@ static void test_parse_install(void) {
     CHECK(lmw_parse_request("FOO /x", &r) == CMD_INVALID, "unknown command rejected");
 }
 
+static void test_ota_rootfix_contract(void) {
+    lmw_request r;
+    const char *sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    char req[96], digest[65], sock[64];
+    snprintf(req, sizeof(req), "UPDATE_DAEMON %s\n", sha);
+    CHECK(lmw_parse_request(req, &r) == CMD_UPDATE_DAEMON, "daemon update parses");
+    CHECK(lmw_command_requires_auth(CMD_UPDATE_DAEMON), "daemon update authenticated");
+    lmw_sha256_hex("abc", 3, digest);
+    CHECK(lmw_hex_eq_ci(digest, "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"), "sha256 vector");
+    lmw_candidate_probe p = lmw_parse_candidate_probe(
+        "ready daemon_euid=0 peer_uid=-1 allowed_uid=-1 pkg=" LMW_PKG "\n");
+    CHECK(lmw_selfupdate_decide(1, 1, p) == SELFUPDATE_APPLY, "candidate proof applies");
+    CHECK(lmw_candidate_probe_sockname(42, sock, sizeof(sock)) > 0, "isolated socket name");
+    CHECK(lmw_legacy_reconcile_decide(1, 1, 1) == RECONCILE_COMMIT_BACKUP, "stale backup commit decision");
+    CHECK(lmw_pm_path_names_target("package:/data/app/x.apk\n", "/data/app/x.apk"), "pm path adoption proof");
+}
+
 static void test_install_path_policy(void) {
     CHECK(lmw_install_path_status(LMW_CANONICAL_APK) == PATH_OK, "canonical path ok");
     CHECK(lmw_install_path_status("") == PATH_ERR_EMPTY, "empty rejected");
@@ -395,6 +412,7 @@ int main(void) {
     test_parse_reboot();
     test_parse_restart_app();
     test_parse_install();
+    test_ota_rootfix_contract();
     test_install_path_policy();
     test_peer_authorized();
     test_command_requires_auth();

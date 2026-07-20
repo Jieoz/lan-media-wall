@@ -32,7 +32,7 @@ if "%APK%"=="" (
 if not exist "%APK%" ( echo ERROR: APK not found: %APK% & exit /b 1 )
 
 set "HERE=%~dp0"
-set "COMPLETE_LOCAL=%TEMP%\lmw_setup_complete_%RANDOM%.txt"
+set "COMPLETE_LOCAL=%HERE%lmw_setup_complete.txt"
 if not exist "%HERE%lmw_setup.sh"       ( echo ERROR: lmw_setup.sh not found next to this bat.       & exit /b 1 )
 if not exist "%HERE%lmw_root_daemon"    ( echo ERROR: lmw_root_daemon not found next to this bat.    & exit /b 1 )
 
@@ -68,6 +68,7 @@ adb shell chmod 755 /data/local/tmp/lmw_setup.sh
 
 echo [3/5] phase 1: install/upgrade player (box will reboot once)...
 adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!"
+if errorlevel 1 ( echo ERROR: setup phase 1 command failed & exit /b 1 )
 adb pull /data/local/tmp/lmw_setup_complete "%COMPLETE_LOCAL%" >nul 2>&1 && goto verify
 
 echo     waiting for the box to reboot and come back...
@@ -81,6 +82,7 @@ ping -n 16 127.0.0.1 >nul
 
 echo [4/5] phase 2: install+start+probe root daemon + disable everything + bind HOME...
 adb shell "sh /data/local/tmp/lmw_setup.sh!FLAGS!"
+if errorlevel 1 ( echo ERROR: setup phase 2 command failed & exit /b 1 )
 adb pull /data/local/tmp/lmw_setup_complete "%COMPLETE_LOCAL%" >nul 2>&1 || ( echo ERROR: setup did not complete; review the errors above & exit /b 1 )
 
 :verify

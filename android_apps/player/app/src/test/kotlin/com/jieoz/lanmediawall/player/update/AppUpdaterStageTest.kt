@@ -52,4 +52,11 @@ class AppUpdaterStageTest {
         // so ordering must send it to daemon_probe, not pm_install.
         assertEquals("daemon_probe", stage("daemon-not-ready:x"))
     }
+
+    @Test
+    fun daemon_asset_contract_is_fixed_and_fail_closed() {
+        assertEquals("lmw_root_daemon", AppUpdater.DAEMON_ASSET_ENTRY)
+        assertEquals("daemon_update", stage("daemon-update-failed:verification_failed"))
+        assertEquals("daemon_update", stage("daemon-asset-missing"))
+    }
 }

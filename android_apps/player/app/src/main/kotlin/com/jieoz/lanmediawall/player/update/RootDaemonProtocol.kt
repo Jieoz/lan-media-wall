@@ -30,6 +30,10 @@ object RootDaemonProtocol {
         "/data/data/com.jieoz.lanmediawall.player/cache/update/" +
             "com.jieoz.lanmediawall.player-update.apk"
 
+    /** Fixed candidate path; the update request carries only its expected hash. */
+    const val CANONICAL_DAEMON_CANDIDATE_PATH =
+        "/data/data/com.jieoz.lanmediawall.player/cache/update/lmw_root_daemon.candidate"
+
     fun probeRequest(): String = "PROBE"
 
     /** Normal restart: force-stop + relaunch ONLY the Player app (app-only, never
@@ -40,6 +44,23 @@ object RootDaemonProtocol {
     fun rebootRequest(): String = "REBOOT"
 
     fun installRequest(absPath: String): String = "INSTALL $absPath"
+
+    fun updateDaemonRequest(expectedSha256: String): String {
+        require(expectedSha256.matches(Regex("[0-9a-fA-F]{64}"))) {
+            "expectedSha256 must be exactly 64 hexadecimal characters"
+        }
+        return "UPDATE_DAEMON $expectedSha256"
+    }
+
+    data class DaemonUpdateReply(val ok: Boolean, val detail: String)
+
+    fun parseDaemonUpdate(response: String): DaemonUpdateReply {
+        val line = response.trim()
+        val ok = line.startsWith("ok update_daemon ") &&
+            line.contains("verified installed") &&
+            Regex("(?:^| )sha256=[0-9a-fA-F]{64}(?:$| )").containsMatchIn(line)
+        return DaemonUpdateReply(ok, line.ifBlank { "empty" })
+    }
 
     data class Probe(val ready: Boolean, val detail: String)
 

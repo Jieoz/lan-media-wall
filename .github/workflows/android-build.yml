@@ -197,6 +197,24 @@ jobs:
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
 
+      - name: Build API19-compatible daemon asset before APK
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_BIN="$(find "$ANDROID_HOME/ndk" -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin' -type d | sort | tail -1)"
+          test -n "$NDK_BIN"
+          CC="$NDK_BIN/armv7a-linux-androideabi21-clang"
+          "$CC" -Os -static -fno-PIE -Wall -Wextra -Werror -s \
+            -o scripts/lmw_root_daemon scripts/lmw_root_daemon.c
+          LLVM_READELF="$(find "$ANDROID_HOME/ndk" -name llvm-readelf -path '*/linux-x86_64/*' 2>/dev/null | sort | tail -1)"
+          test -n "$LLVM_READELF"
+          export PATH="$(dirname "$LLVM_READELF"):$PATH"
+          bash scripts/check_daemon_elf.sh scripts/lmw_root_daemon
+          mkdir -p android_apps/player/app/src/main/assets
+          cp scripts/lmw_root_daemon android_apps/player/app/src/main/assets/lmw_root_daemon
+          cmp scripts/lmw_root_daemon android_apps/player/app/src/main/assets/lmw_root_daemon
+
       - name: Run Android JVM unit tests
         if: steps.detect.outputs.present == 'true'
         working-directory: android_apps/player
@@ -298,6 +316,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist_tools
           cp scripts/lmw_setup.bat scripts/lmw_setup.sh \
+             scripts/lmw_fleet_bootstrap.bat scripts/devices.example.txt \
              scripts/lmw_restore.bat scripts/lmw_restore.sh \
              scripts/lmw_audit.bat scripts/lmw_audit.sh \
              scripts/qzx_field_check.bat scripts/qzx_field_check.sh \
@@ -314,6 +333,7 @@ jobs:
           cp ota_detector_exe/android_ota_diag.exe dist_tools/android_ota/
           (cd dist_tools && zip -9 ../LANMediaWall-QZX-Update-Tools.zip \
             lmw_setup.bat lmw_setup.sh \
+            lmw_fleet_bootstrap.bat devices.example.txt \
             lmw_restore.bat lmw_restore.sh \
             lmw_audit.bat lmw_audit.sh \
             qzx_field_check.bat qzx_field_check.sh \
@@ -343,6 +363,7 @@ jobs:
           names=set(zipfile.ZipFile('LANMediaWall-QZX-Update-Tools.zip').namelist())
           required={
             'qzx_field_check.bat', 'qzx_field_check.sh', 'lmw_root_daemon',
+            'lmw_fleet_bootstrap.bat', 'devices.example.txt',
             'OTA检测.bat',
             'android_ota/android_ota_diag.exe',
             'android_ota/android_ota_diag.py',

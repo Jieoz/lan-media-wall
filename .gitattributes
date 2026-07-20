@@ -8,3 +8,6 @@ scripts/OTA检测.bat -text
 # `-whitespace` stops `git diff --check` from flagging every CRLF's CR as
 # "trailing whitespace": the CRLF endings are intentional here, not an error.
 scripts/OTA检测.bat -whitespace
+
+scripts/lmw_setup.bat -text -whitespace
+scripts/lmw_fleet_bootstrap.bat -text -whitespace

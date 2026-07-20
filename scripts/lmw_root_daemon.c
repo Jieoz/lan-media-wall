@@ -95,6 +95,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -134,6 +135,28 @@
 // LocalSocketAddress(LMW_SOCKET_NAME, Namespace.ABSTRACT).
 #define LMW_SOCKET_NAME   "lmw_root_daemon"
 
+// ---- §daemon-self-update paths (authenticated UPDATE_DAEMON) ----------------
+// The daemon can replace ITS OWN on-disk binary with a controller-provided, hash-
+// verified candidate, WITHOUT reflashing the box. Deployed dead/old daemons have
+// no such verb (that is the migration-bridge's job); a LIVE daemon upgraded via
+// this path supports future daemon OTA through the product path.
+//   * Candidate: ONE fixed path the Player stages the versioned daemon artifact to
+//     (world-nothing-special; the daemon opens it O_NOFOLLOW + regular + non-empty).
+//     NOT request-supplied — the request carries only the expected SHA-256, exactly
+//     like update_app's hash contract, so there is no arbitrary path/exec surface.
+//   * Install: the live binary location (matches lmw_setup.sh DAEMON_DST).
+//   * Backup: same-filesystem sibling so the replace is an atomic rename and the
+//     rollback is a rename back. Committed (removed) only after post-replace proof.
+#ifndef LMW_DAEMON_CANDIDATE
+#define LMW_DAEMON_CANDIDATE "/data/data/com.jieoz.lanmediawall.player/cache/update/lmw_root_daemon.candidate"
+#endif
+#ifndef LMW_DAEMON_INSTALL
+#define LMW_DAEMON_INSTALL   "/system/xbin/lmw_root_daemon"
+#endif
+#ifndef LMW_DAEMON_BACKUP
+#define LMW_DAEMON_BACKUP    LMW_DAEMON_INSTALL ".lmw-bak"
+#endif
+
 // Persistent restart-execution evidence log (see §restart-state-machine). Bounded:
 // rotated to .1 at LMW_RESTART_LOG_MAX so a long-lived box can't fill the tmpfs.
 // Records only package name / pids / am-output tokens — never any secret.
@@ -151,9 +174,10 @@
 typedef enum {
     CMD_INVALID = 0,
     CMD_PROBE,
-    CMD_REBOOT,       // whole-device reboot (HIGH-RISK advanced action only)
-    CMD_INSTALL,      // stage APK then RESTART_APP (no whole-device reboot)
-    CMD_RESTART_APP,  // force-stop + relaunch ONLY the Player app (normal restart)
+    CMD_REBOOT,        // whole-device reboot (HIGH-RISK advanced action only)
+    CMD_INSTALL,       // stage APK then RESTART_APP (no whole-device reboot)
+    CMD_RESTART_APP,   // force-stop + relaunch ONLY the Player app (normal restart)
+    CMD_UPDATE_DAEMON, // replace THIS daemon's own binary with a hash-verified candidate
 } lmw_cmd;
 
 typedef struct {
@@ -225,6 +249,27 @@ static lmw_cmd lmw_parse_request(const char *line_in, lmw_request *out) {
         if (strlen(arg) >= sizeof(out->arg)) return CMD_INVALID;
         strcpy(out->arg, arg);
         return CMD_INSTALL;
+    }
+
+    // UPDATE_DAEMON <sha256hex>: replace the daemon's own binary with the fixed
+    // candidate path IFF its content matches the caller-supplied expected SHA-256.
+    // The candidate PATH is a compile-time constant (never request-supplied) — the
+    // single argument is ONLY the 64-hex-char expected digest, mirroring update_app's
+    // hash contract. A malformed/odd-length/non-hex digest is rejected here so the
+    // side-effecting handler only ever sees a well-formed 64-char lowercase-able hex.
+    const char *uprefix = "UPDATE_DAEMON ";
+    size_t uplen = strlen(uprefix);
+    if (strncmp(line, uprefix, uplen) == 0) {
+        const char *arg = line + uplen;
+        if (arg[0] == '\0') return CMD_INVALID;
+        if (strchr(arg, ' ') != NULL) return CMD_INVALID;         // exactly one arg
+        if (strlen(arg) != 64) return CMD_INVALID;                // SHA-256 = 64 hex
+        for (const char *c = arg; *c; c++) {
+            if (!((*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f') ||
+                  (*c >= 'A' && *c <= 'F'))) return CMD_INVALID;  // hex only
+        }
+        strcpy(out->arg, arg);
+        return CMD_UPDATE_DAEMON;
     }
     return CMD_INVALID;
 }
@@ -386,17 +431,225 @@ static int lmw_legacy_should_commit_stale_backup(int target_exists, int backup_e
 static int lmw_legacy_should_restore_orphan_backup(int target_exists, int backup_exists) {
     return !target_exists && backup_exists;
 }
-#ifdef LMW_DAEMON_TEST
+
+// §field-and-b2b90f28f7 (production post-boot reconcile) — pure decision. At a
+// REAL daemon startup (not only inside a later update txn) the leftover
+// `.lmw-backup` from a completed legacy stage must be reconciled against three
+// observable facts so the second OTA is never fail-closed AND unknown-good data
+// is never blindly deleted:
+//   * package_installed proves the boot scanner ADOPTED the staged target — the
+//     backup is now stale and safe to COMMIT (delete).
+//   * a backup with NO target is an interrupted stage → RESTORE the orphan.
+//   * a target+backup with the package NOT installed cannot prove adoption, so
+//     we keep the backup (RECONCILE_NONE) rather than risk deleting a good copy.
+typedef enum {
+    RECONCILE_NONE = 0,        // nothing to do (or cannot safely act)
+    RECONCILE_COMMIT_BACKUP,   // adopted new APK → delete the stale backup
+    RECONCILE_RESTORE_ORPHAN,  // interrupted stage → restore backup to target
+} lmw_reconcile_action;
+static lmw_reconcile_action lmw_legacy_reconcile_decide(int target_exists,
+                                                        int backup_exists,
+                                                        int package_installed) {
+    if (!backup_exists) return RECONCILE_NONE;
+    if (!target_exists) return RECONCILE_RESTORE_ORPHAN; // orphan: target gone
+    // Both present: only commit once adoption is proven by the installed package.
+    return package_installed ? RECONCILE_COMMIT_BACKUP : RECONCILE_NONE;
+}
+
 static lmw_backup_state lmw_legacy_backup_state(int backup_exists) {
     return backup_exists ? BACKUP_PENDING_COMMIT : BACKUP_ABSENT;
 }
 
 // Separate startup commit hook: only after real package/version verification.
+// Production (was test-only): the post-boot reconcile below calls this to delete
+// a stale backup ONLY when adoption is verified.
 static int lmw_legacy_commit_verified(const char *backup, int version_verified) {
     if (!version_verified) return 0;
     return unlink(backup) == 0 || errno == ENOENT;
 }
+
+// §field-and-b2b90f28f7 (adoption proof) — pure. Does `pm path <pkg>` name EXACTLY
+// our staged legacy target as the package's ACTIVE codePath? API19 prints one
+// `package:/data/app/<pkg>-1.apk` line per active codePath. Matching our target
+// proves PackageManager ADOPTED the file the legacy stage placed — strictly
+// stronger than "a package by that name exists": a box that never rebooted (or
+// whose scanner took some OTHER apk) will NOT name our target, so we must not
+// commit (delete) the rollback backup. Any absent/other/empty path => 0 (unknown →
+// not adopted → retain backup). UpdateGuard already guarantees the staged APK is a
+// strictly-newer versionCode, so proven adoption of our exact file == version moved
+// forward; we do not need a second version probe to avoid deleting good rollback.
+static int lmw_pm_path_names_target(const char *pm_path_out, const char *target) {
+    if (!pm_path_out || !target) return 0;
+    char expected[LMW_MAX_PATH + 16];
+    int k = snprintf(expected, sizeof(expected), "package:%s", target);
+    if (k < 0 || (size_t)k >= sizeof(expected)) return 0;
+    return lmw_pm_has_exact_line(pm_path_out, expected);
+}
+
+// ---- §daemon-self-update: self-contained SHA-256 (pure, host-tested) --------
+// The daemon is FULLY STATIC (no libcrypto on-device) and 4.4 boxes ship no
+// reliable `sha256sum`, so the hash contract for UPDATE_DAEMON is computed in-
+// process. This is the standard FIPS-180-4 SHA-256; locked by NIST test vectors
+// in test_lmw_root_daemon.c so an accidental miscompute can never let an
+// unverified binary be adopted.
+typedef struct {
+    uint32_t h[8];
+    uint64_t len;      // total message length in bytes
+    unsigned char buf[64];
+    size_t buflen;
+} lmw_sha256_ctx;
+
+static uint32_t lmw_sha256_ror(uint32_t x, int n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+static void lmw_sha256_init(lmw_sha256_ctx *c) {
+    static const uint32_t iv[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u };
+    for (int i = 0; i < 8; i++) c->h[i] = iv[i];
+    c->len = 0;
+    c->buflen = 0;
+}
+
+static void lmw_sha256_block(lmw_sha256_ctx *c, const unsigned char *p) {
+    static const uint32_t k[64] = {
+        0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+        0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+        0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+        0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+        0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+        0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+        0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+        0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u };
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++)
+        w[i] = ((uint32_t)p[i*4] << 24) | ((uint32_t)p[i*4+1] << 16) |
+               ((uint32_t)p[i*4+2] << 8) | (uint32_t)p[i*4+3];
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = lmw_sha256_ror(w[i-15],7) ^ lmw_sha256_ror(w[i-15],18) ^ (w[i-15] >> 3);
+        uint32_t s1 = lmw_sha256_ror(w[i-2],17) ^ lmw_sha256_ror(w[i-2],19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+    uint32_t a=c->h[0],b=c->h[1],cc=c->h[2],d=c->h[3],e=c->h[4],f=c->h[5],g=c->h[6],hh=c->h[7];
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = lmw_sha256_ror(e,6) ^ lmw_sha256_ror(e,11) ^ lmw_sha256_ror(e,25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t t1 = hh + S1 + ch + k[i] + w[i];
+        uint32_t S0 = lmw_sha256_ror(a,2) ^ lmw_sha256_ror(a,13) ^ lmw_sha256_ror(a,22);
+        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
+        uint32_t t2 = S0 + maj;
+        hh=g; g=f; f=e; e=d+t1; d=cc; cc=b; b=a; a=t1+t2;
+    }
+    c->h[0]+=a; c->h[1]+=b; c->h[2]+=cc; c->h[3]+=d;
+    c->h[4]+=e; c->h[5]+=f; c->h[6]+=g; c->h[7]+=hh;
+}
+
+static void lmw_sha256_update(lmw_sha256_ctx *c, const void *data, size_t n) {
+    const unsigned char *p = (const unsigned char *)data;
+    c->len += n;
+    while (n > 0) {
+        size_t take = 64 - c->buflen;
+        if (take > n) take = n;
+        memcpy(c->buf + c->buflen, p, take);
+        c->buflen += take; p += take; n -= take;
+        if (c->buflen == 64) { lmw_sha256_block(c, c->buf); c->buflen = 0; }
+    }
+}
+
+// Finalize into a 64-char lowercase hex string (65 bytes incl. NUL).
+static void lmw_sha256_final_hex(lmw_sha256_ctx *c, char out_hex[65]) {
+    uint64_t bits = c->len * 8;
+    unsigned char pad = 0x80;
+    lmw_sha256_update(c, &pad, 1);
+    unsigned char zero = 0;
+    while (c->buflen != 56) lmw_sha256_update(c, &zero, 1);
+    unsigned char lenbe[8];
+    for (int i = 0; i < 8; i++) lenbe[i] = (unsigned char)(bits >> (56 - i*8));
+    lmw_sha256_update(c, lenbe, 8);
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 4; j++) {
+            unsigned char byte = (unsigned char)(c->h[i] >> (24 - j*8));
+            out_hex[(i*4+j)*2]   = hexd[byte >> 4];
+            out_hex[(i*4+j)*2+1] = hexd[byte & 0xf];
+        }
+    }
+    out_hex[64] = '\0';
+}
+
+// One-shot convenience for unit vectors; production hashes files incrementally.
+#ifdef LMW_DAEMON_TEST
+static void lmw_sha256_hex(const void *data, size_t n, char out_hex[65]) {
+    lmw_sha256_ctx c;
+    lmw_sha256_init(&c);
+    lmw_sha256_update(&c, data, n);
+    lmw_sha256_final_hex(&c, out_hex);
+}
 #endif
+
+// Case-insensitive fixed-length compare of two 64-char hex digests. Returns 1 iff
+// equal. Pure: the update-guard hash contract (expected vs computed) runs through
+// this so "same digest, different case" can never be misjudged.
+static int lmw_hex_eq_ci(const char *a, const char *b) {
+    if (!a || !b) return 0;
+    for (int i = 0; i < 64; i++) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'A' && ca <= 'F') ca = (char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'F') cb = (char)(cb - 'A' + 'a');
+        if (ca != cb) return 0;
+        if (ca == '\0') return 0; // shorter than 64 → not a valid digest
+    }
+    return a[64] == '\0' && b[64] == '\0';
+}
+
+// ---- §daemon-self-update: candidate-probe reply parse + apply decision ------
+typedef struct {
+    int ready;       // reply began "ready "
+    int euid_root;   // reply carried daemon_euid=0 (candidate ran AS root)
+    int pkg_match;   // reply carried pkg=<LMW_PKG> (same protocol identity)
+} lmw_candidate_probe;
+
+// Parse a candidate's PROBE reply (same wire shape as the live daemon's PROBE:
+// "ready daemon_euid=<n> peer_uid=<n> allowed_uid=<n> pkg=<pkg>"). We require the
+// candidate to prove — by actually EXECUTING on this box — that it (a) starts,
+// (b) runs as root, and (c) is the SAME protocol/package identity, BEFORE we let
+// it replace the live binary. Pure/host-tested.
+static lmw_candidate_probe lmw_parse_candidate_probe(const char *reply) {
+    lmw_candidate_probe p = {0, 0, 0};
+    if (!reply) return p;
+    p.ready = lmw_starts_with(reply, "ready ");
+    p.euid_root = strstr(reply, "daemon_euid=0") != NULL;
+    p.pkg_match = strstr(reply, "pkg=" LMW_PKG) != NULL;
+    return p;
+}
+
+// Build the isolated candidate-probe abstract socket name. Derived from the live
+// daemon's pid so it can NEVER collide with the production socket (@lmw_root_daemon)
+// nor with a concurrent attempt from another daemon instance. Pure/host-tested:
+// returns the length written (excl. NUL), or -1 on overflow.
+static int lmw_candidate_probe_sockname(long pid, char *out, size_t sz) {
+    if (!out || sz == 0) return -1;
+    int n = snprintf(out, sz, "lmw_root_daemon_cand_%ld", pid);
+    if (n < 0 || (size_t)n >= sz) return -1;
+    return n;
+}
+
+typedef enum { SELFUPDATE_ABORT = 0, SELFUPDATE_APPLY = 1 } lmw_selfupdate_action;
+// Pure gate: replace the live daemon ONLY when EVERY precondition holds — the
+// candidate file is a real regular non-empty file, its content SHA matches the
+// caller's expected digest (authenticated/hash-verified, same policy as
+// update_app), and a real execution of the candidate proved ready+root+identity
+// on its isolated probe socket. Any single failure ⇒ ABORT (never touch the live
+// binary). This is the whole safety contract in one host-testable function.
+static lmw_selfupdate_action lmw_selfupdate_decide(int candidate_regular,
+                                                   int sha_matches,
+                                                   lmw_candidate_probe probe) {
+    if (!candidate_regular) return SELFUPDATE_ABORT;
+    if (!sha_matches) return SELFUPDATE_ABORT;
+    if (!probe.ready || !probe.euid_root || !probe.pkg_match) return SELFUPDATE_ABORT;
+    return SELFUPDATE_APPLY;
+}
 
 #if !defined(LMW_DAEMON_TEST) || defined(LMW_DAEMON_INTEGRATION_TEST)
 static int lmw_copy_regular(const char *src, const char *dst);
@@ -446,6 +699,39 @@ static int lmw_legacy_rollback(void) {
     if (rename(lmw_legacy_backup_path(), lmw_legacy_target_path()) != 0) return 0;
     sync();
     return 1;
+}
+
+// §field-and-b2b90f28f7 (production post-boot reconcile) — side-effecting.
+// Runs at REAL daemon startup (see lmw_startup_reconcile in main) so a leftover
+// `.lmw-backup` from a completed legacy stage is healed BEFORE any remote OTA,
+// not only lazily inside the next update transaction. `package_installed` is the
+// device-observed adoption fact (the caller queries `pm path`); the simulator
+// injects it. Performs exactly the one action the pure decider selects and
+// returns it. On RECONCILE_NONE nothing is touched (no unconditional delete of
+// unknown-good data). A failed rename/commit leaves state unchanged and returns
+// RECONCILE_NONE (best-effort: startup never bricks a box over a stale backup).
+static lmw_reconcile_action lmw_legacy_reconcile_run(int package_installed) {
+    struct stat st;
+    int target_exists = lstat(lmw_legacy_target_path(), &st) == 0;
+    int backup_exists = access(lmw_legacy_backup_path(), F_OK) == 0;
+    lmw_reconcile_action action =
+        lmw_legacy_reconcile_decide(target_exists, backup_exists, package_installed);
+    switch (action) {
+        case RECONCILE_COMMIT_BACKUP:
+            // Adoption proven → delete the stale backup (version_verified=1).
+            if (!lmw_legacy_commit_verified(lmw_legacy_backup_path(), 1))
+                return RECONCILE_NONE;
+            sync();
+            return RECONCILE_COMMIT_BACKUP;
+        case RECONCILE_RESTORE_ORPHAN:
+            if (rename(lmw_legacy_backup_path(), lmw_legacy_target_path()) != 0)
+                return RECONCILE_NONE;
+            sync();
+            return RECONCILE_RESTORE_ORPHAN;
+        case RECONCILE_NONE:
+        default:
+            return RECONCILE_NONE;
+    }
 }
 #endif
 
@@ -801,6 +1087,212 @@ static int lmw_capture_cmd(const char *cmd, char *out, size_t outsz) {
     return status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
+// §field-and-b2b90f28f7 (adoption proof, device side). Ask PackageManager for the
+// ACTIVE codePath(s) of our package and return 1 iff one is EXACTLY the legacy
+// target the stage placed. The command is a compile-time constant (no request
+// bytes; same guarantee as lmw_pm_install). A failed/empty `pm path` (pm missing,
+// package unknown, box mid-boot) yields "not adopted" → the caller retains the
+// backup rather than deleting possibly-good rollback data.
+static int lmw_legacy_package_adopted(void) {
+    char out[4096];
+    if (!lmw_capture_cmd("pm path " LMW_PKG " 2>/dev/null", out, sizeof(out)))
+        return 0;
+    return lmw_pm_path_names_target(out, lmw_legacy_target_path());
+}
+
+// §field-and-b2b90f28f7 (production post-boot reconcile entrypoint). Runs ONCE at
+// real daemon startup — before the socket is bound and before any remote OTA — so
+// a leftover `.lmw-backup` from a completed legacy stage is healed at a genuine
+// production boot, not lazily inside the next update transaction (the historical
+// gap that fail-closed the SECOND legacy OTA). Adoption is proven by `pm path`
+// naming our exact target (NOT mere package presence); an unproven/unknown state
+// keeps the backup. Best-effort and idempotent: logs to the durable restart log
+// and never blocks bringing the socket up.
+static void lmw_startup_reconcile(void) {
+    int backup_present = access(lmw_legacy_backup_path(), F_OK) == 0;
+    lmw_backup_state pre = lmw_legacy_backup_state(backup_present);
+    if (pre == BACKUP_ABSENT) return; // nothing staged awaiting commit; fast path
+    int adopted = lmw_legacy_package_adopted();
+    lmw_reconcile_action acted = lmw_legacy_reconcile_run(adopted);
+    lmw_restart_log("startup_reconcile backup_present=%d adopted=%d action=%d",
+                    backup_present, adopted, (int)acted);
+}
+
+// ---- §daemon-self-update: side-effecting (device / integration) -------------
+
+static int lmw_bind_abstract(const char *name); // defined below; used by probe mode
+
+// SHA-256 hex-digest a file at `path` (O_NOFOLLOW: never follow a swapped symlink).
+// Returns 0 on success (out_hex filled with 64 lowercase hex + NUL), -1 on error.
+static int lmw_sha256_file(const char *path, char out_hex[65]) {
+    int fd = open(path, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
+        close(fd); return -1;
+    }
+    lmw_sha256_ctx c;
+    lmw_sha256_init(&c);
+    char buf[65536];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n == 0) break;
+        if (n < 0) { close(fd); return -1; }
+        lmw_sha256_update(&c, buf, (size_t)n);
+    }
+    close(fd);
+    lmw_sha256_final_hex(&c, out_hex);
+    return 0;
+}
+
+// Candidate-probe server mode (`lmw_root_daemon -candidate-probe <abstract-name>`).
+// Bind the caller-supplied isolated abstract socket, answer EXACTLY ONE PROBE with
+// the same identity line the live daemon emits, then exit. Started by the live
+// daemon (already root) with a pid-derived name that cannot collide with the
+// production socket — so this real execution PROVES the candidate starts, runs as
+// root, and speaks the protocol, WITHOUT ever touching @lmw_root_daemon.
+static int lmw_candidate_probe_serve(const char *sockname) {
+    int listen_fd = lmw_bind_abstract(sockname);
+    if (listen_fd < 0) return 1;
+    // Signal readiness to the parent by having the socket bound before it connects;
+    // the parent retries connect briefly. Serve a single PROBE then exit.
+    int fd = accept(listen_fd, NULL, NULL);
+    if (fd < 0) { close(listen_fd); return 1; }
+    char line[LMW_MAX_LINE];
+    ssize_t n = read(fd, line, sizeof(line) - 1);
+    if (n > 0) {
+        line[n] = '\0';
+        lmw_request req;
+        if (lmw_parse_request(line, &req) == CMD_PROBE) {
+            dprintf(fd, "ready daemon_euid=%d peer_uid=%d allowed_uid=%d pkg=%s\n",
+                    (int)geteuid(), -1, -1, LMW_PKG);
+        } else {
+            dprintf(fd, "error invalid request\n");
+        }
+    }
+    fsync(fd);
+    close(fd);
+    close(listen_fd);
+    return 0;
+}
+
+// Fork+exec the candidate binary in `-candidate-probe <name>` mode, connect to its
+// isolated socket, send PROBE, and parse the reply. Returns the parsed probe (all
+// zero ⇒ candidate failed to prove itself). The candidate runs with the SAME
+// privileges as this daemon (root), so a "daemon_euid=0" reply proves the replaced
+// binary would also start as root on this box BEFORE we commit to it.
+static lmw_candidate_probe lmw_run_candidate_probe(const char *candidate_path) {
+    lmw_candidate_probe result = {0, 0, 0};
+    char sockname[64];
+    if (lmw_candidate_probe_sockname((long)getpid(), sockname, sizeof(sockname)) < 0)
+        return result;
+
+    pid_t pid = fork();
+    if (pid < 0) return result;
+    if (pid == 0) {
+        // Child: become the candidate in probe mode. execl replaces the image, so a
+        // crash/failure here is observed by the parent as connect timeout / non-root.
+        execl(candidate_path, candidate_path, "-candidate-probe", sockname, (char *)NULL);
+        _exit(127); // exec failed (not executable / wrong arch) → parent sees no socket
+    }
+
+    // Parent: connect to the candidate's isolated socket (retry briefly while it
+    // binds), send PROBE, read the reply.
+    int fd = -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    size_t nlen = strlen(sockname);
+    addr.sun_path[0] = '\0';
+    memcpy(addr.sun_path + 1, sockname, nlen);
+    socklen_t alen = offsetof(struct sockaddr_un, sun_path) + 1 + nlen;
+    for (int attempt = 0; attempt < 50; attempt++) {
+        fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd >= 0 && connect(fd, (struct sockaddr *)&addr, alen) == 0) break;
+        if (fd >= 0) { close(fd); fd = -1; }
+        usleep(100000); // 100ms; up to ~5s total for the candidate to bind
+    }
+    if (fd >= 0) {
+        char reply[512] = {0};
+        if (write(fd, "PROBE\n", 6) == 6) {
+            ssize_t r = read(fd, reply, sizeof(reply) - 1);
+            if (r > 0) { reply[r] = '\0'; result = lmw_parse_candidate_probe(reply); }
+        }
+        close(fd);
+    }
+    // Reap the candidate (it exits after answering one PROBE, or crashed).
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return result;
+}
+
+// Replace the live daemon binary with the verified candidate: backup → atomic
+// same-filesystem rename → readback SHA. Returns 1 on success (backup left in
+// place for the caller to commit AFTER post-replace proof), 0 on failure with the
+// live binary RESTORED from backup (or untouched if the swap never happened).
+// `*restored_out` is set only on the failure path: 1 if the live binary was rolled
+// back, 0 if the rollback itself failed (the box may need the migration bridge).
+static int lmw_daemon_apply_candidate(const char *candidate, const char *install,
+                                      const char *backup, const char *expected_sha,
+                                      int *restored_out) {
+    if (restored_out) *restored_out = 1; // no swap yet ⇒ live binary intact
+    // Fresh backup of the CURRENT live binary (remove any stale one first).
+    unlink(backup);
+    if (lmw_copy_regular(install, backup) != 0) return 0; // could not protect rollback
+    // Stage the candidate beside the target under a temp name, then atomic rename.
+    char staged[LMW_MAX_PATH];
+    if ((size_t)snprintf(staged, sizeof(staged), "%s.lmw-new", install) >= sizeof(staged)) {
+        unlink(backup); return 0;
+    }
+    unlink(staged);
+    if (lmw_copy_regular(candidate, staged) != 0) { unlink(staged); unlink(backup); return 0; }
+    if (chmod(staged, 0755) != 0) { unlink(staged); unlink(backup); return 0; }
+    if (rename(staged, install) != 0) { unlink(staged); unlink(backup); return 0; }
+    sync();
+    // Readback: the now-live binary MUST hash to the expected digest. A short write
+    // or a racing tamper is caught here and rolled back.
+    char live_hex[65];
+    if (lmw_sha256_file(install, live_hex) != 0 || !lmw_hex_eq_ci(live_hex, expected_sha)) {
+        // Roll back: restore the pre-update binary from backup.
+        if (rename(backup, install) == 0) { sync(); if (restored_out) *restored_out = 1; }
+        else if (restored_out) *restored_out = 0; // rollback failed — degraded box
+        return 0;
+    }
+    return 1; // success; backup retained until caller commits post-proof
+}
+
+static void lmw_handle_update_daemon(int fd, const char *expected_sha) {
+    char actual_sha[65];
+    if (lmw_sha256_file(LMW_DAEMON_CANDIDATE, actual_sha) != 0) {
+        dprintf(fd, "error update_daemon candidate_invalid\n");
+        return;
+    }
+    int sha_matches = lmw_hex_eq_ci(actual_sha, expected_sha);
+    lmw_candidate_probe probe = {0, 0, 0};
+    if (sha_matches) probe = lmw_run_candidate_probe(LMW_DAEMON_CANDIDATE);
+    if (lmw_selfupdate_decide(1, sha_matches, probe) != SELFUPDATE_APPLY) {
+        unlink(LMW_DAEMON_CANDIDATE);
+        dprintf(fd, "error update_daemon verification_failed sha=%d ready=%d root=%d pkg=%d\n",
+                sha_matches, probe.ready, probe.euid_root, probe.pkg_match);
+        return;
+    }
+    int restored = 1;
+    if (!lmw_daemon_apply_candidate(LMW_DAEMON_CANDIDATE, LMW_DAEMON_INSTALL,
+                                    LMW_DAEMON_BACKUP, expected_sha, &restored)) {
+        unlink(LMW_DAEMON_CANDIDATE);
+        dprintf(fd, "error update_daemon apply_failed rollback=%s\n",
+                restored ? "restored" : "failed");
+        return;
+    }
+    if (unlink(LMW_DAEMON_BACKUP) != 0 && errno != ENOENT) {
+        dprintf(fd, "error update_daemon commit_failed backup_retained\n");
+        return;
+    }
+    unlink(LMW_DAEMON_CANDIDATE);
+    sync();
+    dprintf(fd, "ok update_daemon verified installed sha256=%s\n", actual_sha);
+}
+
 // Is the Player process running right now? Verified by parsing `ps` for the exact
 // package process NAME (lmw_extract_pid), not by "am didn't error". Returns pid or
 // -1. On 4.4 toolbox `ps` with no filter lists everything; we scan for our name.
@@ -1118,6 +1610,11 @@ static void lmw_serve(int listen_fd) {
                 lmw_handle_install(fd, req.arg);
                 close(fd);
                 break;
+            case CMD_UPDATE_DAEMON:
+                lmw_handle_update_daemon(fd, req.arg);
+                fsync(fd);
+                close(fd);
+                break;
             default:
                 dprintf(fd, "error invalid request\n");
                 close(fd);
@@ -1131,19 +1628,21 @@ static void lmw_serve(int listen_fd) {
 // line. This is what lmw_setup / ADB call to VERIFY the daemon is actually up and
 // root before writing any completion marker — an out-of-process protocol probe,
 // not a mere "is the process alive" pgrep.
-static int lmw_probe_client(void) {
+static int lmw_probe_socket_client(const char *socket_name) {
+    if (!socket_name || !socket_name[0] || strlen(socket_name) >= sizeof(((struct sockaddr_un *)0)->sun_path) - 1)
+        return 2;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) { fprintf(stderr, "probe: socket errno=%d\n", errno); return 2; }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    size_t nlen = strlen(LMW_SOCKET_NAME);
+    size_t nlen = strlen(socket_name);
     addr.sun_path[0] = '\0';
-    memcpy(addr.sun_path + 1, LMW_SOCKET_NAME, nlen);
+    memcpy(addr.sun_path + 1, socket_name, nlen);
     socklen_t alen = offsetof(struct sockaddr_un, sun_path) + 1 + nlen;
     if (connect(fd, (struct sockaddr *)&addr, alen) != 0) {
         fprintf(stderr, "probe: connect @%s failed errno=%d (daemon not running?)\n",
-                LMW_SOCKET_NAME, errno);
+                socket_name, errno);
         close(fd);
         return 2;
     }
@@ -1158,6 +1657,10 @@ static int lmw_probe_client(void) {
     // RootDaemonProtocol.parseProbe: "ready " prefix AND daemon_euid=0).
     if (strncmp(buf, "ready ", 6) == 0 && strstr(buf, "daemon_euid=0") != NULL) return 0;
     return 3;
+}
+
+static int lmw_probe_client(void) {
+    return lmw_probe_socket_client(LMW_SOCKET_NAME);
 }
 
 // Ignore SIGPIPE so a client that hangs up mid-reply cannot kill the daemon.
@@ -1175,6 +1678,16 @@ static void lmw_ignore_sigpipe(void) {
 #if !defined(LMW_DAEMON_TEST) && !defined(LMW_DAEMON_INTEGRATION_TEST)
 int main(int argc, char **argv) {
     lmw_ignore_sigpipe();
+
+    // Private mode used by the live root daemon to prove a staged replacement
+    // really executes on this device before any on-disk swap.
+    if (argc == 3 && strcmp(argv[1], "-candidate-probe") == 0) {
+        if (geteuid() != 0) return 1;
+        return lmw_candidate_probe_serve(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "-probe-socket") == 0) {
+        return lmw_probe_socket_client(argv[2]);
+    }
 
     // Dispatch on the pure CLI-mode policy (host-tested): this is the SINGLE place
     // that decides root requirement and proves — by construction — that NO cli mode
@@ -1218,6 +1731,15 @@ int main(int argc, char **argv) {
                 ok, LMW_RESTART_LOG);
         return ok ? 0 : 1;
     }
+
+    // §field-and-b2b90f28f7: heal a leftover legacy `.lmw-backup` at THIS real
+    // production startup (root-verified above), before binding the socket or
+    // accepting any OTA. Commits a stale backup ONLY once `pm path` proves the
+    // staged APK was adopted; an unproven state keeps the rollback copy. This is
+    // the production entrypoint that makes a second consecutive legacy OTA succeed
+    // instead of fail-closing on the stale backup. Reached only for serve modes
+    // (PROBE/RESTART returned earlier); best-effort, never blocks the socket.
+    lmw_startup_reconcile();
 
     int listen_fd = lmw_bind_abstract(LMW_SOCKET_NAME);
     if (listen_fd < 0) {

@@ -1772,7 +1772,12 @@ class PlayerService : Service() {
         logEvent("UPDATE_STAGE=download start")
         reportUpdate("downloading", "UPDATE_STAGE=download start")
         scope.launch(Dispatchers.IO) {
-            val updater = com.jieoz.lanmediawall.player.update.AppUpdater(cacheDir)
+            val updater = com.jieoz.lanmediawall.player.update.AppUpdater(
+                cacheDir,
+                daemonAssetProvider = {
+                    assets.open(com.jieoz.lanmediawall.player.update.AppUpdater.DAEMON_ASSET_ENTRY)
+                },
+            )
             when (val r = updater.downloadVerifyInstall(
                 packageName, url!!, sha!!, log = { logEvent(it) },
             )) {
