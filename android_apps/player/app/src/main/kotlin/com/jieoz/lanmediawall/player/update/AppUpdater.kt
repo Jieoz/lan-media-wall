@@ -162,9 +162,9 @@ class AppUpdater(
                 Result.Failed("daemon-update-invalid-candidate-path")
             } else {
                 provider().use { input -> candidate.outputStream().use { input.copyTo(it) } }
-                if (!candidate.isFile || candidate.length() <= 0L) {
+                if (!prepareDaemonCandidate(candidate)) {
                     candidate.delete()
-                    Result.Failed("daemon-asset-missing")
+                    Result.Failed("daemon-candidate-not-executable")
                 } else {
                     val sha = sha256File(candidate)
                     stage(log, "daemon_update", "candidate_sha256=$sha")
@@ -199,6 +199,18 @@ class AppUpdater(
         const val DAEMON_ASSET_ENTRY = "lmw_root_daemon"
 
         /**
+         * The currently installed daemon performs the candidate probe, so the
+         * app-owned staging file must already be executable before UPDATE_DAEMON
+         * is sent. A chmod inside the candidate/new daemon cannot bootstrap this
+         * transition because that binary has not executed yet.
+         */
+        internal fun prepareDaemonCandidate(candidate: File): Boolean {
+            if (!candidate.isFile || candidate.length() <= 0L) return false
+            if (!candidate.setExecutable(true, true)) return false
+            return candidate.canExecute()
+        }
+
+        /**
          * §probe: map a [Result.Failed] reason string to the UPDATE_STAGE it
          * belongs to, so the controller can put `UPDATE_STAGE=<stage>` into
          * `update_status.detail` and field ops can pin the breakpoint without
@@ -211,7 +223,8 @@ class AppUpdater(
          *   else                       -> failed
          */
         fun stageForReason(reason: String): String = when {
-            reason.startsWith("daemon-update-") || reason == "daemon-asset-missing" -> "daemon_update"
+            reason.startsWith("daemon-update-") || reason == "daemon-asset-missing" ||
+                reason == "daemon-candidate-not-executable" -> "daemon_update"
             reason.startsWith("daemon-not-ready:") -> "daemon_probe"
             reason.startsWith("http-") || reason == "no-body" -> "download"
             reason == "sha256-mismatch" -> "sha256"
