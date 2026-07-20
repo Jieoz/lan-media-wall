@@ -1,10 +1,11 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.18.3+1183 OTA test: startup daemon reconcile and manifest-derived target
+# v1.18.4+1184 OTA field test: staged daemon candidate execution fix and a
+# unique versionCode, so the device cannot confuse it with earlier 1183 builds.
 # versionCode. This is a test build, not a formal release.
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.18.3+1183
+version: 1.18.4+1184
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

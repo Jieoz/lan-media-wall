@@ -1,5 +1,9 @@
 # Changelog
 
+## [v1.18.4 OTA Field Test] — 2026-07-20
+
+- **Unambiguous field artifact** (versionCode **1184**, versionName `1.18.4`). This package is distinguishable from every earlier `1183` test and includes the staged-daemon executable-permission fix.
+
 ## [v1.18.3 OTA Test] — 2026-07-20
 
 - **Startup daemon reconcile** (versionCode **1183**, versionName `1.18.3`). A newly activated Player immediately verifies and reconciles its APK-embedded root daemon through the existing SHA-256, root/protocol probe, atomic replacement, post-install verification, and rollback path.

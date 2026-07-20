@@ -36,9 +36,10 @@
 > `showTransitionFrame`)盖空窗,不是双 VDEC 零缝。设置页绑定物理「回主页」
 > (`KEYCODE_SETTINGS`=176)回墙。
 >
-> **v1.18.3 OTA Test — daemon 启动自举:**PlayerService 每次启动都会在 IO
+> **v1.18.4 OTA Field Test — daemon 启动自举:**PlayerService 每次启动都会在 IO
 > 线程校验 APK 内嵌 daemon，并通过既有 SHA-256、root/协议探测、原子替换、复验和
-> 回滚链路完成 reconcile；不再等待下一次 `update_app` 才升级 daemon。
+> 回滚链路完成 reconcile；候选 daemon 在隔离探测前获得执行权限，不再等待下一次
+> `update_app` 才升级 daemon。
 >
 > **v1.18.2 — 安全远程配置:**`configure_device` 只接收设备名、分组、音量和静音，
 > 以 revision 防冲突并回传逐字段结果。`transport_configure` 单独持久化和重建连接；
