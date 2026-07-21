@@ -182,6 +182,14 @@ class WallState extends ChangeNotifier {
   final Map<String, Map<String, dynamic>> _configPatchResults = {};
   final Map<String, Completer<Map<String, dynamic>>> _pendingConfigResults = {};
   int _nextConfigRequest = 0;
+  final Map<String, RuntimeModeResult> _runtimeModeResults = {};
+  final Map<String, MusicPlaylistResult> _musicPlaylistResults = {};
+  final Map<String, Completer<RuntimeModeResult>> _pendingRuntimeMode = {};
+  final Map<String, Completer<MusicPlaylistResult>> _pendingMusicPlaylist = {};
+  final Map<String, List<MediaItem>> _musicDrafts = {};
+  final Map<String, List<MediaItem>> _pendingMusicItems = {};
+  int _nextRuntimeModeRequest = 0;
+  int _nextMusicPlaylistRequest = 0;
   BrokerMigrationBatch? _bulkBrokerMigration;
 
   BrokerMigrationBatch? get bulkBrokerMigration => _bulkBrokerMigration;
@@ -189,6 +197,12 @@ class WallState extends ChangeNotifier {
   /// Latest acknowledged §19 result for a device.
   Map<String, dynamic>? configPatchResultFor(String deviceId) =>
       _configPatchResults[deviceId];
+  RuntimeModeResult? runtimeModeResultFor(String deviceId) =>
+      _runtimeModeResults[deviceId];
+  MusicPlaylistResult? musicPlaylistResultFor(String deviceId) =>
+      _musicPlaylistResults[deviceId];
+  List<MediaItem> musicPlaylistFor(String deviceId) =>
+      List.unmodifiable(_musicDrafts[deviceId] ?? const <MediaItem>[]);
 
   /// broker 单播只按 device_id 路由；同一台设备同一时刻只挂一个 pending 请求，
   /// 因此用 device_id 作 key。空 device_id（组播/广播场景）统一落到 '*' 桶，
@@ -503,6 +517,8 @@ class WallState extends ChangeNotifier {
       ..onCacheCleanupResult = _onCacheCleanupResult
       ..onCacheInventoryResult = _onCacheInventoryResult
       ..onConfigPatchResult = _onConfigPatchResult
+      ..onRuntimeModeResult = _onRuntimeModeResult
+      ..onMusicPlaylistResult = _onMusicPlaylistResult
       ..onState = _onConn
       ..onAuthMode = _onAuthMode
       ..onKeyMode = _onKeyMode
@@ -523,6 +539,8 @@ class WallState extends ChangeNotifier {
       ..onCacheCleanupResult = _onCacheCleanupResult
       ..onCacheInventoryResult = _onCacheInventoryResult
       ..onConfigPatchResult = _onConfigPatchResult
+      ..onRuntimeModeResult = _onRuntimeModeResult
+      ..onMusicPlaylistResult = _onMusicPlaylistResult
       ..onLog = _pushLog;
     _linksReady = true;
 
@@ -961,6 +979,32 @@ class WallState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onRuntimeModeResult(Map<String, dynamic> payload) {
+    final result = RuntimeModeResult.fromMap(payload);
+    if (result.deviceId.isEmpty) return;
+    _runtimeModeResults[result.deviceId] = result;
+    final pending = _pendingRuntimeMode.remove(result.requestId);
+    if (pending != null && !pending.isCompleted) pending.complete(result);
+    _pushLog('[${result.deviceId}] runtime_mode_result '
+        '${result.ok ? result.mode?.name ?? 'ok' : 'failed:${result.error}'}');
+    notifyListeners();
+  }
+
+  void _onMusicPlaylistResult(Map<String, dynamic> payload) {
+    final result = MusicPlaylistResult.fromMap(payload);
+    if (result.deviceId.isEmpty) return;
+    _musicPlaylistResults[result.deviceId] = result;
+    final pendingItems = _pendingMusicItems.remove(result.requestId);
+    if (result.ok && pendingItems != null) {
+      _musicDrafts[result.deviceId] = List.of(pendingItems);
+    }
+    final pending = _pendingMusicPlaylist.remove(result.requestId);
+    if (pending != null && !pending.isCompleted) pending.complete(result);
+    _pushLog('[${result.deviceId}] music_playlist_result '
+        '${result.ok ? 'revision=${result.revision}' : 'failed:${result.error}'}');
+    notifyListeners();
+  }
+
   void _onConfigPatchResult(Map<String, dynamic> payload) {
     final deviceId = payload['device_id']?.toString() ?? '';
     if (deviceId.isEmpty) return;
@@ -1262,6 +1306,146 @@ class WallState extends ChangeNotifier {
       _cacheOps.failUndelivered(reqId, deviceId, _nowMs(), '命令未投递: $e');
       _pushLog('[$deviceId] cache ${op.kind} 未投递(req=$reqId): $e');
     }
+  }
+
+  Future<Map<String, RuntimeModeResult>> setDevicesRuntimeMode(
+      Iterable<String> deviceIds, RuntimeMode mode) async {
+    final out = <String, RuntimeModeResult>{};
+    await Future.wait(deviceIds.toSet().map((deviceId) async {
+      try {
+        out[deviceId] = await setDeviceRuntimeMode(deviceId, mode);
+      } catch (e) {
+        out[deviceId] = RuntimeModeResult(
+          requestId: '', deviceId: deviceId, ok: false, error: e.toString(),
+        );
+      }
+    }));
+    return out;
+  }
+
+  Future<Map<String, RuntimeModeResult>> restoreDevicesRuntimeMode(
+      Iterable<String> deviceIds) async {
+    final out = <String, RuntimeModeResult>{};
+    await Future.wait(deviceIds.toSet().map((deviceId) async {
+      try {
+        out[deviceId] = await restoreDeviceRuntimeMode(deviceId);
+      } catch (e) {
+        out[deviceId] = RuntimeModeResult(
+          requestId: '', deviceId: deviceId, ok: false, error: e.toString(),
+        );
+      }
+    }));
+    return out;
+  }
+
+  Future<RuntimeModeResult> setDeviceRuntimeMode(
+      String deviceId, RuntimeMode mode) {
+    final device = deviceById(deviceId);
+    if (device == null || !device.online) {
+      return Future.error(StateError('设备离线'));
+    }
+    if (!device.supportsRuntimeModes) {
+      return Future.error(UnsupportedError('设备不支持运行模式，请先升级 Player'));
+    }
+    final requestId = 'mode-${++_nextRuntimeModeRequest}-${_nowMs()}';
+    final completer = Completer<RuntimeModeResult>();
+    _pendingRuntimeMode[requestId] = completer;
+    try {
+      _send('set_runtime_mode', Commands.setRuntimeMode(
+        requestId: requestId, deviceId: deviceId, mode: mode,
+      ), deviceId: deviceId);
+    } catch (e) {
+      _pendingRuntimeMode.remove(requestId);
+      completer.completeError(e);
+      return completer.future;
+    }
+    Timer(const Duration(seconds: 10), () {
+      final pending = _pendingRuntimeMode.remove(requestId);
+      if (pending != null && !pending.isCompleted) {
+        pending.complete(RuntimeModeResult(
+          requestId: requestId, deviceId: deviceId, ok: false,
+          error: 'timeout',
+        ));
+      }
+    });
+    return completer.future;
+  }
+
+  Future<RuntimeModeResult> restoreDeviceRuntimeMode(String deviceId) {
+    final device = deviceById(deviceId);
+    if (device == null || !device.online) {
+      return Future.error(StateError('设备离线'));
+    }
+    if (!device.supportsRuntimeModes) {
+      return Future.error(UnsupportedError('设备不支持运行模式，请先升级 Player'));
+    }
+    final requestId = 'restore-${++_nextRuntimeModeRequest}-${_nowMs()}';
+    final completer = Completer<RuntimeModeResult>();
+    _pendingRuntimeMode[requestId] = completer;
+    try {
+      _send('restore_runtime_mode', Commands.restoreRuntimeMode(
+        requestId: requestId, deviceId: deviceId,
+      ), deviceId: deviceId);
+    } catch (e) {
+      _pendingRuntimeMode.remove(requestId);
+      completer.completeError(e);
+      return completer.future;
+    }
+    Timer(const Duration(seconds: 10), () {
+      final pending = _pendingRuntimeMode.remove(requestId);
+      if (pending != null && !pending.isCompleted) {
+        pending.complete(RuntimeModeResult(
+          requestId: requestId, deviceId: deviceId, ok: false,
+          error: 'timeout',
+        ));
+      }
+    });
+    return completer.future;
+  }
+
+  Future<MusicPlaylistResult> sendDeviceMusicPlaylist({
+    required String deviceId,
+    required List<MediaItem> items,
+    String? playlistId,
+    int? revision,
+  }) {
+    final device = deviceById(deviceId);
+    if (device == null || !device.online) {
+      return Future.error(StateError('设备离线'));
+    }
+    if (!device.supportsMusicShuffle) {
+      return Future.error(UnsupportedError('设备不支持音乐终端，请先升级 Player'));
+    }
+    final requestId = 'music-${++_nextMusicPlaylistRequest}-${_nowMs()}';
+    final nextRevision = revision ?? ((device.musicPlaylistRevision ?? 0) + 1);
+    final completer = Completer<MusicPlaylistResult>();
+    _pendingMusicPlaylist[requestId] = completer;
+    _pendingMusicItems[requestId] = List.of(items);
+    try {
+      _send('music_playlist', Commands.musicPlaylist(
+        requestId: requestId,
+        deviceId: deviceId,
+        playlistId: playlistId ?? 'music-$deviceId',
+        revision: nextRevision,
+        items: items,
+      ), deviceId: deviceId);
+    } catch (e) {
+      _pendingMusicPlaylist.remove(requestId);
+      _pendingMusicItems.remove(requestId);
+      completer.completeError(e);
+      return completer.future;
+    }
+    Timer(const Duration(seconds: 15), () {
+      final pending = _pendingMusicPlaylist.remove(requestId);
+      _pendingMusicItems.remove(requestId);
+      if (pending != null && !pending.isCompleted) {
+        pending.complete(MusicPlaylistResult(
+          requestId: requestId, deviceId: deviceId, ok: false,
+          error: 'timeout',
+        ));
+      }
+    });
+    return completer.future;
   }
 
   /// 下发 playlist(§6.3)。[deviceId] 非空 → 单播给这一台(§9.4b 单台推送);

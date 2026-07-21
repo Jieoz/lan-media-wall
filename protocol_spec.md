@@ -265,6 +265,63 @@ active_playlist 中的当前位置)、`playlist_count`(序列长度)。
 `loop` 折叠(`true→all`,`false`/缺省`→none`)。未升级的老 player 只认 `loop`,故 `one`
 在老端**收窄为 `all`**——是无害放宽,绝不比现状更差。
 
+#### 6.3c 独立音乐列表与顶层运行模式 [v1.18.8]
+
+Player 顶层运行状态固定为 `visual | music | standby`。`visual` 继续使用上述
+`playlist`、组同步及 Broker 权威时间线；`music` 仅供单设备音乐终端，使用独立
+`music_playlist`，不参与 `play_at` 或视觉墙同步；`standby` 停止输出与旧调度，
+但不清除 transport、心跳、OTA、缓存、两套列表及恢复前态。
+
+Player 在 `hello.capabilities` 广告 `runtime_modes_v1` 和 `music_shuffle_v1`。Controller
+只向具备对应能力的设备开放操作，并必须等待下列 Player result；命令送达或 Broker
+路由成功不能显示为模式切换成功。
+
+```json
+{"type":"music_playlist","payload":{
+  "request_id":"music-42","device_id":"and-lobby-02",
+  "playlist_id":"music-and-lobby-02","revision":7,
+  "items":[{"item_id":"m1","type":"audio","name":"song.mp3",
+             "url":"https://…","sha256":"…","size":12345}]
+}}
+{"type":"music_playlist_result","payload":{
+  "request_id":"music-42","device_id":"and-lobby-02","ok":true,
+  "playlist_id":"music-and-lobby-02","revision":7,"error":""
+}}
+```
+
+`music_playlist` 仅允许精确单设备目标和 `type:"audio"` 条目。`revision` 小于已持久化
+revision 时 Player 返回 `ok:false,error:"stale_revision"`；相同 revision 且内容相同
+为幂等成功，内容冲突返回 `revision_conflict`。空列表是合法整列替换并安全停止音乐。
+视觉列表的更改不得停止当前音乐，缓存引用保护必须同时覆盖 visual 与 music 两套列表。
+
+music 连播采用 shuffle-bag：每轮每首一次、新轮重洗、跨轮避免首尾立即重复；单曲连续
+循环。列表替换、模式切换和重启安全重建/恢复 shuffle 状态。坏文件跳过并上报；空列表或
+全坏列表停止忙循环，状态标明原因，不能无限快速重试。
+
+```json
+{"type":"set_runtime_mode","payload":{
+  "request_id":"mode-9","device_id":"and-lobby-02","mode":"standby"
+}}
+{"type":"restore_runtime_mode","payload":{
+  "request_id":"restore-10","device_id":"and-lobby-02"
+}}
+{"type":"runtime_mode_result","payload":{
+  "request_id":"mode-9","device_id":"and-lobby-02","ok":true,
+  "runtime_mode":"standby","previous_active_mode":"music","error":""
+}}
+```
+
+模式切换是 generation 边界：每次有效切换使 generation 递增并取消旧 prepare、completion、
+图片 dwell、`play_at` 和同步边界任务；任何迟到回调发现 generation 或当前模式不匹配必须退出。
+`standby` 重启后仍保持 standby；`restore_runtime_mode` 默认恢复持久化的
+`previous_active_mode`，重复调用必须幂等。Controller 的 group/all 操作须为每台设备保留并
+展示独立结果，包括离线、能力缺失、超时和 Player 拒绝。
+
+`status` additive 字段为：`runtime_mode`、`previous_active_mode`、`mode_generation`、
+`music_playlist_id`、`music_playlist_revision`、`music_playlist_size`、
+`music_current_item_id`、`music_play_count`、`music_failed_item_ids` 和
+`music_shuffle_cycle`。`standby` 时 `current` 必须为 null；music 时 `current` 指向当前音频。
+
 ### 6.4 缩略图 (player→broker→controller，设备墙预览)
 - player 每 ~5s 截当前帧，缩放为 ≤320px 宽的 JPEG。
 - 先发一个 JSON `thumb_meta`(`device_id`,`seq`,`bytes`,`mime`),紧跟一个**二进制帧**承载 JPEG 数据。broker 转发给 controller。

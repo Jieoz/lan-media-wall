@@ -120,6 +120,8 @@ class P2pCoordinator {
 
   /// §19 config patch results converge with [BrokerClient] in WallState.
   void Function(Map<String, dynamic> payload)? onConfigPatchResult;
+  void Function(Map<String, dynamic> payload)? onRuntimeModeResult;
+  void Function(Map<String, dynamic> payload)? onMusicPlaylistResult;
 
   /// 诊断日志。
   void Function(String line)? onLog;
@@ -540,6 +542,12 @@ class P2pCoordinator {
         break;
       case 'config_patch_result':
         onConfigPatchResult?.call(_withDevice(env.payload, deviceId));
+        break;
+      case 'runtime_mode_result':
+        onRuntimeModeResult?.call(_withDevice(env.payload, deviceId));
+        break;
+      case 'music_playlist_result':
+        onMusicPlaylistResult?.call(_withDevice(env.payload, deviceId));
         break;
       default:
         _log('忽略入站类型($deviceId): ${env.type}');

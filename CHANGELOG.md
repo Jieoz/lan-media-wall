@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.18.8 Candidate] — Unreleased
+
+- **Explicit Player runtime modes.** Controller-selected `visual`, `music`, and `standby` modes are separate state-machine states. Visual and music playlists remain independently persisted; audio is never mixed into the synchronized visual wall playlist.
+- **Verification boundary.** Candidate completion requires automated cross-end mode tests, an executable single-device smoke diagnostic, same-SHA cloud CI, and real-device acceptance. No field-effect claim is made yet.
+
 ## [v1.18.7] — 2026-07-21
 
 - **Broker-authoritative long-running sync** (versionCode **1187**, versionName `1.18.7`). `play_at` now carries a stable `sync_session_id`; looped video stays anchored to the Broker master timeline and checks each common loop boundary. Drift within 80ms is left untouched; larger drift is corrected without adding continuous playback-rate control.

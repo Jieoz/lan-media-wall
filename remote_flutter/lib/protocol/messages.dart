@@ -16,10 +16,22 @@ String _asStr(Object? v, [String def = '']) => v is String ? v : def;
 
 bool _asBool(Object? v, [bool def = false]) => v is bool ? v : def;
 
+enum RuntimeMode { visual, music, standby }
+
+class RuntimeModeCodec {
+  static RuntimeMode? parse(Object? raw) {
+    final wire = raw?.toString();
+    for (final mode in RuntimeMode.values) {
+      if (mode.name == wire) return mode;
+    }
+    return null;
+  }
+}
+
 /// 媒体单元（§6.1）。
 class MediaItem {
   final String itemId;
-  final String type; // "video" | "image"
+  final String type; // "video" | "image" | "audio"
   final String name;
   final String url;
   final int? size;
@@ -39,6 +51,7 @@ class MediaItem {
   });
 
   bool get isImage => type == 'image';
+  bool get isAudio => type == 'audio';
 
   /// Copy with a changed [durationMs] (image dwell edit). Everything else is
   /// preserved — only the wire field `duration_ms` (ms) changes; the seconds UI
@@ -139,6 +152,62 @@ class CurrentItem {
       durationMs: _asInt(m['duration_ms']),
     );
   }
+}
+
+class RuntimeModeResult {
+  final String requestId;
+  final String deviceId;
+  final bool ok;
+  final RuntimeMode? mode;
+  final RuntimeMode? previousActiveMode;
+  final String error;
+
+  const RuntimeModeResult({
+    required this.requestId,
+    required this.deviceId,
+    required this.ok,
+    this.mode,
+    this.previousActiveMode,
+    this.error = '',
+  });
+
+  factory RuntimeModeResult.fromMap(Map<String, dynamic> m) =>
+      RuntimeModeResult(
+        requestId: _asStr(m['request_id']),
+        deviceId: _asStr(m['device_id']),
+        ok: _asBool(m['ok']),
+        mode: RuntimeModeCodec.parse(m['runtime_mode'] ?? m['mode']),
+        previousActiveMode: RuntimeModeCodec.parse(m['previous_active_mode']),
+        error: _asStr(m['error']),
+      );
+}
+
+class MusicPlaylistResult {
+  final String requestId;
+  final String deviceId;
+  final bool ok;
+  final String playlistId;
+  final int? revision;
+  final String error;
+
+  const MusicPlaylistResult({
+    required this.requestId,
+    required this.deviceId,
+    required this.ok,
+    this.playlistId = '',
+    this.revision,
+    this.error = '',
+  });
+
+  factory MusicPlaylistResult.fromMap(Map<String, dynamic> m) =>
+      MusicPlaylistResult(
+        requestId: _asStr(m['request_id']),
+        deviceId: _asStr(m['device_id']),
+        ok: _asBool(m['ok']),
+        playlistId: _asStr(m['playlist_id']),
+        revision: m['revision'] == null ? null : _asInt(m['revision']),
+        error: _asStr(m['error']),
+      );
 }
 
 /// §26 轻量缓存摘要。周期性 status 里承载,只有总量/可回收/受保护等标量,
@@ -275,6 +344,17 @@ class DeviceStatus {
   final bool online;
   final String groupId;
   final String state; // playing|paused|idle|buffering|downloading
+  final RuntimeMode runtimeMode;
+  final RuntimeMode? previousActiveMode;
+  final int modeGeneration;
+  final String musicPlaylistId;
+  final int? musicPlaylistRevision;
+  final int musicPlaylistSize;
+  final String? musicCurrentItemId;
+  final int musicShuffleCycle;
+  final int musicPlayCount;
+  final List<String> musicFailedItemIds;
+  final int? standbySinceMs;
   final CurrentItem? current;
   final String? playlistId;
   /// Per-replace identity echoed by upgraded players after command adoption.
@@ -319,6 +399,17 @@ class DeviceStatus {
     this.online = false,
     this.groupId = '',
     this.state = 'idle',
+    this.runtimeMode = RuntimeMode.visual,
+    this.previousActiveMode,
+    this.modeGeneration = 0,
+    this.musicPlaylistId = '',
+    this.musicPlaylistRevision,
+    this.musicPlaylistSize = 0,
+    this.musicCurrentItemId,
+    this.musicShuffleCycle = 0,
+    this.musicPlayCount = 0,
+    this.musicFailedItemIds = const [],
+    this.standbySinceMs,
     this.current,
     this.playlistId,
     this.pushId,
@@ -349,6 +440,8 @@ class DeviceStatus {
 
   /// §28 缓存清单能力真值。
   bool get supportsCacheInventory => capabilities.contains('cache_inventory_v1');
+  bool get supportsRuntimeModes => capabilities.contains('runtime_modes_v1');
+  bool get supportsMusicShuffle => capabilities.contains('music_shuffle_v1');
 
   static DeviceStatus fromMap(Map<String, dynamic> m) {
     final cacheRaw = (m['cache'] as Map?) ?? {};
@@ -358,6 +451,20 @@ class DeviceStatus {
       online: _asBool(m['online']),
       groupId: _asStr(m['group_id']),
       state: _asStr(m['state'], 'idle'),
+      runtimeMode: RuntimeModeCodec.parse(m['runtime_mode']) ?? RuntimeMode.visual,
+      previousActiveMode: RuntimeModeCodec.parse(m['previous_active_mode']),
+      modeGeneration: _asInt(m['mode_generation']),
+      musicPlaylistId: _asStr(m['music_playlist_id']),
+      musicPlaylistRevision: m['music_playlist_revision'] == null
+          ? null : _asInt(m['music_playlist_revision']),
+      musicPlaylistSize: _asInt(m['music_playlist_size']),
+      musicCurrentItemId: m['music_current_item_id'] as String?,
+      musicShuffleCycle: _asInt(m['music_shuffle_cycle']),
+      musicPlayCount: _asInt(m['music_play_count']),
+      musicFailedItemIds: ((m['music_failed_item_ids'] as List?) ?? const [])
+          .map((e) => e.toString()).toList(),
+      standbySinceMs: m['standby_since_ms'] == null
+          ? null : _asInt(m['standby_since_ms']),
       current:
           CurrentItem.fromMap((m['current'] as Map?)?.cast<String, dynamic>()),
       playlistId: m['playlist_id'] as String?,
@@ -412,6 +519,17 @@ class DeviceStatus {
         online: online ?? this.online,
         groupId: groupId ?? this.groupId,
         state: state ?? this.state,
+        runtimeMode: runtimeMode,
+        previousActiveMode: previousActiveMode,
+        modeGeneration: modeGeneration,
+        musicPlaylistId: musicPlaylistId,
+        musicPlaylistRevision: musicPlaylistRevision,
+        musicPlaylistSize: musicPlaylistSize,
+        musicCurrentItemId: musicCurrentItemId,
+        musicShuffleCycle: musicShuffleCycle,
+        musicPlayCount: musicPlayCount,
+        musicFailedItemIds: musicFailedItemIds,
+        standbySinceMs: standbySinceMs,
         current: current,
         playlistId: playlistId,
         pushId: pushId,
@@ -626,6 +744,47 @@ class Commands {
         'mode': mode,
         if (pushId != null && pushId.isNotEmpty) 'push_id': pushId,
         'items': items.map((e) => e.toMap()).toList(),
+      };
+
+  /// Device-local audio list. It is never folded into the visual playlist.
+  static Map<String, dynamic> musicPlaylist({
+    required String requestId,
+    required String deviceId,
+    required String playlistId,
+    required int revision,
+    required List<MediaItem> items,
+  }) {
+    if (deviceId.isEmpty || playlistId.isEmpty || revision < 0 ||
+        items.any((item) => !item.isAudio)) {
+      throw ArgumentError('music_playlist requires one device and audio-only items');
+    }
+    return {
+      'request_id': requestId,
+      'device_id': deviceId,
+      'playlist_id': playlistId,
+      'revision': revision,
+      'items': items.map((item) => item.toMap()).toList(),
+    };
+  }
+
+  static Map<String, dynamic> setRuntimeMode({
+    required String requestId,
+    required RuntimeMode mode,
+    String? groupId,
+    String? deviceId,
+  }) => {
+        ..._target(groupId: groupId, deviceId: deviceId),
+        'request_id': requestId,
+        'mode': mode.name,
+      };
+
+  static Map<String, dynamic> restoreRuntimeMode({
+    required String requestId,
+    String? groupId,
+    String? deviceId,
+  }) => {
+        ..._target(groupId: groupId, deviceId: deviceId),
+        'request_id': requestId,
       };
 
   /// prepare（§9.1）。p2p 模式下遥控端自分配 [prepareId]（= prepare 的 msg_id），

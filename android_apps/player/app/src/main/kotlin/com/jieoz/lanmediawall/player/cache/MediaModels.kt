@@ -86,3 +86,28 @@ data class Playlist(
         }
     }
 }
+
+/**
+ * Device-local music list. It deliberately does not reuse the active visual
+ * [Playlist] slot: visual wall timing and music shuffle have different owners.
+ * The wire message still reuses [MediaItem] and the proven cache/download path.
+ */
+data class MusicPlaylist(
+    val playlistId: String,
+    val revision: Long,
+    val items: List<MediaItem>,
+    val raw: Json,
+) {
+    companion object {
+        fun fromJson(node: Json): MusicPlaylist? {
+            val playlistId = node["playlist_id"].asString()
+                ?.takeIf { it.isNotBlank() } ?: return null
+            val revision = node["revision"].asLongOrNull()
+                ?.takeIf { it >= 0L } ?: return null
+            val rawItems = node["items"].asArrayOrNull() ?: return null
+            val items = rawItems.mapNotNull { MediaItem.fromJson(it) }
+            if (items.size != rawItems.size || items.any { it.type != "audio" }) return null
+            return MusicPlaylist(playlistId, revision, items, node)
+        }
+    }
+}

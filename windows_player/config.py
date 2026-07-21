@@ -421,6 +421,30 @@ class PersistentState:
         self.save()
 
     @property
+    def runtime_mode(self) -> str:
+        mode = self.data.get("runtime_mode", "visual")
+        return mode if mode in ("visual", "music", "standby") else "visual"
+
+    @property
+    def previous_active_mode(self) -> str:
+        mode = self.data.get("previous_active_mode", "visual")
+        return mode if mode in ("visual", "music") else "visual"
+
+    def set_runtime_mode(self, mode: str, previous_active: str) -> None:
+        self.data["runtime_mode"] = mode
+        self.data["previous_active_mode"] = previous_active
+        self.save()
+
+    @property
+    def music_playlist(self) -> Optional[Dict[str, Any]]:
+        value = self.data.get("music_playlist")
+        return value if isinstance(value, dict) else None
+
+    def set_music_playlist(self, playlist: Dict[str, Any]) -> None:
+        self.data["music_playlist"] = playlist
+        self.save()
+
+    @property
     def playlists(self) -> Dict[str, Any]:
         return self.data.setdefault("playlists", {})
 

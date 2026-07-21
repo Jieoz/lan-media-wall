@@ -21,6 +21,7 @@ import com.jieoz.lanmediawall.player.cache.LiveCacheBackend
 import com.jieoz.lanmediawall.player.cache.LoopMode
 import com.jieoz.lanmediawall.player.cache.MediaItem
 import com.jieoz.lanmediawall.player.cache.MediaStore
+import com.jieoz.lanmediawall.player.cache.MusicPlaylist
 import com.jieoz.lanmediawall.player.cache.Playlist
 import com.jieoz.lanmediawall.player.cache.PlaylistOps
 import com.jieoz.lanmediawall.player.media.PlayerController
@@ -59,6 +60,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Resident foreground service — the orchestrator (the Android analogue of
@@ -93,6 +95,13 @@ class PlayerService : Service() {
     @Volatile private var playState = "idle"
     @Volatile private var playlist: Playlist? = null
     @Volatile private var index = 0
+    @Volatile private var runtimeModeState = PlaybackModeState()
+    @Volatile private var musicPlaylist: MusicPlaylist? = null
+    @Volatile private var musicCurrentItemId: String? = null
+    @Volatile private var musicPlayCount = 0L
+    @Volatile private var musicFailures = emptySet<String>()
+    private val musicShuffle = ShuffleBag<String>()
+    private val modeGeneration = AtomicLong(0L)
     @Volatile private var audioMaster = true
     @Volatile private var controllerPresent = false
     // §27 last-cleanup bookkeeping for the §26 summary (at-ms, error string).
@@ -178,6 +187,11 @@ class PlayerService : Service() {
         settings = Settings(applicationContext)
         clock = ClockSync()
         mediaStore = MediaStore(applicationContext)
+        runtimeModeState = PlaybackModeState(
+            PlaybackMode.parse(settings.runtimeMode) ?: PlaybackMode.VISUAL,
+            PlaybackMode.parse(settings.previousActiveMode) ?: PlaybackMode.VISUAL,
+        )
+        musicPlaylist = mediaStore.loadMusicPlaylist()
         downloader = Downloader(
             mediaStore.mediaCacheDir,
             onChange = { /* status loop reads */ },
@@ -517,7 +531,8 @@ class PlayerService : Service() {
             // truth, E0001). A player without these handlers must NOT advertise
             // them, so a controller never sends and silently times out.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
-                "thumbnail", "cache_cleanup_v1", "cache_inventory_v1")))
+                "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
+                "runtime_modes_v1", "music_shuffle_v1")))
             put("group_id", settings.groupId)
         }
         link?.send("hello", payload)
@@ -596,6 +611,17 @@ class PlayerService : Service() {
             put("online", true)
             put("group_id", settings.groupId)
             put("state", effectiveState())
+            put("runtime_mode", runtimeModeState.current.wire)
+            put("previous_active_mode", runtimeModeState.previousActive.wire)
+            put("mode_generation", modeGeneration.get())
+            put("music_playlist_id", musicPlaylist?.playlistId ?: "")
+            musicPlaylist?.let { put("music_playlist_revision", it.revision) }
+            put("music_playlist_size", musicPlaylist?.items?.size ?: 0)
+            put("music_current_item_id", musicCurrentItemId)
+            put("music_shuffle_cycle", musicShuffle.cycle)
+            put("music_play_count", musicPlayCount)
+            put("music_failed_item_ids", jsonStrArr(musicFailures.sorted()))
+            settings.standbySinceMs.takeIf { it > 0L }?.let { put("standby_since_ms", it) }
             put("current", currentJson)
             put("playlist_id", playlist?.playlistId)
             // Per-replace command identity: unlike playlist_id, this is never
@@ -620,7 +646,7 @@ class PlayerService : Service() {
             // broker wall snapshots are rebuilt from status.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
                 "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
-                "loop_boundary_sync_v1")))
+                "loop_boundary_sync_v1", "runtime_modes_v1", "music_shuffle_v1")))
             activeLoopSync?.let { epoch ->
                 put("loop_sync", jsonObj {
                     put("session_id", epoch.sessionId)
@@ -704,7 +730,16 @@ class PlayerService : Service() {
      *  fields lazily so a long-lived backend always plans against the CURRENT
      *  generation (the fail-closed guard depends on it). */
     private val playerCacheView = object : LiveCacheBackend.PlayerView {
-        override fun activePlaylist(): Playlist? = playlist
+        override fun activePlaylist(): Playlist? {
+            val visual = playlist
+            val musicItems = musicPlaylist?.items ?: emptyList()
+            if (musicItems.isEmpty()) return visual
+            if (visual != null) {
+                val union = (visual.items + musicItems).distinctBy { it.itemId }
+                return visual.withItems(union)
+            }
+            return musicPlaylist?.let { Playlist.fromJson(it.raw) }
+        }
         override fun playState(): String = playState
         override fun currentItem(): MediaItem? = this@PlayerService.currentItem()
         override fun resolvePlaylist(playlistId: String?): Playlist? =
@@ -847,6 +882,9 @@ class PlayerService : Service() {
             // never an optimistic ack that could be mistaken for "files deleted".
             "cache_cleanup" -> { hCacheCleanup(payload); return }
             "cache_inventory" -> { hCacheInventory(payload); return }
+            "music_playlist" -> { hMusicPlaylist(payload); return }
+            "set_runtime_mode" -> { hSetRuntimeMode(payload); return }
+            "restore_runtime_mode" -> { hRestoreRuntimeMode(payload); return }
             "playlist" -> hPlaylist(payload)
             "prepare" -> hPrepare(payload)
             "play_at" -> hPlayAt(payload)
@@ -1063,6 +1101,150 @@ class PlayerService : Service() {
         }
     }
 
+    private fun hMusicPlaylist(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val requestId = payload["request_id"].asString() ?: ""
+        val incoming = MusicPlaylist.fromJson(payload)
+        if (incoming == null) {
+            sendMusicPlaylistResult(requestId, false, "invalid_audio_playlist", null)
+            return
+        }
+        val current = musicPlaylist
+        if (current != null && incoming.revision < current.revision) {
+            sendMusicPlaylistResult(requestId, false, "stale_revision", current.revision)
+            return
+        }
+        if (current != null && incoming.revision == current.revision && current != incoming) {
+            sendMusicPlaylistResult(requestId, false, "revision_conflict", current.revision)
+            return
+        }
+        if (current != incoming) {
+            musicPlaylist = incoming
+            mediaStore.storeMusicPlaylist(incoming)
+            musicShuffle.reset()
+            musicFailures = emptySet()
+            musicCurrentItemId = null
+            updateCacheProtection(playlist)
+            if (incoming.items.isNotEmpty()) downloader.prefetch(incoming.items)
+            if (runtimeModeState.current == PlaybackMode.MUSIC) {
+                val generation = cancelMediaOwners("music_playlist_replace")
+                MainActivity.instance?.showIdle()
+                scope.launch { playNextMusic(generation) }
+            }
+        }
+        sendMusicPlaylistResult(requestId, true, "", incoming.revision)
+    }
+
+    private fun sendMusicPlaylistResult(requestId: String, ok: Boolean,
+                                        error: String, revision: Long?) {
+        link?.send("music_playlist_result", jsonObj {
+            put("request_id", requestId)
+            put("device_id", settings.deviceId)
+            put("ok", ok)
+            put("playlist_id", musicPlaylist?.playlistId ?: "")
+            revision?.let { put("revision", it) }
+            put("error", error)
+        }, to = "controller")
+    }
+
+    private fun hSetRuntimeMode(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val requestId = payload["request_id"].asString() ?: ""
+        val target = PlaybackMode.parse(payload["mode"].asString())
+        if (target == null) {
+            sendRuntimeModeResult(requestId, false, "invalid_mode")
+            return
+        }
+        applyRuntimeMode(target, restore = false)
+        sendRuntimeModeResult(requestId, true, "")
+    }
+
+    private fun hRestoreRuntimeMode(payload: Json.Obj) {
+        if (!targetsMe(payload)) return
+        val requestId = payload["request_id"].asString() ?: ""
+        applyRuntimeMode(null, restore = true)
+        sendRuntimeModeResult(requestId, true, "")
+    }
+
+    private fun sendRuntimeModeResult(requestId: String, ok: Boolean, error: String) {
+        link?.send("runtime_mode_result", jsonObj {
+            put("request_id", requestId)
+            put("device_id", settings.deviceId)
+            put("ok", ok)
+            put("runtime_mode", runtimeModeState.current.wire)
+            put("previous_active_mode", runtimeModeState.previousActive.wire)
+            put("error", error)
+        }, to = "controller")
+    }
+
+    private fun applyRuntimeMode(target: PlaybackMode?, restore: Boolean) {
+        val generation = cancelMediaOwners(if (restore) "mode_restore" else "mode_set")
+        val actual = if (restore) runtimeModeState.restore()
+            else runtimeModeState.setMode(target ?: PlaybackMode.VISUAL)
+        settings.runtimeMode = actual.wire
+        settings.previousActiveMode = runtimeModeState.previousActive.wire
+        if (actual == PlaybackMode.STANDBY) {
+            if (settings.standbySinceMs <= 0L) settings.standbySinceMs = System.currentTimeMillis()
+        } else {
+            settings.standbySinceMs = 0L
+        }
+        when (actual) {
+            PlaybackMode.STANDBY -> MainActivity.instance?.showIdle()
+            PlaybackMode.MUSIC -> {
+                MainActivity.instance?.showIdle()
+                scope.launch { playNextMusic(generation) }
+            }
+            PlaybackMode.VISUAL -> scope.launch { resumeLast() }
+        }
+        logEvent("runtime_mode mode=${actual.wire} previous=${runtimeModeState.previousActive.wire} generation=$generation")
+    }
+
+    private fun cancelMediaOwners(reason: String): Long {
+        val generation = modeGeneration.incrementAndGet()
+        scheduledStart.getAndSet(null)?.cancel()
+        restoreTask.getAndSet(null)?.cancel()
+        prepareGeneration.cancel()
+        prepareWaiter.getAndSet(null)?.cancel()
+        dwellTimer.getAndSet(null)?.cancel()
+        cancelLoopBoundarySync(reason)
+        controllerRef?.onVideoEnded = null
+        controllerRef?.stop()
+        musicCurrentItemId = null
+        playState = "idle"
+        return generation
+    }
+
+    private suspend fun playNextMusic(generation: Long) {
+        if (generation != modeGeneration.get() || runtimeModeState.current != PlaybackMode.MUSIC) return
+        val pl = musicPlaylist
+        val candidates = pl?.items?.filterNot { it.itemId in musicFailures } ?: emptyList()
+        val itemId = musicShuffle.next(candidates.map { it.itemId })
+        val item = candidates.firstOrNull { it.itemId == itemId }
+        val ctl = controllerRef
+        if (item == null || ctl == null) {
+            musicCurrentItemId = null
+            playState = if (pl != null && pl.items.isNotEmpty() && candidates.isEmpty()) "error" else "idle"
+            MainActivity.instance?.showIdle()
+            return
+        }
+        val readyFile = downloader.readyPath(item.itemId)
+        readyFile?.let { downloader.touch(it) }
+        val source = readyFile?.absolutePath ?: item.url
+        musicCurrentItemId = item.itemId
+        ctl.onVideoEnded = {
+            if (generation == modeGeneration.get() && runtimeModeState.current == PlaybackMode.MUSIC) {
+                scope.launch { playNextMusic(generation) }
+            }
+        }
+        ctl.loadAndPlay(source, 0L, false)
+        ctl.setVolume(settings.volume)
+        ctl.setMuted(settings.muted)
+        musicPlayCount += 1L
+        playState = "playing"
+        MainActivity.instance?.showIdle()
+        logEvent("music_play item=${item.itemId} revision=${pl?.revision} cycle=${musicShuffle.cycle} count=$musicPlayCount generation=$generation")
+    }
+
     private fun clearActivePlaylist(playlistId: String) {
         val activePlaylistId = playlist?.playlistId
         scheduledStart.getAndSet(null)?.cancel()
@@ -1071,7 +1253,7 @@ class PlayerService : Service() {
         prepareWaiter.getAndSet(null)?.cancel()
         dwellTimer.getAndSet(null)?.cancel()
         cancelLoopBoundarySync("playlist_clear")
-        controllerRef?.stop()
+        if (runtimeModeState.current == PlaybackMode.VISUAL) controllerRef?.stop()
         // Invalidate the definition too: a delayed prepare/play_at for the same
         // id must not resurrect content after CLEAR.
         activePlaylistId?.let { mediaStore.deletePlaylist(it) }
@@ -1110,8 +1292,10 @@ class PlayerService : Service() {
      * changes (playlist / prepare / resume_last).
      */
     private fun updateCacheProtection(pl: Playlist?) {
-        val protectedFiles = pl?.items?.map { downloader.localPath(it).absolutePath }
-            ?.toSet() ?: emptySet()
+        val protectedFiles = buildSet {
+            pl?.items?.forEach { add(downloader.localPath(it).absolutePath) }
+            musicPlaylist?.items?.forEach { add(downloader.localPath(it).absolutePath) }
+        }
         downloader.configureQuota(settings.cacheMaxBytes, protectedFiles)
         // §10/§11 重启恢复:进程重来后 downloader 的 ready 索引是空的,但媒体文件仍在
         // 磁盘。这里(resumeLast/prepare/play_at 都会经过的收口)按当前 playlist 的 items
@@ -1129,6 +1313,7 @@ class PlayerService : Service() {
 
     // --- §9.1 prepare -------------------------------------------------
     private fun hPrepare(payload: Json.Obj) {
+        if (runtimeModeState.current != PlaybackMode.VISUAL) return
         val pid = payload["playlist_id"].asString()
         val groupId = payload["group_id"].asString()
         val prepareId = payload["prepare_id"].asString()
@@ -1230,6 +1415,7 @@ class PlayerService : Service() {
 
     // --- §9.2 play_at (sync-critical path) ---------------------------
     private fun hPlayAt(payload: Json.Obj) {
+        if (runtimeModeState.current != PlaybackMode.VISUAL) return
         val pid = payload["playlist_id"].asString()
         val pushId = payload["push_id"].asString()
         val startIndex = payload["start_index"].asIntOrNull() ?: index
@@ -1658,6 +1844,7 @@ class PlayerService : Service() {
      * on end. Any pending dwell is cancelled first so timers never stack.
      */
     private fun advance(delta: Int, explicit: Boolean = false) {
+        if (runtimeModeState.current != PlaybackMode.VISUAL) return
         val pl = playlist ?: return
         if (pl.items.isEmpty()) return
         cancelLoopBoundarySync("advance")
@@ -1708,7 +1895,7 @@ class PlayerService : Service() {
         val dwell = item.durationMs?.takeIf { it > 0 } ?: DEFAULT_IMAGE_DWELL_MS
         val job = scope.launch {
             delay(dwell)
-            if (isActive) advance(+1)
+            if (isActive && runtimeModeState.current == PlaybackMode.VISUAL) advance(+1)
         }
         dwellTimer.getAndSet(job)?.cancel()
     }
@@ -1716,7 +1903,7 @@ class PlayerService : Service() {
     /** §6.3: a non-looping video finished (ExoPlayer STATE_ENDED) → step
      *  forward. Fired on the main thread, so hop to a coroutine for the I/O. */
     private fun onCurrentEnded() {
-        scope.launch { advance(+1) }
+        if (runtimeModeState.current == PlaybackMode.VISUAL) scope.launch { advance(+1) }
     }
 
     /** §6.3 loop semantics: only a *single-item* looping playlist maps to OEM
@@ -2113,7 +2300,11 @@ class PlayerService : Service() {
             // error while we still think we're playing — the pre-B1 fallback for
             // any error that slipped past the callback. Either one recovers.
             val err = controllerRef?.snapshot()?.error
-            if (playState == "error" || (err != null && playState == "playing")) {
+            val allMusicFailed = runtimeModeState.current == PlaybackMode.MUSIC &&
+                musicPlaylist?.items?.isNotEmpty() == true &&
+                musicFailures.containsAll(musicPlaylist?.items?.map { it.itemId } ?: emptyList())
+            if (runtimeModeState.current != PlaybackMode.STANDBY && !allMusicFailed &&
+                (playState == "error" || (err != null && playState == "playing"))) {
                 logEvent("watchdog_recover playState=$playState snapErr=${err ?: "none"}")
                 pushError("player:${err ?: "state-error"}")
                 resumeLast()
@@ -2137,8 +2328,11 @@ class PlayerService : Service() {
     }
 
     private fun currentItem(): MediaItem? {
-        val pl = playlist ?: return null
-        return pl.items.getOrNull(index)
+        return when (runtimeModeState.current) {
+            PlaybackMode.STANDBY -> null
+            PlaybackMode.MUSIC -> musicPlaylist?.items?.firstOrNull { it.itemId == musicCurrentItemId }
+            PlaybackMode.VISUAL -> playlist?.items?.getOrNull(index)
+        }
     }
 
     fun currentItemForDebug(): MediaItem? = currentItem()
@@ -2195,6 +2389,20 @@ class PlayerService : Service() {
             // intact and let MainActivity call onPlayerUiReady() once its surface
             // is attached.
             return
+        }
+        when (runtimeModeState.current) {
+            PlaybackMode.STANDBY -> {
+                playState = "idle"
+                MainActivity.instance?.showIdle()
+                return
+            }
+            PlaybackMode.MUSIC -> {
+                updateCacheProtection(playlist)
+                MainActivity.instance?.showIdle()
+                playNextMusic(modeGeneration.get())
+                return
+            }
+            PlaybackMode.VISUAL -> Unit
         }
         val task = mediaStore.getLastTask()
         if (task == null) {
@@ -2258,9 +2466,18 @@ class PlayerService : Service() {
         wiredController = ctl
         ctl.logSink = { msg -> logEvent("video_backend=${ctl.backend.id} $msg") }
         ctl.onPlayerError = { code ->
+            val failedMusicId = musicCurrentItemId
             logEvent("player_error code=$code prevState=$playState item=${currentItem()?.itemId ?: "none"}")
             pushError("player:$code")
             playState = "error"
+            if (runtimeModeState.current == PlaybackMode.MUSIC && failedMusicId != null) {
+                musicFailures = musicFailures + failedMusicId
+                val generation = modeGeneration.get()
+                scope.launch {
+                    delay(250)
+                    playNextMusic(generation)
+                }
+            }
         }
         logEvent("controller_wired")
     }

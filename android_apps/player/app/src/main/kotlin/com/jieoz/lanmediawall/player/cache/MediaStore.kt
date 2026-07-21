@@ -62,6 +62,16 @@ class MediaStore(context: Context) {
 
     private fun playlistKey(id: String) = "playlist:$id"
 
+    // Music has an independent slot and is never added to visual recency/history.
+    fun storeMusicPlaylist(playlist: MusicPlaylist) {
+        prefs.edit().putString(KEY_MUSIC_PLAYLIST, CanonicalJson.encode(playlist.raw)).apply()
+    }
+
+    fun loadMusicPlaylist(): MusicPlaylist? {
+        val raw = prefs.getString(KEY_MUSIC_PLAYLIST, null) ?: return null
+        return try { MusicPlaylist.fromJson(Json.parse(raw)) } catch (_: Exception) { null }
+    }
+
     /** Recorded playlist ids, most-recent-first. Empty when none stored yet. */
     private fun recentIds(): List<String> =
         prefs.getString(KEY_RECENT_PLAYLISTS, null)
@@ -122,6 +132,7 @@ class MediaStore(context: Context) {
     companion object {
         private const val KEY_LAST_TASK = "last_task"
         private const val KEY_RECENT_PLAYLISTS = "recent_playlists"
+        private const val KEY_MUSIC_PLAYLIST = "music_playlist"
         private const val SEP = "\n"
     }
 }

@@ -19,6 +19,7 @@ import asyncio
 import logging
 import sys
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import config as config_mod
@@ -26,6 +27,7 @@ import auth as auth_mod
 import topology as topology_mod
 import pairing as pairing_mod
 import playlist_ops as playlist_ops
+from playback_modes import MusicPlaylist, PlaybackMode, PlaybackModeState, ShuffleBag
 from loop_mode import LoopMode, resolve_loop_mode
 from clock import ClockSync, now_ms
 from downloader import Downloader
@@ -116,6 +118,17 @@ class Player:
         self.play_state = "idle"
         self.playlist: Optional[Dict[str, Any]] = None
         self.index = 0
+        current_mode = PlaybackMode.parse(self.state.runtime_mode) or PlaybackMode.VISUAL
+        previous_mode = (PlaybackMode.parse(self.state.previous_active_mode)
+                         or PlaybackMode.VISUAL)
+        self.runtime_mode = PlaybackModeState(current_mode, previous_mode)
+        self.mode_generation = 0
+        self.music_playlist: Optional[Dict[str, Any]] = self.state.music_playlist
+        self.music_shuffle = ShuffleBag[str]()
+        self.music_current_item_id: Optional[str] = None
+        self.music_failures: set[str] = set()
+        self.music_play_count = 0
+        self.music_started_monotonic = 0.0
         # §19: volume/muted are persisted config preferences — restore across
         # reboots (fall back to the shipped defaults on a fresh device).
         self.volume = self.state.volume if self.state.volume is not None else 80
@@ -352,7 +365,8 @@ class Player:
             # live handlers + terminal-result emission exist (capability truth,
             # E0001): a controller must never send and silently time out.
             "capabilities": ["video", "image", "audio", "thumbnail",
-                             "cache_cleanup_v1", "cache_inventory_v1"],
+                             "cache_cleanup_v1", "cache_inventory_v1",
+                             "runtime_modes_v1", "music_shuffle_v1"],
             "group_id": self.group_id,
         })
 
@@ -400,6 +414,14 @@ class Player:
             "online": True,
             "group_id": self.group_id,
             "state": self._effective_state(snap),
+            "runtime_mode": self.runtime_mode.current.value,
+            "previous_active_mode": self.runtime_mode.previous_active.value,
+            "music_playlist_id": (self.music_playlist or {}).get("playlist_id"),
+            "music_playlist_revision": (self.music_playlist or {}).get("revision"),
+            "music_playlist_size": len((self.music_playlist or {}).get("items", [])),
+            "music_current_item_id": self.music_current_item_id,
+            "music_shuffle_cycle": self.music_shuffle.cycle,
+            "music_play_count": self.music_play_count,
             "current": current,
             "playlist_id": self.playlist.get("playlist_id") if self.playlist else None,
             # Per-replace identity; playlist_id itself may be reused.
@@ -416,7 +438,8 @@ class Player:
             # §26 lightweight summary (full per-item list is on-demand via §28).
             "cache_summary": self._cache_summary(),
             "capabilities": ["video", "image", "audio", "thumbnail",
-                             "cache_cleanup_v1", "cache_inventory_v1"],
+                             "cache_cleanup_v1", "cache_inventory_v1",
+                             "runtime_modes_v1", "music_shuffle_v1"],
             # §19 remote config: advertise what the safe patch can touch + the
             # current authoritative snapshot (revision for optimistic concurrency,
             # redacted values — never the psk). Old controllers ignore both.
@@ -495,6 +518,9 @@ class Player:
         handler = {
             "cache_prefetch": self._h_cache_prefetch,
             "playlist": self._h_playlist,
+            "music_playlist": self._h_music_playlist,
+            "set_runtime_mode": self._h_set_runtime_mode,
+            "restore_runtime_mode": self._h_restore_runtime_mode,
             "prepare": self._h_prepare,
             "play_at": self._h_play_at,
             "pause": self._h_pause,
@@ -701,6 +727,140 @@ class Player:
         if items:
             self.downloader.prefetch(items)
 
+    # --- runtime modes / independent music playlist -------------------
+    async def _send_music_playlist_result(self, request_id: str, ok: bool,
+                                          error: str = "") -> None:
+        await self.ws.send("music_playlist_result", {
+            "request_id": request_id,
+            "device_id": self.device_id,
+            "ok": ok,
+            "error": error,
+            "playlist_id": (self.music_playlist or {}).get("playlist_id"),
+            "revision": (self.music_playlist or {}).get("revision"),
+        }, to="controller")
+
+    async def _h_music_playlist(self, payload, env) -> None:
+        if not self._targets_me(payload):
+            return
+        request_id = str(payload.get("request_id", ""))
+        parsed = MusicPlaylist.from_payload(payload)
+        if parsed is None:
+            await self._send_music_playlist_result(request_id, False,
+                                                   "invalid_music_playlist")
+            return
+        normalized = {
+            "playlist_id": parsed.playlist_id,
+            "revision": parsed.revision,
+            "items": parsed.items,
+        }
+        current = self.music_playlist
+        if current is not None:
+            current_revision = int(current.get("revision", -1))
+            if parsed.revision < current_revision:
+                await self._send_music_playlist_result(request_id, False,
+                                                       "stale_revision")
+                return
+            if parsed.revision == current_revision and current != normalized:
+                await self._send_music_playlist_result(request_id, False,
+                                                       "revision_conflict")
+                return
+        self.music_playlist = normalized
+        self.state.set_music_playlist(normalized)
+        self.music_shuffle.reset()
+        self.music_failures.clear()
+        self.music_current_item_id = None
+        self.downloader.prefetch(parsed.items)
+        if self.runtime_mode.current is PlaybackMode.MUSIC:
+            self.mode_generation += 1
+            await self._mpv("stop")
+            await self._play_next_music(self.mode_generation)
+        await self._send_music_playlist_result(request_id, True)
+
+    async def _send_runtime_mode_result(self, request_id: str, ok: bool,
+                                        error: str = "") -> None:
+        await self.ws.send("runtime_mode_result", {
+            "request_id": request_id,
+            "device_id": self.device_id,
+            "ok": ok,
+            "error": error,
+            "runtime_mode": self.runtime_mode.current.value,
+            "previous_active_mode": self.runtime_mode.previous_active.value,
+        }, to="controller")
+
+    async def _h_set_runtime_mode(self, payload, env) -> None:
+        if not self._targets_me(payload):
+            return
+        request_id = str(payload.get("request_id", ""))
+        mode = PlaybackMode.parse(payload.get("mode"))
+        if mode is None:
+            await self._send_runtime_mode_result(request_id, False,
+                                                 "invalid_runtime_mode")
+            return
+        await self._apply_runtime_mode(mode)
+        await self._send_runtime_mode_result(request_id, True)
+
+    async def _h_restore_runtime_mode(self, payload, env) -> None:
+        if not self._targets_me(payload):
+            return
+        request_id = str(payload.get("request_id", ""))
+        target = self.runtime_mode.previous_active
+        if target is PlaybackMode.STANDBY:
+            target = PlaybackMode.VISUAL
+        await self._apply_runtime_mode(target)
+        await self._send_runtime_mode_result(request_id, True)
+
+    async def _apply_runtime_mode(self, mode: PlaybackMode) -> None:
+        self.mode_generation += 1
+        generation = self.mode_generation
+        self._cancel_session_tasks()
+        await self._mpv("stop")
+        self.play_state = "idle"
+        self.music_current_item_id = None
+        self.runtime_mode.set_mode(mode)
+        self.state.set_runtime_mode(
+            self.runtime_mode.current.value,
+            self.runtime_mode.previous_active.value,
+        )
+        if mode is PlaybackMode.MUSIC:
+            await self._play_next_music(generation)
+        elif mode is PlaybackMode.VISUAL:
+            await self._resume_last()
+        else:
+            self._apply_idle_screen()
+
+    async def _play_next_music(self, generation: int) -> None:
+        if generation != self.mode_generation or \
+                self.runtime_mode.current is not PlaybackMode.MUSIC:
+            return
+        items = (self.music_playlist or {}).get("items", [])
+        by_id = {str(item.get("item_id")): item for item in items
+                 if item.get("item_id")}
+        candidates = [item_id for item_id in by_id
+                      if item_id not in self.music_failures]
+        item_id = self.music_shuffle.next(candidates)
+        if item_id is None:
+            self.music_current_item_id = None
+            self.play_state = "idle" if not items else "error"
+            error = "music_playlist_empty" if not items else "music_all_unavailable"
+            if not self._errors or self._errors[-1] != error:
+                self._errors.append(error)
+            return
+        item = by_id[item_id]
+        path = self.downloader.ready_path(item_id) or item.get("url")
+        if not path:
+            self.music_failures.add(item_id)
+            await self._play_next_music(generation)
+            return
+        self.music_current_item_id = item_id
+        self.music_play_count += 1
+        self.music_started_monotonic = time.monotonic()
+        await self._mpv("loadfile", str(path), "replace")
+        await self._mpv("set_loop_file", False)
+        await self._mpv("set_pause", False)
+        if generation == self.mode_generation and \
+                self.runtime_mode.current is PlaybackMode.MUSIC:
+            self.play_state = "playing"
+
     # --- §6.3 playlist -----------------------------------------------
     async def _h_playlist(self, payload, env) -> None:
         with self._cache_generation_lock:
@@ -744,9 +904,10 @@ class Player:
         disk is deliberately left intact."""
         active_playlist_id = (self.playlist or {}).get("playlist_id")
         self._cancel_session_tasks()
-        await self._mpv("stop")
-        self._apply_idle_screen()
-        self.play_state = "idle"
+        if self.runtime_mode.current is PlaybackMode.VISUAL:
+            await self._mpv("stop")
+            self._apply_idle_screen()
+            self.play_state = "idle"
         for pid in {active_playlist_id, playlist_id} - {None, ""}:
             self.state.delete_playlist(str(pid))
         with self._cache_generation_lock:
@@ -756,6 +917,8 @@ class Player:
 
     # --- §9.1 prepare -------------------------------------------------
     async def _h_prepare(self, payload, env) -> None:
+        if self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         if self._barrier_task and not self._barrier_task.done():
             self._barrier_task.cancel()
         pid = payload.get("playlist_id")
@@ -846,6 +1009,8 @@ class Player:
 
     # --- §9.2 play_at (the sync-critical path) -----------------------
     async def _h_play_at(self, payload, env) -> None:
+        if self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         pid = payload.get("playlist_id")
         push_id = payload.get("push_id")
         start_index = int(payload.get("start_index", self.index))
@@ -883,6 +1048,8 @@ class Player:
         instant and its dwell armed so the carousel advances (§6.3)."""
         if item.get("type") == "image":
             await self._await_local(self.clock.to_local(play_at))
+            if self.runtime_mode.current is not PlaybackMode.VISUAL:
+                return
             await self._mpv("show_image", path)
             self.play_state = "playing"
             self._arm_dwell(item)
@@ -894,6 +1061,8 @@ class Player:
         await self._mpv("set_loop_file",
                         resolve_loop_mode(self.playlist) is LoopMode.ONE)
         await self._await_local(self.clock.to_local(play_at))
+        if self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         await self._mpv("set_pause", False)
         self.play_state = "playing"
         log.info("play_at fired: now=%d offset=%d", now_ms(), self.clock.offset_ms)
@@ -975,7 +1144,10 @@ class Player:
           - ONE : completion repeats the current item (seamless, no move);
                   explicit prev/next still navigates with wrap.
         """
-        if not self.playlist:
+        if self.runtime_mode.current is PlaybackMode.MUSIC:
+            await self._play_next_music(self.mode_generation)
+            return
+        if self.runtime_mode.current is not PlaybackMode.VISUAL or not self.playlist:
             return
         items = self.playlist.get("items", [])
         if not items:
@@ -1033,7 +1205,20 @@ class Player:
             await asyncio.sleep(max(0, dwell_ms) / 1000.0)
         except asyncio.CancelledError:
             return
-        await self._advance(+1)
+        if self.runtime_mode.current is PlaybackMode.VISUAL:
+            await self._advance(+1)
+
+    def _music_snapshot_failed(self, snap: Dict[str, Any],
+                               now: Optional[float] = None) -> bool:
+        """Classify MPV load failure without treating a normal track EOF as bad."""
+        now = time.monotonic() if now is None else now
+        duration = int(snap.get("duration_ms", 0) or 0)
+        position = int(snap.get("position_ms", 0) or 0)
+        immediate_eof = bool(snap.get("eof")) and duration <= 0 and position <= 500
+        stalled_idle = not bool(snap.get("eof")) and bool(snap.get("idle")) and \
+            duration <= 0 and position <= 500 and \
+            now - self.music_started_monotonic >= 2.0
+        return immediate_eof or stalled_idle
 
     async def eof_watch_loop(self) -> None:
         """§6.3: a non-looping video that reaches its end has no external nudge
@@ -1052,6 +1237,16 @@ class Player:
                 seen_eof = False
                 continue
             snap = await self._mpv("snapshot") or {}
+            if self.runtime_mode.current is PlaybackMode.MUSIC and \
+                    self._music_snapshot_failed(snap):
+                if self.music_current_item_id:
+                    self.music_failures.add(self.music_current_item_id)
+                    error = f"music_load_failed:{self.music_current_item_id}"
+                    if not self._errors or self._errors[-1] != error:
+                        self._errors.append(error)
+                seen_eof = False
+                await self._advance(+1)
+                continue
             if snap.get("eof"):
                 if not seen_eof:
                     seen_eof = True
@@ -1352,6 +1547,13 @@ class Player:
         return None
 
     def _current_item(self) -> Optional[Dict[str, Any]]:
+        if self.runtime_mode.current is PlaybackMode.STANDBY:
+            return None
+        if self.runtime_mode.current is PlaybackMode.MUSIC:
+            for item in (self.music_playlist or {}).get("items", []):
+                if item.get("item_id") == self.music_current_item_id:
+                    return item
+            return None
         if not self.playlist:
             return None
         items = self.playlist.get("items", [])
@@ -1369,8 +1571,14 @@ class Player:
                 "volume": self.volume, "muted": self.muted})
 
     async def _resume_last(self) -> None:
-        """§10/§11: after a crash/reboot, return to the last task locally so the
-        screen is never the desktop."""
+        """§10/§11: after a crash/reboot, return to the persisted runtime mode."""
+        if self.runtime_mode.current is PlaybackMode.STANDBY:
+            self.play_state = "idle"
+            self._apply_idle_screen()
+            return
+        if self.runtime_mode.current is PlaybackMode.MUSIC:
+            await self._play_next_music(self.mode_generation)
+            return
         task = self.state.last_task
         if not task:
             self._apply_idle_screen()
@@ -1440,8 +1648,10 @@ class Player:
         self.decision = await asyncio.to_thread(self._discover_decision)
         self.ws = self._build_transport(self.decision)
         self.start_os_subsystems()
-        # apply persisted volume/mute to mpv up front
+        # apply persisted volume/mute and runtime mode to mpv up front
         await self._mpv("set_volume", self.volume)
+        await self._mpv("set_mute", self.muted)
+        await self._resume_last()
         self._ws_task = asyncio.create_task(self.ws.run(), name="ws")
         tasks = [
             self._ws_task,
