@@ -1417,7 +1417,10 @@ class WallState extends ChangeNotifier {
       return Future.error(UnsupportedError('设备不支持音乐终端，请先升级 Player'));
     }
     final requestId = 'music-${++_nextMusicPlaylistRequest}-${_nowMs()}';
-    final nextRevision = revision ?? ((device.musicPlaylistRevision ?? 0) + 1);
+    final nextRevision = revision ?? nextMusicPlaylistRevision(
+      device.status?.musicPlaylistRevision,
+      _musicPlaylistResults[deviceId]?.revision,
+    );
     final completer = Completer<MusicPlaylistResult>();
     _pendingMusicPlaylist[requestId] = completer;
     _pendingMusicItems[requestId] = List.of(items);

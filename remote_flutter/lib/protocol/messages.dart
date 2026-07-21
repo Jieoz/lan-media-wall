@@ -18,6 +18,18 @@ bool _asBool(Object? v, [bool def = false]) => v is bool ? v : def;
 
 enum RuntimeMode { visual, music, standby }
 
+/// Allocate the next music-playlist revision from every authoritative value
+/// the Controller has observed. A result can arrive before the next status
+/// frame, so relying on status alone can reuse a revision on a rapid re-save.
+int nextMusicPlaylistRevision(
+  int? statusRevision,
+  int? acknowledgedRevision,
+) {
+  final status = statusRevision ?? 0;
+  final acknowledged = acknowledgedRevision ?? 0;
+  return (status > acknowledged ? status : acknowledged) + 1;
+}
+
 class RuntimeModeCodec {
   static RuntimeMode? parse(Object? raw) {
     final wire = raw?.toString();
