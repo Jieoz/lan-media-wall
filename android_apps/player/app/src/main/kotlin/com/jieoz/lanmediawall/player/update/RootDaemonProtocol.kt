@@ -56,9 +56,17 @@ object RootDaemonProtocol {
 
     fun parseDaemonUpdate(response: String): DaemonUpdateReply {
         val line = response.trim()
-        val ok = line.startsWith("ok update_daemon ") &&
+        val verifiedInstalled = line.startsWith("ok update_daemon ") &&
             line.contains("verified installed") &&
             Regex("(?:^| )sha256=[0-9a-fA-F]{64}(?:$| )").containsMatchIn(line)
+        // A verified candidate does not need to replace the live daemon when the
+        // installed bytes already match, or during the one-shot USB migration
+        // handoff. These are terminal success states, not failed verification.
+        // Keep the accepted spellings exact so an arbitrary `retained_live`
+        // response cannot bypass the fail-closed parser.
+        val retainedLive = line == "ok update_daemon retained_live reason=already_current" ||
+            line == "ok update_daemon retained_live reason=usb_migration_once"
+        val ok = verifiedInstalled || retainedLive
         return DaemonUpdateReply(ok, line.ifBlank { "empty" })
     }
 

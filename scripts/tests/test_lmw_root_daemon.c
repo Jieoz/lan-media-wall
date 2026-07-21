@@ -83,6 +83,15 @@ static void test_ota_rootfix_contract(void) {
           "USB migration marker permits one old-APK handoff");
     CHECK(lmw_selfupdate_migration_decide(0, 0) == 0,
           "ordinary differing candidate follows normal update");
+    char already_current_reply[160];
+    CHECK(lmw_format_already_current_reply(already_current_reply,
+                                           sizeof(already_current_reply), sha),
+          "already-current reply formats");
+    char expected_reply[160];
+    snprintf(expected_reply, sizeof(expected_reply),
+             "ok update_daemon verified installed sha256=%s", sha);
+    CHECK(strcmp(already_current_reply, expected_reply) == 0,
+          "already-current uses deployed Player success grammar");
 }
 
 static void test_daemon_candidate_becomes_executable(void) {

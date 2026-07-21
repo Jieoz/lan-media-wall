@@ -665,6 +665,14 @@ static int lmw_selfupdate_migration_decide(int live_matches_expected,
     return 0;                                  // normal verified replacement
 }
 
+static int lmw_format_already_current_reply(char *out, size_t out_len,
+                                            const char *expected_sha) {
+    int n = snprintf(out, out_len,
+                     "ok update_daemon verified installed sha256=%s",
+                     expected_sha);
+    return n > 0 && (size_t)n < out_len;
+}
+
 static int lmw_prepare_candidate_exec(const char *candidate_path) {
     return candidate_path && chmod(candidate_path, 0700) == 0;
 }
@@ -1322,8 +1330,19 @@ static void lmw_handle_update_daemon(int fd, const char *expected_sha) {
             return;
         }
         unlink(LMW_DAEMON_CANDIDATE);
-        dprintf(fd, "ok update_daemon retained_live reason=%s\n",
-                migration == 1 ? "already_current" : "usb_migration_once");
+        if (migration == 1) {
+            // Compatibility contract: deployed Players accept the canonical
+            // verified-installed terminal state. The live file has just been
+            // hashed against expected_sha, so this is truthful and idempotent.
+            char reply[160];
+            if (!lmw_format_already_current_reply(reply, sizeof(reply), expected_sha)) {
+                dprintf(fd, "error update_daemon response_format_failed\n");
+                return;
+            }
+            dprintf(fd, "%s\n", reply);
+        } else {
+            dprintf(fd, "ok update_daemon retained_live reason=usb_migration_once\n");
+        }
         return;
     }
     if (!lmw_remount_system(1)) {

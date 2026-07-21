@@ -82,9 +82,15 @@ class RootDaemonProtocolTest {
     fun daemon_update_reply_requires_verified_installed_state() {
         assertTrue(RootDaemonProtocol.parseDaemonUpdate(
             "ok update_daemon verified installed sha256=${"a".repeat(64)}").ok)
+        assertTrue(RootDaemonProtocol.parseDaemonUpdate(
+            "ok update_daemon retained_live reason=already_current").ok)
+        assertTrue(RootDaemonProtocol.parseDaemonUpdate(
+            "ok update_daemon retained_live reason=usb_migration_once").ok)
         assertFalse(RootDaemonProtocol.parseDaemonUpdate(
             "error update_daemon apply_failed rollback=restored").ok)
         assertFalse(RootDaemonProtocol.parseDaemonUpdate("ok update_daemon staged").ok)
+        assertFalse(RootDaemonProtocol.parseDaemonUpdate(
+            "ok update_daemon retained_live reason=unverified").ok)
     }
 
     @Test
