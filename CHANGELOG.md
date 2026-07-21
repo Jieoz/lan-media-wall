@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.18.5 Clean Install → OTA Qualification] — 2026-07-21
+
+- **End-to-end qualification target** (versionCode **1185**, versionName `1.18.5`). Provision a clean device with the matching `1.18.4 (1184)` QZX bundle, then select this APK in the manifest-derived controller flow to prove download, SHA-256 verification, daemon reconciliation, legacy activation, restart, and reconnect without another USB repair.
+- **No new product behavior.** This version deliberately carries the field-proven daemon migration/remount fixes unchanged so the test isolates the `1184 → 1185` release transition.
+
 ## [v1.18.4 OTA Field Test] — 2026-07-20
 
 - **Unambiguous field artifact** (versionCode **1184**, versionName `1.18.4`). This package is distinguishable from every earlier `1183` test and includes the staged-daemon executable-permission fix.
