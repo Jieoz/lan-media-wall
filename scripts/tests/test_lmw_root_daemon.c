@@ -77,6 +77,12 @@ static void test_ota_rootfix_contract(void) {
     CHECK(lmw_candidate_probe_sockname(42, sock, sizeof(sock)) > 0, "isolated socket name");
     CHECK(lmw_legacy_reconcile_decide(1, 1, 1) == RECONCILE_COMMIT_BACKUP, "stale backup commit decision");
     CHECK(lmw_pm_path_names_target("package:/data/app/x.apk\n", "/data/app/x.apk"), "pm path adoption proof");
+    CHECK(lmw_selfupdate_migration_decide(1, 0) == 1,
+          "already-current daemon retained idempotently");
+    CHECK(lmw_selfupdate_migration_decide(0, 1) == 2,
+          "USB migration marker permits one old-APK handoff");
+    CHECK(lmw_selfupdate_migration_decide(0, 0) == 0,
+          "ordinary differing candidate follows normal update");
 }
 
 static void test_daemon_candidate_becomes_executable(void) {
