@@ -824,7 +824,7 @@ class Player:
         if mode is PlaybackMode.MUSIC:
             await self._play_next_music(generation)
         elif mode is PlaybackMode.VISUAL:
-            await self._resume_last()
+            await self._resume_last(generation)
         else:
             self._apply_idle_screen()
 
@@ -1570,8 +1570,11 @@ class Player:
                 "playlist_id": pid, "index": index, "seek_ms": seek_ms,
                 "volume": self.volume, "muted": self.muted})
 
-    async def _resume_last(self) -> None:
+    async def _resume_last(self, generation: Optional[int] = None) -> None:
         """§10/§11: after a crash/reboot, return to the persisted runtime mode."""
+        generation = self.mode_generation if generation is None else generation
+        if generation != self.mode_generation:
+            return
         if self.runtime_mode.current is PlaybackMode.STANDBY:
             self.play_state = "idle"
             self._apply_idle_screen()
@@ -1602,17 +1605,38 @@ class Player:
             return
         self._cancel_dwell()
         await self._mpv("set_volume", int(task.get("volume", self.volume)))
+        if generation != self.mode_generation or \
+                self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         await self._mpv("set_mute", bool(task.get("muted", self.muted)))
+        if generation != self.mode_generation or \
+                self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         if item.get("type") == "image":
             await self._mpv("show_image", str(path))
+            if generation != self.mode_generation or \
+                    self.runtime_mode.current is not PlaybackMode.VISUAL:
+                return
             self.play_state = "playing"
             self._arm_dwell(item)
             return
         await self._mpv("loadfile", str(path), "replace")
+        if generation != self.mode_generation or \
+                self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         await self._mpv("set_loop_file",
                         resolve_loop_mode(self.playlist) is LoopMode.ONE)
+        if generation != self.mode_generation or \
+                self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         await self._mpv("seek_abs_ms", int(task.get("seek_ms", 0)))
+        if generation != self.mode_generation or \
+                self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         await self._mpv("set_pause", False)
+        if generation != self.mode_generation or \
+                self.runtime_mode.current is not PlaybackMode.VISUAL:
+            return
         self.play_state = "playing"
 
     # --- §6.4 thumbnail loop -----------------------------------------

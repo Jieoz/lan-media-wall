@@ -138,6 +138,43 @@ def test_player_all_bad_music_stops_without_requeue(tmp_path):
     assert not any(call[0] == "loadfile" for call in p.mpv_calls)
 
 
+def test_visual_restore_cannot_cross_later_standby_generation(tmp_path):
+    async def scenario():
+        p = player(tmp_path)
+        visual = {
+            "playlist_id": "visual-1", "revision": 1,
+            "items": [{"item_id": "v", "name": "v", "type": "video",
+                       "url": "https://media.invalid/v.mp4"}],
+        }
+        p.playlist = visual
+        p.state.store_playlist(visual)
+        p.state.set_last_task({"playlist_id": "visual-1", "index": 0,
+                               "seek_ms": 0, "volume": 80, "muted": False})
+        p.runtime_mode.set_mode(PlaybackMode.MUSIC)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def delayed_mpv(fn, *args, **kwargs):
+            calls.append(fn)
+            if fn == "set_volume" and not entered.is_set():
+                entered.set()
+                await release.wait()
+            return None
+
+        p._mpv = delayed_mpv
+        restoring = asyncio.create_task(p._apply_runtime_mode(PlaybackMode.VISUAL))
+        await entered.wait()
+        await p._apply_runtime_mode(PlaybackMode.STANDBY)
+        release.set()
+        await restoring
+        assert p.runtime_mode.current is PlaybackMode.STANDBY
+        assert "loadfile" not in calls
+        assert p.play_state == "idle"
+
+    run(scenario())
+
+
 def test_player_rejects_invalid_music_without_optimistic_ack(tmp_path):
     p = player(tmp_path)
     run(p._on_message("music_playlist", {
