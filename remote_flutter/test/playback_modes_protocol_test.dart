@@ -57,6 +57,12 @@ void main() {
     expect(status.supportsMusicShuffle, isTrue);
   });
 
+  test('next music revision uses the newest acknowledged source', () {
+    expect(nextMusicPlaylistRevision(7, 9), 10);
+    expect(nextMusicPlaylistRevision(12, 9), 13);
+    expect(nextMusicPlaylistRevision(null, null), 1);
+  });
+
   test('runtime result correlates request and actual device mode', () {
     final result = RuntimeModeResult.fromMap({
       'request_id': 'r1', 'device_id': 'd', 'ok': true,
