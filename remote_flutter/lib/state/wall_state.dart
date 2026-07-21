@@ -1418,7 +1418,7 @@ class WallState extends ChangeNotifier {
     }
     final requestId = 'music-${++_nextMusicPlaylistRequest}-${_nowMs()}';
     final nextRevision = revision ?? nextMusicPlaylistRevision(
-      device.status?.musicPlaylistRevision,
+      device.musicPlaylistRevision,
       _musicPlaylistResults[deviceId]?.revision,
     );
     final completer = Completer<MusicPlaylistResult>();
