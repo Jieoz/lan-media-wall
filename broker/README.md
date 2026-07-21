@@ -11,6 +11,15 @@ This implements the broker-side responsibilities of
 §19 / media library §20 / prefetch barrier §21). That spec is the contract —
 field names and semantics here follow it exactly.
 
+## v1.18.7 candidate — authoritative synchronized loop sessions
+
+For group and single-device `prepare`, the Broker owns the ready barrier and
+emits one `sync_session_id` consistently in both `prepare` and the resulting
+`play_at`. Players use that Broker session plus the shared master-clock start to
+calculate common loop boundaries; the Broker still carries control/time/status
+only and never proxies media bytes. P2P keeps the same optional fields for
+controller-online compatibility, but is not the unattended long-term authority.
+
 
 ## v1.18.2 — safe remote configuration
 

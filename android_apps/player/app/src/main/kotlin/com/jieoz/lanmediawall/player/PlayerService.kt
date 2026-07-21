@@ -53,6 +53,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -211,7 +213,7 @@ class PlayerService : Service() {
         // probe blocks), then start the link and the loops that talk to it.
         scope.launch {
             try {
-                selectAndStartTransport()
+                rebuildTransport()
             } catch (t: Throwable) {
                 val detail = "${t.javaClass.simpleName}: ${t.message ?: "transport bootstrap failed"}"
                 ConnState.set(ConnState.Phase.START_FAILED, detail)
@@ -226,7 +228,7 @@ class PlayerService : Service() {
      * resolve a [TransportSelector.Plan], build the matching [CoordinatorLink],
      * advertise the chosen topology over UDP, and start the link + its loops.
      */
-    private suspend fun selectAndStartTransport() {
+    private suspend fun selectAndStartTransport(generation: Long) {
         val keyMode = KeyMode.parse(settings.keyMode)
         val deviceKey = settings.deviceKeyHex.takeIf { it.isNotBlank() }
             ?.let { Envelope.hexToBytes(it) }
@@ -281,8 +283,16 @@ class PlayerService : Service() {
                     psk = settings.psk,
                     deviceId = settings.deviceId,
                     clock = clock,
-                    onConnect = { onCoordinatorConnected() },
-                    onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+                    onConnect = {
+                        if (ownsTransportGeneration(transportGeneration, generation)) {
+                            onCoordinatorConnected()
+                        }
+                    },
+                    onMessage = { type, payload, env ->
+                        if (ownsTransportGeneration(transportGeneration, generation)) {
+                            onBrokerMessage(type, payload, env)
+                        }
+                    },
                     initialKeyMode = plan.keyMode,
                     deviceKey = deviceKey,
                     brokerKey = brokerKey,
@@ -300,15 +310,21 @@ class PlayerService : Service() {
                     // §14.3: a controller dialing in is now watching → open the
                     // thumbnail gate (§6.4). We are the coordinator; no hello to send.
                     onConnect = {
-                        controllerPresent = true
-                        ConnState.set(ConnState.Phase.P2P_CONNECTED)
+                        if (ownsTransportGeneration(transportGeneration, generation)) {
+                            controllerPresent = true
+                            ConnState.set(ConnState.Phase.P2P_CONNECTED)
+                        }
                     },
-                    onMessage = { type, payload, env -> onBrokerMessage(type, payload, env) },
+                    onMessage = { type, payload, env ->
+                        if (ownsTransportGeneration(transportGeneration, generation)) {
+                            onBrokerMessage(type, payload, env)
+                        }
+                    },
                     // §2 可见性:控制器已连上(WS 握手过)但入站帧持续被丢弃时,
                     // 不再误报"已连接"。把丢弃原因写进 P2P_CONNECTED 的 detail,
                     // 让设置页/远程截图能一眼看出"连着但收不下消息 + 为什么"。
                     onInboundDrop = { reason, _ ->
-                        if (controllerPresent) {
+                        if (ownsTransportGeneration(transportGeneration, generation) && controllerPresent) {
                             ConnState.set(
                                 ConnState.Phase.P2P_CONNECTED,
                                 "已连接但丢帧: $reason",
@@ -321,6 +337,10 @@ class PlayerService : Service() {
                     listenPort = plan.listenPort,
                 )
             }
+        }
+        if (!ownsTransportGeneration(transportGeneration, generation)) {
+            try { newLink.stop() } catch (_: Exception) {}
+            return
         }
         link = newLink
         newLink.start()
@@ -1911,7 +1931,11 @@ class PlayerService : Service() {
      * §19 remote broker configure so the box switches host without a process
      * restart. status/thumbnail loops keep running; only the link is replaced.
      */
-    private suspend fun rebuildTransport() {
+    private val transportMutex = Mutex()
+    @Volatile private var transportGeneration = 0L
+
+    private suspend fun rebuildTransport() = transportMutex.withLock {
+        val generation = ++transportGeneration
         try { discovery?.stop() } catch (_: Exception) {}
         discovery = null
         try { link?.stop() } catch (_: Exception) {}
@@ -1919,7 +1943,7 @@ class PlayerService : Service() {
         controllerPresent = false
         ConnState.set(ConnState.Phase.CONNECTING_BROKER,
             if (settings.hasBroker) "${settings.brokerHost}:${settings.brokerPort}" else "auto")
-        selectAndStartTransport()
+        selectAndStartTransport(generation)
     }
 
     // --- §22 update_app (remote self-update, root install) -----------
