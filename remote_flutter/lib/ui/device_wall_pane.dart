@@ -13,7 +13,7 @@ import 'device_wall_filter.dart';
 import 'device_wall_layout.dart';
 import 'invite_screen.dart';
 import 'push_workflow.dart';
-import '../util/version_code.dart';
+
 
 /// 设备墙栏(设计合同 §4.1 左栏) —— 控制端常驻主视图。
 ///
@@ -155,21 +155,9 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
   if (path == null) return;
   final apk = File(path);
 
-  // §field-and-6037055a3d: the controller once sent target versionCode=1171 for
-  // an APK whose real versionCode was 68. Surface what we KNOW about the locked
-  // device so the operator can't fat-finger a dotted version (1.17.1) or a
-  // 4-digit lookalike (1171). appVersion is the dotted name; the integer code is
-  // only known once a device has reported an update_status (updateVersionCode).
+  // The target itself is never typed: uploadApkForUpdate reads it from manifest.
   final lockedStatus = lockDevice?.status;
-  final knownVersionName = lockedStatus?.appVersion; // e.g. "1.17.1"
-  final knownVersionCode = lockedStatus?.updateVersionCode; // int or null
-  // Prefill the field with current+1 as a safe editable hint when we know the
-  // device's integer versionCode; still require the operator to confirm.
-  // Prefill with next intuitive code when known; operators may type v1.17.3 /
-  // 1.17.3 / 1173 / 1.17.3+1173 — all parse to the wire integer versionCode.
-  final versionCtl = TextEditingController(
-    text: knownVersionCode != null ? '${knownVersionCode + 1}' : '',
-  );
+  final knownVersionCode = lockedStatus?.updateVersionCode;
   final groups = state.groups;
   final devices = state.wallDevices;
   // lockDevice 非空 → 预锁定到该台;否则整墙入口默认 all。
@@ -178,9 +166,6 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
   String? targetDeviceId = lockDevice?.deviceId ??
       (devices.isEmpty ? null : devices.first.deviceId);
   var uploading = false;
-  // Set once the operator has been warned about an absurd-looking versionCode; a
-  // second tap then proceeds (see the send handler).
-  var versionWarned = false;
   String? uploadedUrl, uploadedSha;
 
   if (!context.mounted) return;
@@ -197,39 +182,13 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
               Text('APK:${apk.uri.pathSegments.last}',
                   maxLines: 2, overflow: TextOverflow.ellipsis),
               const SizedBox(height: 8),
-              TextField(
-                controller: versionCtl,
-                // Allow v1.17.3 / 1.17.3 / 1173 / 1.17.3+1173 — not digits-only.
-                keyboardType: TextInputType.text,
-                decoration: const InputDecoration(
-                  labelText: '目标版本（直观号 / 版本名）',
-                  helperText:
-                      '可填 v1.17.3、1.17.3、1173 或 1.17.3+1173；'
-                      '规则 major×1000+minor×10+patch（例 v1.17.2→1172）。'
-                      '必须严格大于被控端当前号',
-                ),
-              ),
-              if (knownVersionName != null || knownVersionCode != null) ...[
+              const Text('目标版本将从 APK manifest 自动读取，禁止手填。',
+                  style: TextStyle(fontSize: 12, color: Colors.blueGrey)),
+              if (knownVersionCode != null) ...[
                 const SizedBox(height: 4),
-                Builder(builder: (_) {
-                  final namePart = knownVersionName != null
-                      ? '版本名 $knownVersionName'
-                      : '';
-                  String codePart = '（versionCode 未上报）';
-                  final code = knownVersionCode;
-                  if (code != null) {
-                    final approx = decodeVersionCode(code);
-                    final approxHint =
-                        approx != null ? '（≈ v$approx）' : '';
-                    codePart =
-                        '  号 $code$approxHint（目标必须更大）';
-                  }
-                  return Text(
-                    '该台当前：$namePart$codePart',
+                Text('该台当前 versionCode：$knownVersionCode（APK 必须严格更大）',
                     style: const TextStyle(
-                        fontSize: 12, color: Colors.blueGrey),
-                  );
-                }),
+                        fontSize: 12, color: Colors.blueGrey)),
               ],
               const SizedBox(height: 8),
               // 单设备入口:目标已锁定为该台,不再给目标类型选择器(只显示锁定提示)。
@@ -302,33 +261,7 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
             onPressed: uploading
                 ? null
                 : () async {
-                    final raw = versionCtl.text.trim();
-                    final parsed = parseUpgradeVersionInput(raw);
-                    if (parsed == null) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
-                          content: Text('请填写目标版本：v1.17.3 / 1.17.3 / 1173 / 1.17.3+1173')));
-                      return;
-                    }
-                    final vc = parsed.code;
-                    // Hard reject downgrade/replay when we KNOW the device's code.
-                    if (knownVersionCode != null && vc <= knownVersionCode) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-                          content: Text('目标号 $vc'
-                              '${parsed.displayName != null ? "（v${parsed.displayName}）" : ""}'
-                              ' 必须严格大于该台当前 $knownVersionCode'
-                              '（被控端会拒绝降级/重放）')));
-                      return;
-                    }
-                    // Soft warn on absurdly large jumps (require second tap).
-                    final ceiling = (knownVersionCode ?? 0) + 1000;
-                    if (vc > ceiling && !versionWarned) {
-                      versionWarned = true;
-                      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-                          content: Text('目标号 $vc'
-                              '${parsed.displayName != null ? "（v${parsed.displayName}）" : ""}'
-                              ' 远高于该台当前值。确认无误请再点一次「准备并下发」')));
-                      return;
-                    }
+
                     final groupId = targetKind == 'group' ? targetGroupId : null;
                     final deviceId = targetKind == 'device' ? targetDeviceId : null;
                     if (targetKind == 'group' && groupId == null) {
@@ -344,12 +277,18 @@ Future<void> _remoteUpdateDialog(BuildContext context, WallState state,
                     setLocal(() => uploading = true);
                     try {
                       final r = await state.uploadApkForUpdate(apk: apk);
+                      if (knownVersionCode != null &&
+                          r.versionCode <= knownVersionCode) {
+                        throw StateError(
+                            'APK versionCode ${r.versionCode} 必须严格大于该台当前 $knownVersionCode');
+                      }
                       uploadedUrl = r.url;
                       uploadedSha = r.sha256;
                       state.updateApp(
                         url: r.url,
-                        versionCode: vc,
+                        versionCode: r.versionCode,
                         sha256: r.sha256,
+                        versionName: r.versionName,
                         groupId: groupId,
                         deviceId: deviceId,
                       );

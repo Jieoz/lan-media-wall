@@ -77,6 +77,36 @@ static void test_ota_rootfix_contract(void) {
     CHECK(lmw_candidate_probe_sockname(42, sock, sizeof(sock)) > 0, "isolated socket name");
     CHECK(lmw_legacy_reconcile_decide(1, 1, 1) == RECONCILE_COMMIT_BACKUP, "stale backup commit decision");
     CHECK(lmw_pm_path_names_target("package:/data/app/x.apk\n", "/data/app/x.apk"), "pm path adoption proof");
+    CHECK(lmw_selfupdate_migration_decide(1, 0) == 1,
+          "already-current daemon retained idempotently");
+    CHECK(lmw_selfupdate_migration_decide(0, 1) == 2,
+          "USB migration marker permits one old-APK handoff");
+    CHECK(lmw_selfupdate_migration_decide(0, 0) == 0,
+          "ordinary differing candidate follows normal update");
+    char already_current_reply[160];
+    CHECK(lmw_format_already_current_reply(already_current_reply,
+                                           sizeof(already_current_reply), sha),
+          "already-current reply formats");
+    char expected_reply[160];
+    snprintf(expected_reply, sizeof(expected_reply),
+             "ok update_daemon verified installed sha256=%s", sha);
+    CHECK(strcmp(already_current_reply, expected_reply) == 0,
+          "already-current uses deployed Player success grammar");
+}
+
+static void test_daemon_candidate_becomes_executable(void) {
+    char path[] = "/tmp/lmw_candidate_exec_XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0, "candidate fixture created");
+    if (fd < 0) return;
+    CHECK(write(fd, "elf", 3) == 3, "candidate fixture populated");
+    close(fd);
+    CHECK(chmod(path, 0600) == 0, "candidate starts non-executable like APK extraction");
+    CHECK(lmw_prepare_candidate_exec(path) == 1, "daemon makes fixed candidate executable");
+    struct stat st;
+    CHECK(stat(path, &st) == 0 && (st.st_mode & S_IXUSR) != 0,
+          "candidate owner execute bit set");
+    unlink(path);
 }
 
 static void test_install_path_policy(void) {
@@ -413,6 +443,7 @@ int main(void) {
     test_parse_restart_app();
     test_parse_install();
     test_ota_rootfix_contract();
+    test_daemon_candidate_becomes_executable();
     test_install_path_policy();
     test_peer_authorized();
     test_command_requires_auth();

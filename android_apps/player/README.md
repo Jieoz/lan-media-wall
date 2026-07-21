@@ -36,6 +36,16 @@
 > `showTransitionFrame`)盖空窗,不是双 VDEC 零缝。设置页绑定物理「回主页」
 > (`KEYCODE_SETTINGS`=176)回墙。
 >
+> **v1.18.6 正式版 — daemon 启动自举与实机 OTA 验收:**PlayerService 每次启动都会在 IO
+> 线程校验 APK 内嵌 daemon，并通过既有 SHA-256、root/协议探测、原子替换、复验和
+> 回滚链路完成 reconcile；Player 在发送 `UPDATE_DAEMON` 前先把私有缓存中的候选
+> 文件设为仅 owner 可执行，使仍在运行的旧 daemon 也能启动隔离探针；新版 daemon
+> 端再次准备权限作为纵深防御。生产 daemon 已与候选完全一致时返回兼容既有 Player
+> 的 `verified installed sha256=...` 成功语法；Player 也严格接受两种 allowlist
+> `retained_live` 终态，避免把幂等成功误报为 `verification_failed`。修正版已在
+> API 19/YunOS 实机完成 `1185 → 1186` 的下载、SHA 校验、legacy activation、重启重连、
+> startup reconcile、缓存恢复和播放验收。
+>
 > **v1.18.2 — 安全远程配置:**`configure_device` 只接收设备名、分组、音量和静音，
 > 以 revision 防冲突并回传逐字段结果。`transport_configure` 单独持久化和重建连接；
 > `rotate_device_key` 单独轮换密钥。状态快照与回执绝不回显密钥。
@@ -105,7 +115,7 @@ Implements the shared contract in [`../../protocol_spec.md`](../../protocol_spec
 **v1.5** (auth/topology/pairing §13–§15, derived keys §17, device config §19,
 prefetch barrier §21, remote self-update §23).
 
-> **Current build: `versionName 1.18.2 / versionCode 1182`** — derived from
+> **Current OTA Test build: `versionName 1.18.3 / versionCode 1183`** — derived from
 > `remote_flutter/pubspec.yaml`'s `version:` line at Gradle-config time (see
 > `app/build.gradle.kts` lines 27–40), so bumping pubspec syncs every end at once;
 > **do not hardcode the version in Gradle**.

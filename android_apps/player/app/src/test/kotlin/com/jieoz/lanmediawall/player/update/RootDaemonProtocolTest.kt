@@ -82,9 +82,27 @@ class RootDaemonProtocolTest {
     fun daemon_update_reply_requires_verified_installed_state() {
         assertTrue(RootDaemonProtocol.parseDaemonUpdate(
             "ok update_daemon verified installed sha256=${"a".repeat(64)}").ok)
+        assertTrue(RootDaemonProtocol.parseDaemonUpdate(
+            "ok update_daemon retained_live reason=already_current").ok)
+        assertTrue(RootDaemonProtocol.parseDaemonUpdate(
+            "ok update_daemon retained_live reason=usb_migration_once").ok)
         assertFalse(RootDaemonProtocol.parseDaemonUpdate(
             "error update_daemon apply_failed rollback=restored").ok)
         assertFalse(RootDaemonProtocol.parseDaemonUpdate("ok update_daemon staged").ok)
+        assertFalse(RootDaemonProtocol.parseDaemonUpdate(
+            "ok update_daemon retained_live reason=unverified").ok)
+    }
+
+    @Test
+    fun daemon_update_timeout_outlives_candidate_probe_budget() {
+        // The daemon may spend up to 5 seconds starting/probing the candidate.
+        // The client must not time out first and delete the candidate mid-proof.
+        assertTrue(RootInstaller.daemonUpdateResponseTimeoutMs > 5_000)
+        assertTrue(
+            RootInstaller.responseTimeoutMs(
+                RootDaemonProtocol.updateDaemonRequest("a".repeat(64)),
+            ) > RootInstaller.responseTimeoutMs(RootDaemonProtocol.probeRequest()),
+        )
     }
 
     @Test

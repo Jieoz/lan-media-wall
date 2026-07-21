@@ -156,6 +156,9 @@
 #ifndef LMW_DAEMON_BACKUP
 #define LMW_DAEMON_BACKUP    LMW_DAEMON_INSTALL ".lmw-bak"
 #endif
+#ifndef LMW_DAEMON_MIGRATION_MARKER
+#define LMW_DAEMON_MIGRATION_MARKER "/data/local/tmp/lmw_daemon_migration_once"
+#endif
 
 // Persistent restart-execution evidence log (see §restart-state-machine). Bounded:
 // rotated to .1 at LMW_RESTART_LOG_MAX so a long-lived box can't fill the tmpfs.
@@ -649,6 +652,29 @@ static lmw_selfupdate_action lmw_selfupdate_decide(int candidate_regular,
     if (!sha_matches) return SELFUPDATE_ABORT;
     if (!probe.ready || !probe.euid_root || !probe.pkg_match) return SELFUPDATE_ABORT;
     return SELFUPDATE_APPLY;
+}
+
+// A USB migration bridge may provision a daemon newer than the APK that is
+// currently running. That old Player offers its own old embedded daemon before
+// downloading the new APK. A root-owned one-shot marker lets the bridge retain
+// the provisioned daemon for exactly that first handoff.
+static int lmw_selfupdate_migration_decide(int live_matches_expected,
+                                           int migration_marker_present) {
+    if (live_matches_expected) return 1;       // idempotent already-current
+    if (migration_marker_present) return 2;    // consume one-shot bridge
+    return 0;                                  // normal verified replacement
+}
+
+static int lmw_format_already_current_reply(char *out, size_t out_len,
+                                            const char *expected_sha) {
+    int n = snprintf(out, out_len,
+                     "ok update_daemon verified installed sha256=%s",
+                     expected_sha);
+    return n > 0 && (size_t)n < out_len;
+}
+
+static int lmw_prepare_candidate_exec(const char *candidate_path) {
+    return candidate_path && chmod(candidate_path, 0700) == 0;
 }
 
 #if !defined(LMW_DAEMON_TEST) || defined(LMW_DAEMON_INTEGRATION_TEST)
@@ -1187,6 +1213,14 @@ static lmw_candidate_probe lmw_run_candidate_probe(const char *candidate_path) {
     if (lmw_candidate_probe_sockname((long)getpid(), sockname, sizeof(sockname)) < 0)
         return result;
 
+    // The Player stages this file from an APK asset under its private cache. A
+    // newly-created FileOutputStream leaves it 0600 on Android/YunOS, so hashing
+    // succeeds but execve() fails with EACCES. Make only this fixed, already
+    // hashed/allowlisted candidate executable before the isolated runtime probe.
+    // The live daemon is root and performs the chmod itself; the app never gets a
+    // generic privileged chmod primitive.
+    if (!lmw_prepare_candidate_exec(candidate_path)) return result;
+
     pid_t pid = fork();
     if (pid < 0) return result;
     if (pid == 0) {
@@ -1261,6 +1295,14 @@ static int lmw_daemon_apply_candidate(const char *candidate, const char *install
     return 1; // success; backup retained until caller commits post-proof
 }
 
+static int lmw_remount_system(int writable) {
+    const char *primary = writable ? "mount -o remount,rw /system" :
+                                     "mount -o remount,ro /system";
+    const char *fallback = writable ? "mount -o rw,remount /system" :
+                                      "mount -o ro,remount /system";
+    return system(primary) == 0 || system(fallback) == 0;
+}
+
 static void lmw_handle_update_daemon(int fd, const char *expected_sha) {
     char actual_sha[65];
     if (lmw_sha256_file(LMW_DAEMON_CANDIDATE, actual_sha) != 0) {
@@ -1276,18 +1318,53 @@ static void lmw_handle_update_daemon(int fd, const char *expected_sha) {
                 sha_matches, probe.ready, probe.euid_root, probe.pkg_match);
         return;
     }
+    char live_sha[65];
+    int live_matches = lmw_sha256_file(LMW_DAEMON_INSTALL, live_sha) == 0 &&
+                       lmw_hex_eq_ci(live_sha, expected_sha);
+    int marker_present = access(LMW_DAEMON_MIGRATION_MARKER, F_OK) == 0;
+    int migration = lmw_selfupdate_migration_decide(live_matches, marker_present);
+    if (migration != 0) {
+        if (migration == 2 && unlink(LMW_DAEMON_MIGRATION_MARKER) != 0) {
+            unlink(LMW_DAEMON_CANDIDATE);
+            dprintf(fd, "error update_daemon migration_marker_commit_failed\n");
+            return;
+        }
+        unlink(LMW_DAEMON_CANDIDATE);
+        if (migration == 1) {
+            // Compatibility contract: deployed Players accept the canonical
+            // verified-installed terminal state. The live file has just been
+            // hashed against expected_sha, so this is truthful and idempotent.
+            char reply[160];
+            if (!lmw_format_already_current_reply(reply, sizeof(reply), expected_sha)) {
+                dprintf(fd, "error update_daemon response_format_failed\n");
+                return;
+            }
+            dprintf(fd, "%s\n", reply);
+        } else {
+            dprintf(fd, "ok update_daemon retained_live reason=usb_migration_once\n");
+        }
+        return;
+    }
+    if (!lmw_remount_system(1)) {
+        unlink(LMW_DAEMON_CANDIDATE);
+        dprintf(fd, "error update_daemon system_remount_rw_failed\n");
+        return;
+    }
     int restored = 1;
     if (!lmw_daemon_apply_candidate(LMW_DAEMON_CANDIDATE, LMW_DAEMON_INSTALL,
                                     LMW_DAEMON_BACKUP, expected_sha, &restored)) {
+        lmw_remount_system(0);
         unlink(LMW_DAEMON_CANDIDATE);
         dprintf(fd, "error update_daemon apply_failed rollback=%s\n",
                 restored ? "restored" : "failed");
         return;
     }
     if (unlink(LMW_DAEMON_BACKUP) != 0 && errno != ENOENT) {
+        lmw_remount_system(0);
         dprintf(fd, "error update_daemon commit_failed backup_retained\n");
         return;
     }
+    lmw_remount_system(0);
     unlink(LMW_DAEMON_CANDIDATE);
     sync();
     dprintf(fd, "ok update_daemon verified installed sha256=%s\n", actual_sha);

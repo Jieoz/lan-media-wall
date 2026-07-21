@@ -1,6 +1,8 @@
 package com.jieoz.lanmediawall.player.update
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -58,5 +60,21 @@ class AppUpdaterStageTest {
         assertEquals("lmw_root_daemon", AppUpdater.DAEMON_ASSET_ENTRY)
         assertEquals("daemon_update", stage("daemon-update-failed:verification_failed"))
         assertEquals("daemon_update", stage("daemon-asset-missing"))
+    }
+
+    @Test
+    fun staged_daemon_is_executable_before_legacy_daemon_probe() {
+        val dir = createTempDir(prefix = "lmw-daemon-stage-")
+        val candidate = java.io.File(dir, "lmw_root_daemon.candidate")
+        try {
+            candidate.writeBytes(byteArrayOf(0x7f, 0x45, 0x4c, 0x46))
+            candidate.setExecutable(false, false)
+            assertFalse(candidate.canExecute())
+
+            assertTrue(AppUpdater.prepareDaemonCandidate(candidate))
+            assertTrue(candidate.canExecute())
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

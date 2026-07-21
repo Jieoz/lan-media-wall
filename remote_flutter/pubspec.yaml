@@ -1,10 +1,11 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.18.2+1182: safe remote configuration protocol — config revision/snapshots,
-# structured results across Broker/P2P, and isolated transport/key operations.
+# v1.18.6+1186 clean-install-to-OTA qualification target. The matching v1.18.5
+# provisioning bundle is the corrected baseline; this strictly newer build proves the
+# next remote update without another USB repair.
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.18.2+1182
+version: 1.18.6+1186
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -15,6 +16,7 @@ dependencies:
     sdk: flutter
   web_socket_channel: ^2.4.0
   crypto: ^3.0.3
+  archive: ^4.0.9
   provider: ^6.1.1
   shared_preferences: ^2.2.2
   qr_flutter: ^4.1.0

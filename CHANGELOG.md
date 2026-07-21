@@ -1,5 +1,28 @@
 # Changelog
 
+## [v1.18.6] — 2026-07-21
+
+- **Field-qualified remote OTA** (versionCode **1186**, versionName `1.18.6`). A real API 19/YunOS box provisioned with `1.18.5 (1185)` completed the P2P `1185 → 1186` path: daemon handoff, APK download, exact SHA-256 verification, legacy activation, reboot/reconnect, target-version readback, startup daemon reconcile, cache restore, and playback with `errors=none`.
+- **Manifest-derived target identity.** The controller parses binary `AndroidManifest.xml`, requires `com.jieoz.lanmediawall.player`, and sends the selected APK's actual `versionCode`/`versionName`; operators cannot type a target that drifts from the uploaded bytes.
+- **Authenticated daemon self-update and startup reconcile.** Player and daemon enforce candidate SHA-256, root/protocol probe, executable permission, atomic replacement, post-install verification, and rollback. Each real `PlayerService` startup reconciles the APK-embedded daemon without blocking playback.
+- **Idempotent handoff compatibility.** A live daemon that already matches the candidate returns a backward-compatible verified-success grammar, while new Players accept only the exact allowlisted `already_current` / one-shot migration terminal states. This removes the field-reproduced pre-download `verification_failed` regression.
+- **Fleet boundary.** Devices provisioned with the matching current daemon can continue remotely. Older/dead/pre-self-update bridges still require the shipped QZX/USB provisioning tools once; an APK cannot replace a root-owned daemon before the currently installed Player reaches the download/install stage.
+
+## [v1.18.5 Idempotent Daemon Baseline] — 2026-07-21
+
+- **Corrected full-install baseline** (versionCode **1185**, versionName `1.18.5`) for the `1185 → 1186` qualification run.
+- **Idempotent daemon handoff is a success.** When the installed daemon already matches the candidate, the daemon now emits the deployed Player's canonical `verified installed sha256=...` grammar; the Player also accepts the two exact allowlisted `retained_live` terminal states. This prevents a healthy `already_current` result from being mislabeled as `verification_failed` before APK download.
+
+## [v1.18.4 OTA Field Test] — 2026-07-20
+
+- **Unambiguous field artifact** (versionCode **1184**, versionName `1.18.4`). This package is distinguishable from every earlier `1183` test and includes the staged-daemon executable-permission fix.
+
+## [v1.18.3 OTA Test] — 2026-07-20
+
+- **Startup daemon reconcile** (versionCode **1183**, versionName `1.18.3`). A newly activated Player immediately verifies and reconciles its APK-embedded root daemon through the existing SHA-256, root/protocol probe, atomic replacement, post-install verification, and rollback path.
+- **Manifest-derived OTA target.** The controller parses the selected Player APK's binary `AndroidManifest.xml`, rejects the wrong package/malformed metadata, and sends the APK's real `versionCode`/`versionName`; target versions can no longer be typed independently of the APK.
+- **Scope:** test candidate for one-device `1182 → 1183` OTA and daemon self-update validation; not a formal Release.
+
 ## [v1.18.2] — 2026-07-20
 
 - **Safe remote configuration protocol** (versionCode **1182**, versionName `1.18.2`). Single-sourced from `remote_flutter/pubspec.yaml` (`1.18.2+1182`).
