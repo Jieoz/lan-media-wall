@@ -81,6 +81,9 @@ class HandshakeSession {
         'start_index': startIndex,
         'seek_ms': seekMs,
         'play_at': controllerNow + bufferMs,
+        // Optional v1.18.7 field. Old Players ignore it; new Players use the
+        // prepare identity to reject/cancel stale loop-boundary timelines.
+        'sync_session_id': prepareId,
       };
 }
 

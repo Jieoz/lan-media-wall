@@ -853,12 +853,14 @@ class Commands {
     int? brokerPort,
     bool? useWss,
     String? requestId,
+    int? rollbackTimeoutMs,
   }) => {
     'device_id': deviceId,
     'broker_host': brokerHost,
     if (brokerPort != null) 'broker_port': brokerPort,
     if (useWss != null) 'use_wss': useWss,
     if (requestId != null) 'request_id': requestId,
+    if (rollbackTimeoutMs != null) 'rollback_timeout_ms': rollbackTimeoutMs,
   };
 
   static Map<String, dynamic> rotateDeviceKey({

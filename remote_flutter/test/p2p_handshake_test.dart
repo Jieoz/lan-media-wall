@@ -85,6 +85,7 @@ void main() {
       expect(p['group_id'], 'g');
       expect(p['start_index'], 2);
       expect(p['seek_ms'], 500);
+      expect(p['sync_session_id'], 'p1');
     });
 
     test('markFired 幂等', () {

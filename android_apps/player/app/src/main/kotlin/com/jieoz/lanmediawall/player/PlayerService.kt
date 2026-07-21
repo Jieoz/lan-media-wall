@@ -46,6 +46,7 @@ import com.jieoz.lanmediawall.player.net.jsonArr
 import com.jieoz.lanmediawall.player.net.jsonObj
 import com.jieoz.lanmediawall.player.net.jsonStrArr
 import com.jieoz.lanmediawall.player.sync.ClockSync
+import com.jieoz.lanmediawall.player.sync.LoopBoundarySync
 import com.jieoz.lanmediawall.player.update.RootInstaller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -119,7 +120,29 @@ class PlayerService : Service() {
     /** §6.3 carousel: pending "hold this image for duration_ms, then advance"
      *  timer. Cancelled by any new prepare/play_at/advance/stop. */
     private val dwellTimer = AtomicReference<Job?>(null)
+    /**
+     * Boundary-only synchronization for a seamless single-video loop. The job
+     * sleeps until each shared master-clock lap boundary and samples once; it
+     * never runs a continuous seek/rate-control loop. Any command that invalidates
+     * the active timeline cancels it through [cancelLoopBoundarySync].
+     */
+    private val loopBoundaryJob = AtomicReference<Job?>(null)
+    @Volatile private var activeLoopSync: ActiveLoopSync? = null
+    @Volatile private var lastLoopDriftMs: Long? = null
+    @Volatile private var lastLoopExpectedMs: Long? = null
+    @Volatile private var loopBoundaryCount = 0L
+    @Volatile private var loopCorrectionCount = 0L
+    /** Last authenticated/accepted broker welcome; used by staged transport rollback. */
+    @Volatile private var lastBrokerWelcomeAtMs = 0L
     private var deviceIp = "0.0.0.0"
+
+    private data class ActiveLoopSync(
+        val sessionId: String,
+        val itemId: String,
+        val playAtMasterMs: Long,
+        val baseSeekMs: Long,
+    )
+
     private val startupDaemonReconciler by lazy {
         com.jieoz.lanmediawall.player.update.StartupDaemonReconciler(
             reconcile = {
@@ -376,6 +399,7 @@ class PlayerService : Service() {
     override fun onDestroy() {
         prepareGeneration.cancel()
         prepareWaiter.getAndSet(null)?.cancel()
+        cancelLoopBoundarySync("service_destroy")
         super.onDestroy()
         scope.cancel()
         try { link?.stop() } catch (_: Exception) {}
@@ -575,7 +599,21 @@ class PlayerService : Service() {
             // Capabilities travel in status too: P2P has no player hello and
             // broker wall snapshots are rebuilt from status.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
-                "thumbnail", "cache_cleanup_v1", "cache_inventory_v1")))
+                "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
+                "loop_boundary_sync_v1")))
+            activeLoopSync?.let { epoch ->
+                put("loop_sync", jsonObj {
+                    put("session_id", epoch.sessionId)
+                    put("item_id", epoch.itemId)
+                    put("play_at", epoch.playAtMasterMs)
+                    put("boundary_count", loopBoundaryCount)
+                    put("correction_count", loopCorrectionCount)
+                    lastLoopDriftMs?.let { put("drift_ms", it) }
+                    lastLoopExpectedMs?.let { put("expected_position_ms", it) }
+                    put("tolerance_ms", LOOP_BOUNDARY_TOLERANCE_MS)
+                    put("mode", "boundary_only")
+                })
+            }
             put("config_capabilities", configCapabilitiesJson())
             put("config_snapshot", configSnapshotJson())
             put("clock_offset_ms", clock.offsetMs)
@@ -825,6 +863,7 @@ class PlayerService : Service() {
     }
 
     private fun hWelcome(payload: Json.Obj) {
+        lastBrokerWelcomeAtMs = System.currentTimeMillis()
         // §4.2: broker's group_id is authoritative for players.
         payload["group_id"].asString()?.let { gid ->
             if (gid != settings.groupId) settings.groupId = gid
@@ -985,6 +1024,7 @@ class PlayerService : Service() {
             prepareGeneration.cancel()
             prepareWaiter.getAndSet(null)?.cancel()
             dwellTimer.getAndSet(null)?.cancel()
+            cancelLoopBoundarySync("playlist_replace")
         }
         playlist = pl
         index = newIndex
@@ -1010,6 +1050,7 @@ class PlayerService : Service() {
         prepareGeneration.cancel()
         prepareWaiter.getAndSet(null)?.cancel()
         dwellTimer.getAndSet(null)?.cancel()
+        cancelLoopBoundarySync("playlist_clear")
         controllerRef?.stop()
         // Invalidate the definition too: a delayed prepare/play_at for the same
         // id must not resurrect content after CLEAR.
@@ -1082,6 +1123,7 @@ class PlayerService : Service() {
         if (pl == null || pushId.isNullOrEmpty() || pl.pushId != pushId) return
         var ready = false
         dwellTimer.getAndSet(null)?.cancel() // §6.3: a new session voids any dwell
+        cancelLoopBoundarySync("prepare")
         prepareWaiter.getAndSet(null)?.cancel() // stale prepare cannot prime/send ready
         val generation = prepareGeneration.replace()
         if (startIndex in pl.items.indices) {
@@ -1173,6 +1215,9 @@ class PlayerService : Service() {
         val startIndex = payload["start_index"].asIntOrNull() ?: index
         val seekMs = payload["seek_ms"].asLongOrNull() ?: 0L
         val playAt = payload["play_at"].asLongOrNull() ?: 0L
+        val syncSessionId = payload["sync_session_id"].asString()
+            ?.takeIf { it.isNotBlank() }
+            ?: "${pushId ?: "unknown"}:$playAt:$startIndex"
         val pl = resolvePlaylist(pid) ?: return
         if (pushId.isNullOrEmpty() || pl.pushId != pushId) return
         if (startIndex !in pl.items.indices) return
@@ -1186,14 +1231,18 @@ class PlayerService : Service() {
         readyFile?.let { downloader.touch(it) } // §6 LRU: mark just-used
         val source = readyFile?.absolutePath ?: item.url
         scheduledStart.getAndSet(null)?.cancel()
+        cancelLoopBoundarySync("new_play_at")
         dwellTimer.getAndSet(null)?.cancel() // §6.3: new session voids any dwell
         persistLastTask(pid!!, startIndex, seekMs)
-        val job = scope.launch { scheduledStart(source, seekMs, playAt, pl, item) }
+        val job = scope.launch {
+            scheduledStart(source, seekMs, playAt, pl, item, syncSessionId)
+        }
         scheduledStart.set(job)
     }
 
     private suspend fun scheduledStart(uri: String, seekMs: Long, playAt: Long,
-                                       pl: Playlist, item: MediaItem) {
+                                       pl: Playlist, item: MediaItem,
+                                       syncSessionId: String) {
         val ctl = controllerRef ?: return
         if (item.type == "image") {
             // §6.1/§6.3: nothing to prime — wait for the sync instant, then show
@@ -1226,6 +1275,89 @@ class PlayerService : Service() {
         ctl.play()
         playState = "playing"
         MainActivity.instance?.hideIdle()
+        if (loop) {
+            armLoopBoundarySync(
+                ActiveLoopSync(
+                    sessionId = syncSessionId,
+                    itemId = item.itemId,
+                    playAtMasterMs = playAt,
+                    baseSeekMs = seekMs,
+                ),
+                durationHintMs = item.durationMs ?: 0L,
+            )
+        }
+    }
+
+    /**
+     * Schedule one sample per lap. Broker/P2P keeps [clock] mapped to the shared
+     * master time; the Player owns the actual phase correction so network jitter
+     * cannot turn into a seek command storm.
+     */
+    private fun armLoopBoundarySync(epoch: ActiveLoopSync, durationHintMs: Long) {
+        cancelLoopBoundarySync("replace")
+        activeLoopSync = epoch
+        lastLoopDriftMs = null
+        lastLoopExpectedMs = null
+        loopBoundaryCount = 0L
+        loopCorrectionCount = 0L
+        val job = scope.launch {
+            var durationMs = durationHintMs.takeIf { it > 0L } ?: 0L
+            while (isActive && activeLoopSync == epoch && durationMs <= 0L) {
+                val snap = controllerRef?.snapshot()
+                durationMs = snap?.durationMs?.takeIf { it > 0L } ?: 0L
+                if (durationMs <= 0L) delay(250)
+            }
+            while (isActive && activeLoopSync == epoch && durationMs > 0L) {
+                val masterNow = clock.masterNow()
+                val boundaryMaster = LoopBoundarySync.nextBoundaryMasterMs(
+                    playAtMasterMs = epoch.playAtMasterMs,
+                    baseSeekMs = epoch.baseSeekMs,
+                    durationMs = durationMs,
+                    masterNowMs = masterNow,
+                ) ?: return@launch
+                awaitLocal(clock.toLocal(boundaryMaster))
+                // Let the decoder publish its new loop phase before sampling. The
+                // circular drift fold still handles a box that is just before EOS.
+                delay(LOOP_BOUNDARY_SAMPLE_SETTLE_MS)
+                if (!isActive || activeLoopSync != epoch || playState != "playing") continue
+                if (currentItem()?.itemId != epoch.itemId) return@launch
+                val snap = controllerRef?.snapshot() ?: continue
+                if (snap.durationMs > 0L) durationMs = snap.durationMs
+                if (!snap.hasMedia || !snap.isPlaying) continue
+                val decision = LoopBoundarySync.decide(
+                    playAtMasterMs = epoch.playAtMasterMs,
+                    baseSeekMs = epoch.baseSeekMs,
+                    masterNowMs = clock.masterNow(),
+                    durationMs = durationMs,
+                    actualPositionMs = snap.positionMs,
+                    toleranceMs = LOOP_BOUNDARY_TOLERANCE_MS,
+                )
+                loopBoundaryCount += 1L
+                lastLoopDriftMs = decision.driftMs
+                lastLoopExpectedMs = decision.expectedPositionMs
+                val seekTo = decision.seekToMs
+                if (seekTo != null) {
+                    controllerRef?.seekTo(seekTo)
+                    loopCorrectionCount += 1L
+                }
+                logEvent(
+                    "loop_boundary_sync session=${epoch.sessionId} item=${epoch.itemId} " +
+                        "boundary=$loopBoundaryCount duration_ms=$durationMs " +
+                        "actual_ms=${snap.positionMs} expected_ms=${decision.expectedPositionMs} " +
+                        "drift_ms=${decision.driftMs} corrected=${seekTo != null}",
+                )
+            }
+        }
+        loopBoundaryJob.set(job)
+    }
+
+    private fun cancelLoopBoundarySync(reason: String) {
+        val previous = activeLoopSync
+        activeLoopSync = null
+        loopBoundaryJob.getAndSet(null)?.cancel()
+        if (previous != null) {
+            logEvent("loop_boundary_sync_cancel session=${previous.sessionId} reason=$reason")
+        }
     }
 
     /** §8.2: coarse-sleep, then tight-spin the last few ms for ±50–100ms sync. */
@@ -1246,6 +1378,7 @@ class PlayerService : Service() {
     private fun hPause(payload: Json.Obj) {
         if (!targetsMe(payload)) return
         scheduledStart.getAndSet(null)?.cancel()
+        cancelLoopBoundarySync("pause")
         controllerRef?.pause()
         playState = "paused"
     }
@@ -1277,6 +1410,7 @@ class PlayerService : Service() {
         prepareGeneration.cancel()
         prepareWaiter.getAndSet(null)?.cancel()
         dwellTimer.getAndSet(null)?.cancel()
+        cancelLoopBoundarySync("stop")
         controllerRef?.stop()
         playState = "idle"
         persistLastTaskNull()
@@ -1506,6 +1640,7 @@ class PlayerService : Service() {
     private fun advance(delta: Int, explicit: Boolean = false) {
         val pl = playlist ?: return
         if (pl.items.isEmpty()) return
+        cancelLoopBoundarySync("advance")
         val oldItemId = pl.items.getOrNull(index)?.itemId
         dwellTimer.getAndSet(null)?.cancel()
         // §6.3 three-mode progression. ONE on an automatic (EOF/dwell) completion
@@ -1689,6 +1824,9 @@ class PlayerService : Service() {
             })));
             return
         }
+        val previousHost = settings.brokerHost
+        val previousPort = settings.brokerPort
+        val previousWss = settings.useWss
         val next = host.trim()
         if (next.isEmpty()) {
             settings.brokerHost = ""
@@ -1699,15 +1837,54 @@ class PlayerService : Service() {
             settings.markConfigured()
         }
         settings.bumpConfigRevision()
-        scope.launch {
-            try { rebuildTransport() } catch (t: Throwable) {
-                ConnState.set(ConnState.Phase.START_FAILED, t.message ?: "transport rebuild failed")
-            }
-        }
+        val appliedRevision = settings.configRevision
+        val rollbackTimeoutMs = (payload["rollback_timeout_ms"].asLongOrNull()
+            ?: TRANSPORT_ROLLBACK_TIMEOUT_MS).coerceIn(10_000L, 120_000L)
+        // Return the durable readback while the old link is still alive. Only
+        // after this terminal result is on the wire do we tear down P2P/current
+        // broker and try the new endpoint.
         sendConfigResult(requestId, true, jsonObj {
             put("broker_host", settings.brokerHost); put("broker_port", settings.brokerPort)
             put("use_wss", settings.useWss); put("auto_discovery", !settings.hasBroker)
         }, pending = jsonObj { put("transport", "reconnecting") })
+        scope.launch {
+            val attemptStartedAt = System.currentTimeMillis()
+            lastBrokerWelcomeAtMs = 0L
+            try {
+                rebuildTransport()
+            } catch (t: Throwable) {
+                ConnState.set(ConnState.Phase.START_FAILED, t.message ?: "transport rebuild failed")
+            }
+            // Clearing a broker intentionally returns to P2P and needs no broker
+            // welcome. A later config revision supersedes this rollback owner.
+            if (next.isEmpty()) return@launch
+            val deadline = attemptStartedAt + rollbackTimeoutMs
+            while (isActive && System.currentTimeMillis() < deadline &&
+                settings.configRevision == appliedRevision) {
+                if (lastBrokerWelcomeAtMs >= attemptStartedAt) {
+                    logEvent("transport_configure_committed revision=$appliedRevision")
+                    return@launch
+                }
+                delay(250)
+            }
+            if (!isActive || settings.configRevision != appliedRevision ||
+                lastBrokerWelcomeAtMs >= attemptStartedAt) return@launch
+            // New endpoint never completed the authenticated welcome. Restore the
+            // exact prior transport and rebuild it, so an incorrect host/PSK cannot
+            // strand a whole batch beyond remote recovery.
+            settings.brokerHost = previousHost
+            settings.brokerPort = previousPort
+            settings.useWss = previousWss
+            settings.bumpConfigRevision()
+            logEvent("transport_configure_rollback failed_revision=$appliedRevision " +
+                "restored=${if (previousHost.isBlank()) "p2p" else "$previousHost:$previousPort"}")
+            try {
+                rebuildTransport()
+            } catch (t: Throwable) {
+                ConnState.set(ConnState.Phase.START_FAILED,
+                    t.message ?: "transport rollback failed")
+            }
+        }
     }
 
     private fun hRotateDeviceKey(payload: Json.Obj, env: Envelope.Parsed) {
@@ -2072,6 +2249,12 @@ class PlayerService : Service() {
         private val VALID_STATES = setOf("playing", "paused", "idle", "buffering", "downloading")
         /** §6.3: default per-image dwell when a playlist item omits duration_ms. */
         private const val DEFAULT_IMAGE_DWELL_MS = 5000L
+        /** Boundary-only policy: tolerate normal decoder/status jitter, correct at lap seams. */
+        private const val LOOP_BOUNDARY_TOLERANCE_MS = 80L
+        /** Give OEM MediaPlayer a moment to publish its wrapped currentPosition. */
+        private const val LOOP_BOUNDARY_SAMPLE_SETTLE_MS = 40L
+        /** Failed bulk Broker migration returns to the exact previous transport. */
+        private const val TRANSPORT_ROLLBACK_TIMEOUT_MS = 30_000L
         /** §6 孤儿回收:保留最近 N 条 playlist 的媒体(+ last_task),其余视为孤儿。 */
         private const val KEEP_RECENT_PLAYLISTS = 3
         private val ACKABLE = setOf(

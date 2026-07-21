@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../protocol/messages.dart';
+import '../state/broker_migration.dart';
 import '../state/wall_state.dart';
 import 'connection_status.dart';
 
@@ -216,6 +218,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: const Text('保存并重连'),
             onPressed: () => _save(state),
           ),
+          if (isBroker) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.hub),
+              label: const Text('批量迁移播放端到此 Broker'),
+              onPressed: () => _startBulkBrokerMigration(state),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '先验证 Broker 可达，再通过当前链路逐台写入；全部确认后控制端才切换。'
+              '部分失败时保留当前链路，可只重试失败设备。Broker 必须使用当前设备已有的 PSK。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
           const SizedBox(height: 24),
           Row(
             children: [
@@ -240,6 +256,297 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _LogView(lines: state.logLines),
         ],
       ),
+    );
+  }
+
+  Future<void> _startBulkBrokerMigration(WallState state) async {
+    final portResult = validateBrokerPort(_port.text);
+    if (!portResult.ok) {
+      setState(() => _portError = portResult.error);
+      return;
+    }
+    final host = _host.text.trim();
+    if (host.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先填写 Broker 地址')),
+      );
+      return;
+    }
+    if (_psk.text != state.psk) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('PSK 输入框有未生效改动。批量迁移要求 Broker 使用设备当前已有的 PSK。')),
+      );
+      return;
+    }
+    final eligible = state.devices
+        .where((d) => d.online &&
+            (d.configCapabilities?.supportsTransportConfigure ?? false))
+        .toList(growable: false);
+    if (eligible.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('没有在线且支持批量 Broker 配置的播放端；请先升级到 1.18.7')),
+      );
+      return;
+    }
+    final selected = await _selectBrokerMigrationDevices(context, eligible);
+    if (!mounted || selected == null || selected.isEmpty) return;
+    final future = state.migrateDevicesToBroker(
+      deviceIds: selected,
+      host: host,
+      port: portResult.port!,
+      secure: _secure,
+    );
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _BrokerMigrationProgressDialog(
+        state: state,
+        initialFuture: future,
+        deviceIds: selected,
+        host: host,
+        port: portResult.port!,
+        secure: _secure,
+      ),
+    );
+  }
+}
+
+Future<Set<String>?> _selectBrokerMigrationDevices(
+    BuildContext context, List<DeviceStatus> devices) async {
+  final selected = devices.map((d) => d.deviceId).toSet();
+  return showDialog<Set<String>>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => AlertDialog(
+        title: const Text('选择要迁移的播放端'),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(children: [
+                TextButton(
+                  onPressed: () => setLocal(() {
+                    selected
+                      ..clear()
+                      ..addAll(devices.map((d) => d.deviceId));
+                  }),
+                  child: const Text('全选'),
+                ),
+                TextButton(
+                  onPressed: () => setLocal(selected.clear),
+                  child: const Text('清空'),
+                ),
+                const Spacer(),
+                Text('已选 ${selected.length}/${devices.length}'),
+              ]),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    for (final group in ({
+                      for (final d in devices) d.groupId,
+                    }.toList()..sort()))
+                      FilterChip(
+                        label: Text(group.isEmpty ? '未分组' : group),
+                        selected: devices
+                            .where((d) => d.groupId == group)
+                            .every((d) => selected.contains(d.deviceId)),
+                        onSelected: (enabled) => setLocal(() {
+                          final ids = devices
+                              .where((d) => d.groupId == group)
+                              .map((d) => d.deviceId);
+                          if (enabled) {
+                            selected.addAll(ids);
+                          } else {
+                            selected.removeAll(ids);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+              ),
+              const Divider(),
+              SizedBox(
+                height: 360,
+                child: ListView(
+                  children: [
+                    for (final d in devices)
+                      CheckboxListTile(
+                        dense: true,
+                        value: selected.contains(d.deviceId),
+                        title: Text(d.deviceName?.isNotEmpty == true
+                            ? d.deviceName!
+                            : d.deviceId),
+                        subtitle: Text(
+                            '${d.deviceId} · ${d.groupId} · ${d.appVersion ?? "未知版本"}'),
+                        onChanged: (v) => setLocal(() {
+                          if (v == true) {
+                            selected.add(d.deviceId);
+                          } else {
+                            selected.remove(d.deviceId);
+                          }
+                        }),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+            onPressed: selected.isEmpty
+                ? null
+                : () => Navigator.pop(ctx, Set<String>.from(selected)),
+            child: const Text('开始迁移'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _BrokerMigrationProgressDialog extends StatefulWidget {
+  const _BrokerMigrationProgressDialog({
+    required this.state,
+    required this.initialFuture,
+    required this.deviceIds,
+    required this.host,
+    required this.port,
+    required this.secure,
+  });
+
+  final WallState state;
+  final Future<BrokerMigrationBatch> initialFuture;
+  final Set<String> deviceIds;
+  final String host;
+  final int port;
+  final bool secure;
+
+  @override
+  State<_BrokerMigrationProgressDialog> createState() =>
+      _BrokerMigrationProgressDialogState();
+}
+
+class _BrokerMigrationProgressDialogState
+    extends State<_BrokerMigrationProgressDialog> {
+  late Future<BrokerMigrationBatch> _future;
+  bool _done = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _track(widget.initialFuture);
+  }
+
+  void _track(Future<BrokerMigrationBatch> future) {
+    _future = future;
+    _done = false;
+    future.whenComplete(() {
+      if (mounted) setState(() => _done = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: widget.state,
+      builder: (context, _) {
+        final batch = widget.state.bulkBrokerMigration;
+        return AlertDialog(
+          title: Text(
+              '批量迁移 · ${widget.secure ? "WSS" : "WS"}://${widget.host}:${widget.port}'),
+          content: SizedBox(
+            width: 620,
+            height: 380,
+            child: FutureBuilder<BrokerMigrationBatch>(
+              future: _future,
+              builder: (context, snap) {
+                if (batch == null) return const LinearProgressIndicator();
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (!_done) const LinearProgressIndicator(),
+                    const SizedBox(height: 8),
+                    Text(
+                      '预检: ${batch.preflightPassed ? "通过" : batch.fatalError ?? "进行中"} · '
+                      '已写入 ${batch.count(BrokerMigrationPhase.applied)} · '
+                      '已上线 ${batch.count(BrokerMigrationPhase.connected)} · '
+                      '失败 ${batch.count(BrokerMigrationPhase.failed)}',
+                    ),
+                    const Divider(),
+                    Expanded(
+                      child: ListView(
+                        children: [
+                          for (final d in batch.devices.values)
+                            ListTile(
+                              dense: true,
+                              leading: Icon(
+                                d.phase == BrokerMigrationPhase.connected
+                                    ? Icons.check_circle
+                                    : d.phase == BrokerMigrationPhase.failed
+                                        ? Icons.error
+                                        : d.phase == BrokerMigrationPhase.applied
+                                            ? Icons.cloud_done
+                                            : Icons.sync,
+                                color: d.phase == BrokerMigrationPhase.connected
+                                    ? Colors.green
+                                    : d.phase == BrokerMigrationPhase.failed
+                                        ? Colors.red
+                                        : null,
+                              ),
+                              title: Text(d.deviceId),
+                              subtitle: Text(d.detail.isEmpty
+                                  ? d.phase.name
+                                  : d.detail),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+          actions: [
+            if (_done &&
+                batch != null &&
+                (batch.failedDeviceIds.isNotEmpty || batch.fatalError != null))
+              FilledButton.icon(
+                icon: const Icon(Icons.refresh),
+                label: Text(batch.controllerSwitched
+                    ? '回到 P2P 并重试失败项'
+                    : '只重试失败项'),
+                onPressed: () => setState(() {
+                  batch.fatalError = null;
+                  if (batch.controllerSwitched) {
+                    _track(widget.state.recoverP2pAndRetryBrokerMigration());
+                  } else {
+                    _track(widget.state.migrateDevicesToBroker(
+                      deviceIds: widget.deviceIds,
+                      host: widget.host,
+                      port: widget.port,
+                      secure: widget.secure,
+                      retryCurrent: true,
+                    ));
+                  }
+                }),
+              ),
+            if (_done)
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(batch?.allConnected == true ? '完成' : '稍后处理'),
+              ),
+          ],
+        );
+      },
     );
   }
 }

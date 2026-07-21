@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.18.7 Candidate] — 2026-07-21
+
+- **Broker-authoritative long-running sync** (versionCode **1187**, versionName `1.18.7`). `play_at` now carries a stable `sync_session_id`; looped video stays anchored to the Broker master timeline and checks each common loop boundary. Drift within 80ms is left untouched; larger drift is corrected without adding continuous playback-rate control.
+- **Observable loop diagnostics.** Android Player advertises `loop_boundary_sync_v1` and reports session/generation, expected position, measured drift, boundary count, correction count, and last action. New prepare, pause, stop, playlist replacement, item advance, and service shutdown cancel stale boundary jobs.
+- **Transactional fleet Broker migration.** Controller settings can select all or a subset of eligible online Players, preflight the target Broker socket, apply `transport_configure` in bounded batches, display per-device terminal results, retry only failures, and switch the Controller only after every selected Player confirms the persisted endpoint. Completion requires each Player to reappear through the exact target Broker with matching redacted config readback.
+- **Anti-stranding rollback.** Player returns the durable config result over its old link before rebuilding transport. If the new Broker does not complete `welcome` within 30 seconds, Player restores the exact previous Broker/P2P settings and rebuilds the old link; Controller offers a P2P recovery-and-retry path.
+- **Release boundary.** This entry describes the candidate implementation, not field qualification. Promotion remains blocked until cloud CI is green and real `1185 → 1187` plus `1186 → 1187` OTA/migration/playback runs pass.
+
 ## [v1.18.6] — 2026-07-21
 
 - **Field-qualified remote OTA** (versionCode **1186**, versionName `1.18.6`). A real API 19/YunOS box provisioned with `1.18.5 (1185)` completed the P2P `1185 → 1186` path: daemon handoff, APK download, exact SHA-256 verification, legacy activation, reboot/reconnect, target-version readback, startup daemon reconcile, cache restore, and playback with `errors=none`.

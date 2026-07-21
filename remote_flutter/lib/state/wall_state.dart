@@ -17,6 +17,7 @@ import '../protocol/pair_uri.dart';
 import '../protocol/remote_endpoint.dart';
 import '../ui/connection_status.dart';
 import '../util/apk_manifest.dart';
+import 'broker_migration.dart';
 import 'cache_ops.dart';
 import 'media_progress.dart';
 
@@ -179,7 +180,11 @@ class WallState extends ChangeNotifier {
   final Map<String, String> _updateStatus = {};
   final Map<String, String> _updateDetail = {};
   final Map<String, Map<String, dynamic>> _configPatchResults = {};
+  final Map<String, Completer<Map<String, dynamic>>> _pendingConfigResults = {};
   int _nextConfigRequest = 0;
+  BrokerMigrationBatch? _bulkBrokerMigration;
+
+  BrokerMigrationBatch? get bulkBrokerMigration => _bulkBrokerMigration;
 
   /// Latest acknowledged §19 result for a device.
   Map<String, dynamic>? configPatchResultFor(String deviceId) =>
@@ -960,6 +965,13 @@ class WallState extends ChangeNotifier {
     final deviceId = payload['device_id']?.toString() ?? '';
     if (deviceId.isEmpty) return;
     _configPatchResults[deviceId] = Map<String, dynamic>.from(payload);
+    final requestId = payload['request_id']?.toString() ?? '';
+    if (requestId.isNotEmpty) {
+      final pending = _pendingConfigResults.remove(requestId);
+      if (pending != null && !pending.isCompleted) {
+        pending.complete(Map<String, dynamic>.from(payload));
+      }
+    }
     final ok = payload['ok'] == true;
     final conflict = payload['conflict'] == true;
     _pushLog('[$deviceId] config_patch_result ${ok ? 'applied' : conflict ? 'conflict' : 'rejected'} '
@@ -1459,6 +1471,138 @@ class WallState extends ChangeNotifier {
       useWss: useWss, requestId: requestId,
     ));
     return requestId;
+  }
+
+  Future<void> _configureTransportAndWait(
+      String deviceId, BrokerTarget target) async {
+    final requestId =
+        'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingConfigResults[requestId] = completer;
+    try {
+      _send('transport_configure', Commands.transportConfigure(
+        deviceId: deviceId,
+        brokerHost: target.host,
+        brokerPort: target.port,
+        useWss: target.secure,
+        requestId: requestId,
+        rollbackTimeoutMs: 30000,
+      ));
+      final result =
+          await completer.future.timeout(const Duration(seconds: 8));
+      if (result['ok'] != true) {
+        throw StateError(result['conflict'] == true
+            ? '配置版本冲突'
+            : '播放端拒绝 Broker 配置');
+      }
+      final applied =
+          (result['applied'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final appliedHost =
+          normalizeRemoteHost(applied['broker_host']?.toString() ?? '');
+      final appliedPort = applied['broker_port'] as int?;
+      final appliedSecure = applied['use_wss'] as bool?;
+      if (appliedHost != normalizeRemoteHost(target.host) ||
+          appliedPort != target.port ||
+          appliedSecure != target.secure) {
+        throw StateError('播放端回读值与目标 Broker 不一致');
+      }
+    } finally {
+      _pendingConfigResults.remove(requestId);
+    }
+  }
+
+  Future<void> _probeBroker(BrokerTarget target) async {
+    final socket = await WebSocket.connect(target.endpoint)
+        .timeout(const Duration(seconds: 5));
+    await socket.close(WebSocketStatus.normalClosure, 'preflight');
+  }
+
+  bool _deviceConnectedToBroker(String deviceId, BrokerTarget target) {
+    final device = _devices[deviceId];
+    final snapshot = device?.configSnapshot;
+    if (device == null || !device.online || snapshot == null) return false;
+    return normalizeRemoteHost(snapshot.brokerHost ?? '') ==
+            normalizeRemoteHost(target.host) &&
+        snapshot.brokerPort == target.port &&
+        snapshot.useWss == target.secure;
+  }
+
+  /// Transactionally move selected Players from live P2P links to one Broker.
+  /// Partial failure leaves this controller on P2P; retry resends only failed
+  /// boxes. The controller switches after every box acknowledges persistence and
+  /// success requires Broker online plus exact transport-config readback.
+  Future<BrokerMigrationBatch> migrateDevicesToBroker({
+    required Iterable<String> deviceIds,
+    required String host,
+    required int port,
+    required bool secure,
+    bool retryCurrent = false,
+  }) async {
+    final normalized = normalizeRemoteHost(host);
+    if (normalized.isEmpty || normalized == '0.0.0.0' || normalized == '::') {
+      throw const FormatException('Broker 地址无效');
+    }
+    if (port < 1 || port > 65535) {
+      throw const FormatException('Broker 端口必须在 1–65535');
+    }
+    final target = BrokerTarget(host: normalized, port: port, secure: secure);
+    final existing = _bulkBrokerMigration;
+    final batch = retryCurrent &&
+            existing != null &&
+            existing.target.endpoint == target.endpoint
+        ? existing
+        : BrokerMigrationBatch(
+            target: target,
+            deviceIds: deviceIds.toSet(),
+          );
+    _bulkBrokerMigration = batch;
+    notifyListeners();
+    final runner = BrokerMigrationRunner(
+      probe: _probeBroker,
+      apply: _configureTransportAndWait,
+      switchController: (next) async {
+        // Drop P2P snapshots before changing topology. Otherwise an endpoint
+        // readback received over the old socket could be mistaken for proof that
+        // the Player registered on the target Broker.
+        for (final id in batch.devices.keys) {
+          _devices.remove(id);
+        }
+        if (!_disposed) notifyListeners();
+        await updateSettings(
+          connectionMode: ConnectionMode.broker,
+          host: next.host,
+          port: next.port,
+          secure: next.secure,
+        );
+      },
+      isConnected: _deviceConnectedToBroker,
+    );
+    return runner.run(
+      batch: batch,
+      onChanged: (_) {
+        if (!_disposed) notifyListeners();
+      },
+    );
+  }
+
+  /// Recovery path for the initial P2P → Broker rollout. Players that did not
+  /// authenticate roll back themselves to P2P after 30s; this controller follows
+  /// them, waits for discovery/reconnect, retries only failed IDs, then the normal
+  /// runner switches back to Broker after all acknowledgements.
+  Future<BrokerMigrationBatch> recoverP2pAndRetryBrokerMigration() async {
+    final batch = _bulkBrokerMigration;
+    if (batch == null) throw StateError('没有可恢复的批量迁移');
+    await updateSettings(connectionMode: ConnectionMode.autoP2p);
+    batch.controllerSwitched = false;
+    notifyListeners();
+    await Future<void>.delayed(const Duration(seconds: 8));
+    return migrateDevicesToBroker(
+      deviceIds: batch.devices.keys,
+      host: batch.target.host,
+      port: batch.target.port,
+      secure: batch.target.secure,
+      retryCurrent: true,
+    );
   }
 
   String rotateDeviceKey({required String deviceId, required String psk}) {

@@ -1,5 +1,12 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.18.7 候选版 — Broker 权威循环边界同步与迁移回滚：**循环视频保存
+> `sync_session_id`、统一 `play_at`、generation 和 duration；每个公共循环边界按 Broker
+> 主时钟计算理论位置，80ms 内不动作，超阈值才 seek。状态上报边界次数、漂移和校正
+> 结果。批量写 Broker 时先经旧链路返回持久化结果再重建 transport；新 Broker 30 秒内
+> 未完成 `welcome` 就恢复原 Broker/P2P，避免错误地址或鉴权把设备永久弄失联。
+> 当前单一版本源为 `1.18.7+1187`；尚需 `1185/1186 → 1187` 实机 OTA 验收。
+>
 > **v1.18.0 — 播放端设置页重构(操作员 UX):**`activity_settings.xml` 重排为
 > 置顶的**主「播放端设置」卡**(设备名/版本/IP/device_id、实时连接态、一键
 > **「刷新连接」**、大号 P2P 配对二维码、**保存并启动**)+ 面向操作员的播放设置

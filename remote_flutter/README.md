@@ -1,5 +1,13 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.18.7 候选版：批量迁移到 Broker。**设置页可多选在线且支持
+> `transport_configure` 的播放端，先探测 Broker，再限并发逐台写入并等待持久化回读；
+> 部分失败时不切控制端，可只重试失败项。全部写入后控制端自动切换，最终成功必须看到
+> 每台设备通过目标 Broker 重新上线且 `config_snapshot` 精确回显 host/port/WSS。
+> 新 Broker 无法完成 `welcome` 的播放端会自动恢复原 P2P/Broker，控制端提供回到 P2P
+> 找回失败设备并重试的入口。当前单一版本源为 `1.18.7+1187`，仍需云 CI 和
+> `1185/1186 → 1187` 实机验收后才能正式发布。
+>
 > **v1.18.6 正式版：APK manifest 是升级目标版本的唯一真相。**控制端选择 APK 后
 > 解析二进制 `AndroidManifest.xml`，校验包名为 Player，并把真实 `versionCode` /
 > `versionName` 写入 `update_app`；UI 不再允许手填虚假目标版本。该链路已在
@@ -14,7 +22,7 @@
 > QZX Update Tools 新增双击启动器 `OTA检测.bat` 与独立
 > `android_ota_diag.exe`，可在 stock Windows x64 上离线生成中文诚实诊断；
 > 不改遥控端协议、传输、路由或 OTA 安装合同。该历史版本为
-> `1.18.1+1181`；当前 OTA 测试版本以本页顶部的 `1.18.6+1186` 为准。
+> `1.18.1+1181`；当前 OTA 测试版本以本页顶部的 `1.18.7+1187` 为准。
 >
 > **v1.18.0：操作员 UX 重构。**P2P 为主链路,Broker 降为高级/次要;无协议、传输、
 > 精确 `device_id` 路由、缓存/OTA/安全合同改动,纯 UX 层。**设置拓扑真相**:新增
