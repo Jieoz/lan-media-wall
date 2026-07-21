@@ -1,9 +1,12 @@
 # Changelog
 
-## [v1.18.5 Clean Install → OTA Qualification] — 2026-07-21
+## [v1.18.6 Clean Install → OTA Qualification] — 2026-07-21
 
-- **End-to-end qualification target** (versionCode **1185**, versionName `1.18.5`). Provision a clean device with the matching `1.18.4 (1184)` QZX bundle, then select this APK in the manifest-derived controller flow to prove download, SHA-256 verification, daemon reconciliation, legacy activation, restart, and reconnect without another USB repair.
-- **No new product behavior.** This version deliberately carries the field-proven daemon migration/remount fixes unchanged so the test isolates the `1184 → 1185` release transition.
+- **Corrected end-to-end target** (versionCode **1186**, versionName `1.18.6`). Provision a clean device with the corrected `1.18.5 (1185)` bundle, then select this APK in the manifest-derived controller flow to prove a USB-free `1185 → 1186` update.
+
+## [v1.18.5 Idempotent Daemon Baseline] — 2026-07-21
+
+- **Corrected full-install baseline** (versionCode **1185**, versionName `1.18.5`) for the `1185 → 1186` qualification run.
 - **Idempotent daemon handoff is a success.** When the installed daemon already matches the candidate, the daemon now emits the deployed Player's canonical `verified installed sha256=...` grammar; the Player also accepts the two exact allowlisted `retained_live` terminal states. This prevents a healthy `already_current` result from being mislabeled as `verification_failed` before APK download.
 
 ## [v1.18.4 OTA Field Test] — 2026-07-20
