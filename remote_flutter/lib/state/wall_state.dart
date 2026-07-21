@@ -1518,7 +1518,7 @@ class WallState extends ChangeNotifier {
   }
 
   bool _deviceConnectedToBroker(String deviceId, BrokerTarget target) {
-    final device = _devices[deviceId];
+    final device = deviceById(deviceId);
     final snapshot = device?.configSnapshot;
     if (device == null || !device.online || snapshot == null) return false;
     return normalizeRemoteHost(snapshot.brokerHost ?? '') ==
@@ -1564,9 +1564,14 @@ class WallState extends ChangeNotifier {
         // Drop P2P snapshots before changing topology. Otherwise an endpoint
         // readback received over the old socket could be mistaken for proof that
         // the Player registered on the target Broker.
-        for (final id in batch.devices.keys) {
-          _devices.remove(id);
-        }
+        final migratingIds = batch.devices.keys.toSet();
+        _wall = WallSnapshot(
+          serverTime: _wall.serverTime,
+          groups: _wall.groups,
+          devices: _wall.devices
+              .where((device) => !migratingIds.contains(device.deviceId))
+              .toList(growable: false),
+        );
         if (!_disposed) notifyListeners();
         await updateSettings(
           connectionMode: ConnectionMode.broker,
