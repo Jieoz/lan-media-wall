@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.18.9] — 2026-07-22
+
+- **Open-Broker Android crash fix** (versionCode **1189**, versionName `1.18.9`). Field log evidence showed `transport_configure` successfully committed an open Broker, then the API19 UDP discovery thread called the legacy always-signing envelope builder with an empty key. `SecretKeySpec(key.length == 0)` escaped the thread and killed the entire Player process every few seconds. Broker-client discovery now follows the selected auth/key mode, emits an unsigned announce for `open` or keyless `optional`, supports an explicit derived device key, and contains per-packet discovery failures so advisory UDP can never take down the kiosk.
+- **Operator-correct mode controls.** The per-device music terminal now has an explicit **恢复图片/视频** action that selects `visual`; its unrelated standby/restore controls moved beside Pause/Resume/Stop in the device playback row as **待机 / 退出待机**. Device-confirmed results, not send success, determine the final UI message.
+- **Verification boundary.** The field crash signature is pinned by Android discovery regression tests; relevant Android JVM tests, debug APK assembly, and controller source contracts must pass before a test artifact is delivered. Multi-lane cloud CI and real-device Broker reconnect remain release/field gates.
+
 ## [v1.18.8] — 2026-07-22
 
 - **Explicit Player runtime modes** (versionCode **1188**, versionName `1.18.8`). Controller-selected `visual`, `music`, and `standby` modes are separate state-machine states. Visual and music playlists remain independently persisted; audio is never mixed into the synchronized visual wall playlist. Standby preserves transport, cache, both lists, and the previous active mode for restore after restart.

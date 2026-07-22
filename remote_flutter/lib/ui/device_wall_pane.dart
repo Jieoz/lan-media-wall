@@ -1194,7 +1194,8 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
   }
 }
 
-/// 单台播放控制行(§9/§v1.13):暂停/恢复/停止/上一项/下一项,全部锁定该 deviceId 单播。
+/// 单台播放控制行(§9/§v1.13/§6.3c):传输控制与输出待机处于同一层级，
+/// 全部锁定该 deviceId 单播。暂停/继续只影响当前媒体；待机关闭输出但保留两套列表。
 class _DeviceTransportRow extends StatelessWidget {
   const _DeviceTransportRow({required this.state, required this.deviceId});
   final WallState state;
@@ -1235,6 +1236,46 @@ class _DeviceTransportRow extends StatelessWidget {
             () => act(() => state.resume(deviceId: deviceId), sentAwaitingAck('恢复这一台'))),
         btn(Icons.stop, '停止',
             () => act(() => state.stop(deviceId: deviceId), sentAwaitingAck('停止这一台'))),
+        btn(Icons.power_settings_new, '待机', () async {
+          ScaffoldMessenger.of(context)
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(content: Text('待机命令已发送，等待设备确认')));
+          try {
+            final result = await state.setDeviceRuntimeMode(
+                deviceId, RuntimeMode.standby);
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context)
+              ..clearSnackBars()
+              ..showSnackBar(SnackBar(content: Text(
+                  result.ok && result.mode == RuntimeMode.standby
+                      ? '设备已进入待机'
+                      : '待机失败：${result.error.isEmpty ? '状态未确认' : result.error}')));
+          } catch (e) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context)
+              ..clearSnackBars()
+              ..showSnackBar(SnackBar(content: Text('待机失败：$e')));
+          }
+        }),
+        btn(Icons.settings_backup_restore, '退出待机', () async {
+          ScaffoldMessenger.of(context)
+            ..clearSnackBars()
+            ..showSnackBar(const SnackBar(content: Text('恢复命令已发送，等待设备确认')));
+          try {
+            final result = await state.restoreDeviceRuntimeMode(deviceId);
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context)
+              ..clearSnackBars()
+              ..showSnackBar(SnackBar(content: Text(result.ok
+                  ? '设备已退出待机，恢复 ${result.mode?.name ?? '前一模式'}'
+                  : '退出待机失败：${result.error.isEmpty ? '状态未确认' : result.error}')));
+          } catch (e) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context)
+              ..clearSnackBars()
+              ..showSnackBar(SnackBar(content: Text('退出待机失败：$e')));
+          }
+        }),
         btn(Icons.skip_previous, '上一项',
             () => act(() => state.prev(deviceId: deviceId), sentAwaitingAck('上一项'))),
         btn(Icons.skip_next, '下一项',

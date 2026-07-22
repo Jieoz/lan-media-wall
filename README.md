@@ -1,5 +1,13 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.18.9 candidate — open-Broker Android crash + mode-control UX:** Android
+> Broker-client discovery no longer attempts HMAC with an empty key after
+> `transport_configure`; keyless open/optional announces are unsigned and UDP
+> packet failures are contained instead of killing the Player process. Controller
+> music terminals expose **恢复图片/视频**, while **待机 / 退出待机** now sit beside
+> Pause/Resume/Stop in per-device playback controls. Version identity is
+> `1.18.9+1189`; cloud and real-device gates remain pending until run.
+>
 > **v1.18.8 (formal release — explicit playback modes):** Android and Windows
 > Players now own three explicit top-level modes: synchronized `visual`,
 > device-local shuffled `music`, and output-off `standby`. Visual and music keep

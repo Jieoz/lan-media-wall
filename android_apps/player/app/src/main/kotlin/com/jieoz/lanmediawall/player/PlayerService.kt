@@ -398,6 +398,9 @@ class PlayerService : Service() {
                     deviceName = settings.deviceName,
                     ip = deviceIp,
                     brokerHint = hint,
+                    authMode = plan.authMode,
+                    keyMode = plan.keyMode,
+                    deviceKey = deviceKey,
                 )
             }
             is TransportSelector.Plan.P2pServer -> Discovery(

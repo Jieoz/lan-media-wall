@@ -27,8 +27,8 @@ class Discovery(
     /**
      * §14/§13/§17.3: the topology this device advertises, and the auth/key mode
      * the coordinator declares. **Null `topology` = today's broker-client path**
-     * — the announce payload is byte-for-byte unchanged (device_id/name/ip/
-     * broker_hint, signed with the global PSK) so modes A/B are untouched. When
+     * — the announce payload remains unchanged (device_id/name/ip/broker_hint),
+     * while its signature follows the active auth/key mode. When
      * set (e.g. "p2p" — this device IS the coordinator, §14.3), the announce
      * additionally carries `topology`/`auth_mode`/`key_mode` and is signed under
      * that auth/key mode, matching windows_player/discovery.py::DiscoveryResponder.
@@ -76,7 +76,14 @@ class Discovery(
             } catch (e: Exception) {
                 if (!running) break else continue
             }
-            handle(packet, sock)
+            // An exception on an Android background thread terminates the whole
+            // process. Discovery is advisory, so malformed packets/configuration
+            // must be contained here rather than taking the kiosk down.
+            try {
+                handle(packet, sock)
+            } catch (e: Exception) {
+                Log.e(TAG, "UDP discovery packet failed: ${e.javaClass.simpleName}: ${e.message}")
+            }
         }
         try { sock.close() } catch (_: Exception) {}
     }
@@ -99,6 +106,13 @@ class Discovery(
         }
         if (result.parsed.type != "discover") return
         val reply = makeAnnounce()
+        if (reply == null) {
+            // REQUIRED without usable key material is a broken configuration.
+            // Discovery is advisory: fail closed by sending nothing, never by
+            // emitting an unsigned frame or throwing out of this thread.
+            Log.e(TAG, "DROP discovery announce: required auth has no usable signing key")
+            return
+        }
         try {
             val out = DatagramPacket(reply, reply.size, packet.address, packet.port)
             sock.send(out) // unicast reply
@@ -109,7 +123,7 @@ class Discovery(
 
     private fun verifyKeyFor(fromIdentity: String): ByteArray? = null
 
-    private fun makeAnnounce(): ByteArray {
+    internal fun makeAnnounce(): ByteArray? {
         val topo = topology
         val payload = jsonObj {
             put("device_id", deviceId)
@@ -125,14 +139,20 @@ class Discovery(
                 put("key_mode", keyMode.wire)
             }
         }
-        val env = if (topo == null) {
-            // broker-client path: unchanged — global-PSK signed (§3).
-            Envelope.build(psk, "announce", "player:$deviceId", "all", payload)
-        } else if (keyMode == KeyMode.DERIVED && deviceKey != null) {
-            // dk-only coordinator (§17.4): sign with our own device_key.
-            Envelope.buildWithDeviceKey(deviceKey, authMode, "announce", "player:$deviceId", "all", payload)
+        val explicitDeviceKey = deviceKey?.takeIf { it.isNotEmpty() }
+        if (authMode == AuthMode.REQUIRED &&
+            explicitDeviceKey == null && !Envelope.hasUsableKey(psk)) {
+            return null
+        }
+        val env = if (keyMode == KeyMode.DERIVED && explicitDeviceKey != null) {
+            // dk-only endpoint (§17.4): sign with our own device_key. This applies
+            // to both broker-client and p2p coordinator announcements.
+            Envelope.buildWithDeviceKey(explicitDeviceKey, authMode, "announce", "player:$deviceId", "all", payload)
         } else {
-            // coordinator: sign per the declared auth/key mode (§13/§17).
+            // Auth-aware on every topology. In particular OPTIONAL + no key must
+            // emit sig=""; calling the legacy always-signing build() here caused
+            // SecretKeySpec(key.length == 0) and killed the entire API19 process
+            // after transport_configure selected an open Broker.
             Envelope.buildWithMode(psk, authMode, "announce", "player:$deviceId", "all", payload, keyMode = keyMode)
         }
         return Envelope.toWire(env).toByteArray(Charsets.UTF_8)

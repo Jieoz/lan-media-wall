@@ -28,6 +28,7 @@ SETTINGS = FL / "ui" / "settings_screen.dart"
 WALL_STATE = FL / "state" / "wall_state.dart"
 ORCH = FL / "ui" / "orchestration_pane.dart"
 DEVWALL = FL / "ui" / "device_wall_pane.dart"
+MUSIC_TERMINAL = FL / "ui" / "music_terminal_dialog.dart"
 SHELL = FL / "ui" / "responsive_shell.dart"
 ANDROID = ROOT / "android_apps" / "player" / "app" / "src" / "main"
 LAYOUT = ANDROID / "res" / "layout" / "activity_settings.xml"
@@ -157,6 +158,35 @@ def test_no_optimistic_effect_wording_before_ack() -> None:
 def test_sent_ack_helper_defined_once() -> None:
     push = _read(PUSH)
     assert "sentAwaitingAck" in push
+
+
+def test_runtime_mode_controls_match_operator_mental_model() -> None:
+    music = _read(MUSIC_TERMINAL)
+    dev = _read(DEVWALL)
+    # Leaving music is an explicit visual-mode action, not the standby-only
+    # restore command whose label gave no clue that pictures/videos return.
+    assert "恢复图片/视频" in music
+    assert "RuntimeMode.visual" in music
+    assert "RuntimeMode.standby" not in music
+    assert "恢复前态" not in music
+    # Standby is an output/playback control beside Stop, with a visible inverse.
+    transport = dev[dev.index("class _DeviceTransportRow"):]
+    assert "'停止'" in transport
+    assert "'待机'" in transport
+    assert "'退出待机'" in transport
+    assert "setDeviceRuntimeMode" in transport
+    assert "restoreDeviceRuntimeMode" in transport
+    assert "result.ok && result.mode == RuntimeMode.standby" in transport
+    assert "result.ok\n                  ? '设备已退出待机" in transport
+
+
+def test_android_discovery_thread_contains_advisory_packet_failures() -> None:
+    discovery = _read(
+        ANDROID / "kotlin/com/jieoz/lanmediawall/player/net/Discovery.kt"
+    )
+    assert "try {\n                handle(packet, sock)" in discovery
+    assert "catch (e: Exception)" in discovery
+    assert "required auth has no usable signing key" in discovery
 
 
 # ---- Area 7: Android setup hierarchy ----

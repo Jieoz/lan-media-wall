@@ -156,40 +156,25 @@ Future<void> showMusicTerminalDialog(
                     ),
                     OutlinedButton.icon(
                       onPressed: busy ? null : () async {
-                        setLocal(() { busy = true; status = '等待设备进入待机…'; });
+                        setLocal(() {
+                          busy = true;
+                          status = '等待设备恢复图片/视频模式…';
+                        });
                         try {
                           final result = await state.setDeviceRuntimeMode(
-                              device.deviceId, RuntimeMode.standby);
+                              device.deviceId, RuntimeMode.visual);
                           setLocal(() => status = result.ok &&
-                                  result.mode == RuntimeMode.standby
-                              ? '设备已进入待机'
-                              : '待机失败：${result.error}');
+                                  result.mode == RuntimeMode.visual
+                              ? '设备已恢复图片/视频模式'
+                              : '恢复图片/视频失败：${result.error.isEmpty ? '状态未确认' : result.error}');
                         } catch (e) {
-                          setLocal(() => status = '待机失败：$e');
+                          setLocal(() => status = '恢复图片/视频失败：$e');
                         } finally {
                           setLocal(() => busy = false);
                         }
                       },
-                      icon: const Icon(Icons.power_settings_new),
-                      label: const Text('待机'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: busy ? null : () async {
-                        setLocal(() { busy = true; status = '等待设备恢复…'; });
-                        try {
-                          final result = await state.restoreDeviceRuntimeMode(
-                              device.deviceId);
-                          setLocal(() => status = result.ok
-                              ? '设备已恢复 ${result.mode?.name ?? ''}'
-                              : '恢复失败：${result.error}');
-                        } catch (e) {
-                          setLocal(() => status = '恢复失败：$e');
-                        } finally {
-                          setLocal(() => busy = false);
-                        }
-                      },
-                      icon: const Icon(Icons.settings_backup_restore),
-                      label: const Text('恢复前态'),
+                      icon: const Icon(Icons.ondemand_video),
+                      label: const Text('恢复图片/视频'),
                     ),
                   ],
                 ),

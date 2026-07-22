@@ -1,12 +1,20 @@
 # LAN Media Wall — Android Player (被控端)
 
-> **v1.18.7 候选版 — Broker 权威循环边界同步与迁移回滚：**循环视频保存
+> **v1.18.9 候选版 — 修复开放 Broker 配置后反复闪退：**现场日志确认
+> `transport_configure` 成功后，API19 的 UDP discovery responder 在
+> `auth_mode=open`、空密钥下仍调用强制 HMAC，触发
+> `SecretKeySpec(key.length == 0)` 并杀死整个进程。Broker-client announce 现按
+> 实际 auth/key mode 构造；open/无密钥 optional 发空签名，derived device key 走
+> 显式 key 路径；每个 UDP 包的异常也被隔离，辅助发现线程不能再拖垮 kiosk。
+> 单一版本源为 `1.18.9+1189`。
+>
+> **v1.18.7 — Broker 权威循环边界同步与迁移回滚：**循环视频保存
 > `sync_session_id`、统一 `play_at` 和本地媒体 duration；每个公共循环边界按 Broker
 > 主时钟计算理论位置，80ms 内不动作，超阈值才 seek。状态上报边界次数、漂移和校正
 > 结果。批量写 Broker 时先经旧链路返回持久化结果再重建 transport；新 Broker 30 秒内
 > 未完成 `welcome` 就恢复原 Broker/P2P，避免错误地址或鉴权把设备永久弄失联。transport
 > 重建以串行锁和 generation 绑定回调，旧 Broker/P2P socket 的迟到帧不能提交新配置。
-> 当前单一版本源为 `1.18.7+1187`；尚需 `1185/1186 → 1187` 实机 OTA 验收。
+> 该基线随后并入 v1.18.8。
 >
 > **v1.18.0 — 播放端设置页重构(操作员 UX):**`activity_settings.xml` 重排为
 > 置顶的**主「播放端设置」卡**(设备名/版本/IP/device_id、实时连接态、一键
