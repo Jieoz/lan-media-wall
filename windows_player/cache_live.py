@@ -149,6 +149,9 @@ class LiveCacheBackend:
         pls: List[Dict[str, Any]] = []
         if self._p.playlist:
             pls.append(self._p.playlist)
+        music = getattr(self._p, "music_playlist", None)
+        if music:
+            pls.append(music)
         try:
             pls.extend(self._p.state.playlists.values())
         except Exception:
@@ -161,8 +164,13 @@ class LiveCacheBackend:
         return idx
 
     def _active_items(self) -> List[Dict[str, Any]]:
-        pl = self._p.playlist
-        return list(pl.get("items", []) or []) if pl else []
+        items: List[Dict[str, Any]] = []
+        if self._p.playlist:
+            items.extend(self._p.playlist.get("items", []) or [])
+        music = getattr(self._p, "music_playlist", None)
+        if music:
+            items.extend(music.get("items", []) or [])
+        return items
 
     def _playing_item(self) -> Optional[Dict[str, Any]]:
         if self._p.play_state in ("playing", "paused"):

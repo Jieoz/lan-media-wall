@@ -51,6 +51,9 @@ class BrokerClient {
   /// §19 player confirmation for safe config patches and high-risk config paths.
   void Function(Map<String, dynamic> payload)? onConfigPatchResult;
 
+  void Function(Map<String, dynamic> payload)? onRuntimeModeResult;
+  void Function(Map<String, dynamic> payload)? onMusicPlaylistResult;
+
   /// 连接态变化。
   void Function(ConnState state)? onState;
 
@@ -272,6 +275,12 @@ class BrokerClient {
         break;
       case 'config_patch_result':
         onConfigPatchResult?.call(env.payload);
+        break;
+      case 'runtime_mode_result':
+        onRuntimeModeResult?.call(env.payload);
+        break;
+      case 'music_playlist_result':
+        onMusicPlaylistResult?.call(env.payload);
         break;
       case 'ack':
         _log('ack: ${env.payload}');

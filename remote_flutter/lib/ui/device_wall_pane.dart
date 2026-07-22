@@ -12,6 +12,7 @@ import 'cache_management.dart';
 import 'device_wall_filter.dart';
 import 'device_wall_layout.dart';
 import 'invite_screen.dart';
+import 'music_terminal_dialog.dart';
 import 'push_workflow.dart';
 
 
@@ -131,11 +132,105 @@ class _ActionsBar extends StatelessWidget {
               onPressed: () => _remoteUpdateDialog(context, state),
             )),
           ]),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.power_settings_new),
+            label: Text(compact ? '待机/恢复' : '分组 / 全部待机与恢复'),
+            onPressed: () => _runtimeModeBatchDialog(context, state),
+          ),
         ],
       ),
     );
     });
   }
+}
+
+Future<void> _runtimeModeBatchDialog(
+    BuildContext context, WallState state) async {
+  var target = 'all';
+  var busy = false;
+  var output = '';
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => AlertDialog(
+        title: const Text('分组 / 全部待机与恢复'),
+        content: SizedBox(
+          width: 460,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              DropdownButtonFormField<String>(
+                value: target,
+                decoration: const InputDecoration(labelText: '目标范围'),
+                items: [
+                  const DropdownMenuItem(value: 'all', child: Text('全部设备')),
+                  for (final group in state.groups)
+                    DropdownMenuItem(
+                      value: 'group:${group.groupId}',
+                      child: Text('分组：${group.name.isEmpty ? group.groupId : group.name}'),
+                    ),
+                ],
+                onChanged: busy ? null : (value) =>
+                    setLocal(() => target = value ?? 'all'),
+              ),
+              const SizedBox(height: 8),
+              const Text('逐台发送并等待 Player 结果；离线、旧版本、超时和拒绝会分别列出。'),
+              if (output.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 240),
+                  child: SingleChildScrollView(child: SelectableText(output)),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: busy ? null : () => Navigator.pop(ctx),
+              child: const Text('关闭')),
+          OutlinedButton(
+            onPressed: busy ? null : () async {
+              final ids = target == 'all'
+                  ? state.devices.map((d) => d.deviceId)
+                  : state.membersOf(target.substring('group:'.length))
+                      .map((d) => d.deviceId);
+              setLocal(() { busy = true; output = '等待逐台确认…'; });
+              final results = await state.restoreDevicesRuntimeMode(ids);
+              setLocal(() {
+                busy = false;
+                output = results.entries.map((entry) {
+                  final r = entry.value;
+                  return '${entry.key}: ${r.ok ? '已恢复 ${r.mode?.name ?? ''}' : '失败 ${r.error}'}';
+                }).join('\n');
+              });
+            },
+            child: const Text('恢复前态'),
+          ),
+          FilledButton(
+            onPressed: busy ? null : () async {
+              final ids = target == 'all'
+                  ? state.devices.map((d) => d.deviceId)
+                  : state.membersOf(target.substring('group:'.length))
+                      .map((d) => d.deviceId);
+              setLocal(() { busy = true; output = '等待逐台确认…'; });
+              final results = await state.setDevicesRuntimeMode(
+                  ids, RuntimeMode.standby);
+              setLocal(() {
+                busy = false;
+                output = results.entries.map((entry) {
+                  final r = entry.value;
+                  return '${entry.key}: ${r.ok && r.mode == RuntimeMode.standby ? '已进入待机' : '失败 ${r.error}'}';
+                }).join('\n');
+              });
+            },
+            child: const Text('进入待机'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 /// §23 远程自更新:选 APK → 暴露为被控端可 GET 的 URL(得 sha256) → 填目标
@@ -862,6 +957,16 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         Navigator.pop(ctx);
                         showPushToDeviceDialog(context, state, device);
                       },
+                    ),
+                    FilledButton.tonalIcon(
+                      icon: const Icon(Icons.library_music),
+                      label: const Text('音乐终端'),
+                      onPressed: st?.supportsMusicShuffle == true
+                          ? () {
+                              Navigator.pop(ctx);
+                              showMusicTerminalDialog(context, state, device);
+                            }
+                          : null,
                     ),
                   ],
                 ),

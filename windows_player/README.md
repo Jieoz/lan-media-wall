@@ -1,5 +1,11 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.18.8 — 独立 visual/music/standby 模式:**顶层运行状态不再由视觉列表
+> 隐式决定。`music_playlist` 独立持久化并使用 shuffle-bag（每轮不重复，跨轮
+> 避免首尾重复）；`standby` 停止输出但保留 transport、缓存、两套列表与恢复前
+> 模式。模式切换递增 generation 并取消旧 restore/prepare/dwell 任务，防止晚到
+> 回调重新起播。`cache_live.py` 同时保护视觉与音乐列表引用的本地文件。
+>
 > **v1.17.6 — 版本对齐:**与全端 `1.17.6+1176` 同步(本端无 OTA daemon 变更;
 > Android 二次 legacy OTA 见 player/daemon 说明)。
 >
@@ -45,6 +51,7 @@ the player side of [`../protocol_spec.md`](../protocol_spec.md) v1.
 | §5 | `status` every 1–2s (state/current/pos/dur/vol/mute/audio_master/cache/offset/`push_id`) | `main.py` |
 | §6.2 | `cache_prefetch` → resumable HTTP-Range download + sha256 verify | `downloader.py` |
 | §6.3 | `playlist` store + eager prefetch | `main.py` |
+| §6.3c (v1.18.8) | explicit `visual` / `music` / `standby`; independent persisted music playlist, shuffle-bag, generation-fenced restore, structured results | `main.py`, `playback_modes.py`, `config.py`, `cache_live.py` |
 | §6.4 | ~5s frame screenshot → ≤320px JPEG → `thumb_meta` + binary frame | `thumbnailer.py` |
 | §7 | UDP 8772 discovery responder (`discover`→`announce`, signed) | `discovery.py` |
 | §8 | SNTP-style `time_sync` on connect + every 30s, min-rtt offset | `clock.py`, `websocket_client.py` |
@@ -198,6 +205,9 @@ cover the Phase A cleanup core above: the frozen canonical hash, the protection
 union (including shared-blob and metadata-only cases), dry-run vs commit,
 generation fail-closed, and `request_id` idempotency. mpv/win32 paths are
 import-guarded so the suite runs on any OS.
+`test_playback_modes.py` covers mode ownership, standby/restore persistence,
+shuffle no-repeat, all-bad terminal behavior, independent cache protection,
+revision/result handling, and stale visual-restore generation rejection.
 
 ## Platform notes
 

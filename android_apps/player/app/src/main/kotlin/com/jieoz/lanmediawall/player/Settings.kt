@@ -123,6 +123,19 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_MUTED, false)
         set(value) { prefs.edit().putBoolean(KEY_MUTED, value).apply() }
 
+    /** Durable top-level playback mode; standby must survive process/device restart. */
+    var runtimeMode: String
+        get() = prefs.getString(KEY_RUNTIME_MODE, "visual") ?: "visual"
+        set(value) { prefs.edit().putString(KEY_RUNTIME_MODE, value).apply() }
+
+    var previousActiveMode: String
+        get() = prefs.getString(KEY_PREVIOUS_ACTIVE_MODE, "visual") ?: "visual"
+        set(value) { prefs.edit().putString(KEY_PREVIOUS_ACTIVE_MODE, value).apply() }
+
+    var standbySinceMs: Long
+        get() = prefs.getLong(KEY_STANDBY_SINCE_MS, 0L)
+        set(value) { prefs.edit().putLong(KEY_STANDBY_SINCE_MS, value.coerceAtLeast(0L)).apply() }
+
     /** Monotonic §19 remote-config revision for optimistic patch conflicts. */
     var configRevision: Int
         get() = prefs.getInt(KEY_CONFIG_REVISION, 0)
@@ -244,6 +257,9 @@ class Settings(context: Context) {
         private const val KEY_BROKER_KEY = "broker_key"
         private const val KEY_VOLUME = "volume"
         private const val KEY_MUTED = "muted"
+        private const val KEY_RUNTIME_MODE = "runtime_mode"
+        private const val KEY_PREVIOUS_ACTIVE_MODE = "previous_active_mode"
+        private const val KEY_STANDBY_SINCE_MS = "standby_since_ms"
         private const val KEY_CONFIG_REVISION = "config_revision"
         private const val KEY_ALWAYS_THUMBS = "always_thumbs"
         private const val KEY_CACHE_MAX_BYTES = "cache_max_bytes"

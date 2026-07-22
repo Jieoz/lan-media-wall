@@ -181,6 +181,10 @@ class Hub:
         # request_id -> (controller_id, request_type, allowed device ids). Results
         # are accepted only from the authenticated player that was targeted.
         self._cache_req_origin: "OrderedDict[str, tuple]" = OrderedDict()
+        # Runtime mode/music operations use the same role-safe correlation
+        # invariant as cache operations, but keep an independent namespace so
+        # unrelated request types cannot complete each other.
+        self._runtime_req_origin: "OrderedDict[str, tuple]" = OrderedDict()
         self.discovery: Optional[discovery_mod.Discovery] = None
         self.media: Optional[media_mod.MediaServer] = None
 
@@ -388,6 +392,11 @@ class Hub:
             "cache_inventory": self._on_cache_request,
             "cache_cleanup_result": self._on_cache_result,
             "cache_inventory_result": self._on_cache_result,
+            "music_playlist": self._on_runtime_request,
+            "set_runtime_mode": self._on_runtime_request,
+            "restore_runtime_mode": self._on_runtime_request,
+            "music_playlist_result": self._on_runtime_result,
+            "runtime_mode_result": self._on_runtime_result,
             "ack": self._on_ack,
             "error": self._on_error,
         }.get(mtype)
@@ -516,7 +525,8 @@ class Hub:
             # sync=false -> play immediately on each member, no handshake.
             await self._emit_play_at(group_id, playlist_id, start_index,
                                      seek_ms, clock.server_time_ms(),
-                                     list(members), push_id)
+                                     list(members), push_id,
+                                     sync_session_id=env["msg_id"])
             return
 
         # §21.2 prefetch barrier: when the controller flags this prepare as a
@@ -533,7 +543,13 @@ class Hub:
                         timeout_ms=timeout_ms)
         # §9.4b 单台推送：只 fan 给这一台（player:<id>），不广播整组。
         to = f"player:{target_device}" if target_device else f"group:{group_id}"
-        fwd = self.make_env("prepare", p, to)
+        # Session identity is broker-owned and optional for old Players. New
+        # Players carry it through every loop-boundary diagnostic so the
+        # controller can distinguish a stale timeline after reconnect/restart.
+        prepare_payload = dict(p)
+        prepare_payload["prepare_id"] = env["msg_id"]
+        prepare_payload["sync_session_id"] = env["msg_id"]
+        fwd = self.make_env("prepare", prepare_payload, to)
         await self.fanout_players(to, fwd)
 
     async def _on_ready(self, conn: ClientConn, env: dict) -> None:
@@ -557,11 +573,13 @@ class Hub:
             play_at = self.sync.complete(session)
             await self._emit_play_at(session.group_id, session.playlist_id,
                                      session.start_index, session.seek_ms,
-                                     play_at, sorted(session.ready), session.push_id)
+                                     play_at, sorted(session.ready), session.push_id,
+                                     sync_session_id=session.session_id)
 
     async def _emit_play_at(self, group_id: str, playlist_id, start_index: int,
                             seek_ms: int, play_at: int,
-                            targets: List[str], push_id: str = "") -> None:
+                            targets: List[str], push_id: str = "",
+                            sync_session_id: str = "") -> None:
         payload = {
             "playlist_id": playlist_id,
             "group_id": group_id,
@@ -570,6 +588,8 @@ class Hub:
             "play_at": play_at,
             "push_id": push_id,
         }
+        if sync_session_id:
+            payload["sync_session_id"] = sync_session_id
         # Address whoever is ready; for an empty/all case use the group.
         if targets:
             for device_id in targets:
@@ -593,7 +613,8 @@ class Hub:
             play_at = self.sync.complete(session)
             await self._emit_play_at(session.group_id, session.playlist_id,
                                      session.start_index, session.seek_ms,
-                                     play_at, ready, session.push_id)
+                                     play_at, ready, session.push_id,
+                                     sync_session_id=session.session_id)
 
     # ---- media / routing -------------------------------------------------
     async def _on_playlist(self, conn: ClientConn, env: dict) -> None:
@@ -782,6 +803,65 @@ class Hub:
 
     # ---- §27/§28 cache cleanup / inventory (role-safe, unicast result) ---
     _CACHE_REQ_ORIGIN_MAX = 512  # bounded FIFO (idempotency/correlation req #5)
+    _RUNTIME_REQ_ORIGIN_MAX = 512
+
+    async def _on_runtime_request(self, conn: ClientConn, env: dict) -> None:
+        """Route controller mode/music operations and remember their initiator."""
+        if conn.role != "controller":
+            return
+        payload = env["payload"]
+        request_id = str(payload.get("request_id") or "")
+        if not request_id:
+            return
+        to = env.get("to")
+        if not to or router.parse_addr(to)[0] not in ("all", "player", "group"):
+            if payload.get("device_id"):
+                to = f"player:{payload['device_id']}"
+            elif payload.get("group_id"):
+                to = f"group:{payload['group_id']}"
+            else:
+                to = "all"
+        targets = router.dedup_conns(
+            router.resolve_player_targets(to, self.reg, self.players))
+        target_ids = [c.ident for c in targets if c.ident]
+        # Music lists are device-local by contract; all/group fan-out could
+        # accidentally overwrite multiple independent terminals.
+        if env["type"] == "music_playlist" and len(target_ids) != 1:
+            return
+        fingerprint = json.dumps(
+            {"type": env["type"], "payload": payload}, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=False)
+        proposed = (conn.ident or "", env["type"], frozenset(target_ids), fingerprint)
+        existing = self._runtime_req_origin.get(request_id)
+        if not target_ids or (existing is not None and existing != proposed):
+            return
+        self._runtime_req_origin[request_id] = proposed
+        self._runtime_req_origin.move_to_end(request_id)
+        while len(self._runtime_req_origin) > self._RUNTIME_REQ_ORIGIN_MAX:
+            self._runtime_req_origin.popitem(last=False)
+        await self.fanout_players(to, self.make_env(env["type"], payload, to))
+
+    async def _on_runtime_result(self, conn: ClientConn, env: dict) -> None:
+        """Unicast a terminal mode/music result to its initiating controller."""
+        if conn.role != "player" or not conn.ident:
+            return
+        payload = env["payload"]
+        request_id = str(payload.get("request_id") or "")
+        origin = self._runtime_req_origin.get(request_id)
+        if origin is None:
+            return
+        controller_id, request_type, allowed_devices, _fingerprint = origin
+        expected_result = ("music_playlist_result" if request_type == "music_playlist"
+                           else "runtime_mode_result")
+        if env["type"] != expected_result:
+            return
+        if conn.ident not in allowed_devices or payload.get("device_id") != conn.ident:
+            return
+        controller = self.controllers.get(controller_id)
+        if controller is None:
+            return
+        await controller.send_env(self.make_env(env["type"], payload,
+                                                f"controller:{controller_id}"))
 
     @staticmethod
     def _cleanup_fingerprint(payload: dict) -> str:
