@@ -1,10 +1,10 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.18.8+1188 explicit visual/music/standby Player modes. This candidate also
+# v1.18.8+1188 explicit visual/music/standby Player modes. This release also
 # carries the v1.18.7 Broker-authoritative loop sync and fleet-migration baseline.
-# OTA must be qualified from both supported field baselines (1185/1186) before
-# promotion.
+# OTA and migration observations from supported field baselines (1185/1186)
+# remain post-install operator evidence.
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
 version: 1.18.8+1188
 

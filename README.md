@@ -1,15 +1,16 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
-> **v1.18.7 candidate — Broker-authoritative loop sync and fleet migration:**
-> looped video is anchored to one Broker master timeline using `sync_session_id`;
-> each common loop boundary is measured and only drift above 80ms is corrected.
-> The Controller can select multiple upgraded Players, preflight a Broker, apply
-> its endpoint in bounded batches, retry only failures, then switch itself and
-> require exact endpoint readback from every reconnected Player. A Player that
-> cannot complete the new Broker `welcome` within 30 seconds restores its previous
-> Broker/P2P transport, preventing a bad bulk address from stranding the fleet.
-> This is **not yet a formal release**: both `1185 → 1187` and `1186 → 1187`
-> field paths remain mandatory before promotion.
+> **v1.18.8 (formal release — explicit playback modes):** Android and Windows
+> Players now own three explicit top-level modes: synchronized `visual`,
+> device-local shuffled `music`, and output-off `standby`. Visual and music keep
+> independent persisted playlists and cache protection; standby preserves both
+> lists, transport, cache, and the previous active mode for restart/restore.
+> Controller results are request/device-correlated with monotonic music revisions,
+> while Broker and P2P preserve role-safe single-device routing. This release also
+> includes the frozen v1.18.7 Broker-authoritative loop-sync and transactional
+> fleet-migration baseline, which was not released separately. Same-SHA cloud
+> builds, signing/hash checks, tests, and independent review are complete; real
+> device playback/migration/OTA observations remain post-install field evidence.
 >
 > **v1.18.6 (formal release — field-qualified OTA):** Player startup reconciles the
 > APK-embedded root daemon, and the controller derives `versionCode`/`versionName`

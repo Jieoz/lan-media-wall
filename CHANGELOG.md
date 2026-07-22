@@ -1,9 +1,11 @@
 # Changelog
 
-## [v1.18.8 Candidate] — Unreleased
+## [v1.18.8] — 2026-07-22
 
-- **Explicit Player runtime modes.** Controller-selected `visual`, `music`, and `standby` modes are separate state-machine states. Visual and music playlists remain independently persisted; audio is never mixed into the synchronized visual wall playlist.
-- **Verification boundary.** Candidate completion requires automated cross-end mode tests, an executable single-device smoke diagnostic, same-SHA cloud CI, and real-device acceptance. No field-effect claim is made yet.
+- **Explicit Player runtime modes** (versionCode **1188**, versionName `1.18.8`). Controller-selected `visual`, `music`, and `standby` modes are separate state-machine states. Visual and music playlists remain independently persisted; audio is never mixed into the synchronized visual wall playlist. Standby preserves transport, cache, both lists, and the previous active mode for restore after restart.
+- **Cross-end result and race safety.** Android and Windows fence stale asynchronous playback/restore callbacks by runtime generation. Controller correlates per-device mode/list results and advances music-list revisions from both status and acknowledged results; Broker and P2P route requests/results role-safely without broadening a single-device music command.
+- **Includes the frozen v1.18.7 synchronization baseline.** Broker-authoritative loop-boundary correction and transactional fleet Broker migration are included in these same `1.18.8+1188` bytes; v1.18.7 was not promoted as a separate GitHub Release.
+- **Verification boundary.** Same-SHA cloud builds, package/version/signing/hash checks, cross-end automated tests, and independent code review are complete. Real-device playback, standby/restore, migration, and OTA observations remain post-install field evidence; this release does not claim those observations have already occurred.
 
 ## [v1.18.7] — 2026-07-21
 
@@ -11,7 +13,7 @@
 - **Observable loop diagnostics.** Android Player advertises `loop_boundary_sync_v1` and reports the active session, expected position, measured drift, boundary count, and correction count. New prepare, pause, stop, playlist replacement, item advance, and service shutdown cancel stale boundary jobs.
 - **Transactional fleet Broker migration.** Controller settings can select all or a subset of eligible online Players, preflight the target Broker socket, apply `transport_configure` in bounded batches, display per-device terminal results, retry only failures, and switch the Controller only after every selected Player confirms the persisted endpoint. Completion requires each Player to reappear through the exact target Broker with matching redacted config readback.
 - **Anti-stranding rollback.** Player returns the durable config result over its old link before rebuilding transport. If the new Broker does not complete `welcome` within 30 seconds, Player restores the exact previous Broker/P2P settings and rebuilds the old link; Controller offers a P2P recovery-and-retry path. Rebuilds are serialized and transport-generation-bound, so late callbacks from an old Broker/P2P socket cannot commit or mutate the new transport.
-- **Release boundary.** This entry describes the candidate implementation, not field qualification. Promotion remains blocked until cloud CI is green and real `1185 → 1187` plus `1186 → 1187` OTA/migration/playback runs pass.
+- **Release boundary.** This frozen baseline was not promoted separately; it is included in the formally released v1.18.8 bytes above. Real-device migration/playback observations remain operator-side post-install evidence.
 
 ## [v1.18.6] — 2026-07-21
 
