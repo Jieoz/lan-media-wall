@@ -1,5 +1,10 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.19.0 — 音乐清单权威回读：**状态返回完整 `active_music_playlist` 并声明
+> `music_playlist_snapshot_v1`，Controller 重启后可恢复设备实际清单；缩略图 metadata
+> 同步携带 item、模式、generation、Player session、序列和长度。非 standby 状态调用
+> restore 会明确返回 `not_in_standby`。单一版本源为 `1.19.0+1190`。
+>
 > **v1.18.8 — 独立 visual/music/standby 模式:**顶层运行状态不再由视觉列表
 > 隐式决定。`music_playlist` 独立持久化并使用 shuffle-bag（每轮不重复，跨轮
 > 避免首尾重复）；`standby` 停止输出但保留 transport、缓存、两套列表与恢复前

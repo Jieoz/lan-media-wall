@@ -154,6 +154,12 @@ class ClientConn:
         async with self._send_lock:
             await self.ws.send(data)
 
+    async def send_thumb(self, env: dict, jpeg: bytes) -> None:
+        """Send thumb_meta + JPEG as one indivisible two-frame pair."""
+        async with self._send_lock:
+            await self.ws.send(envelope.dumps(env))
+            await self.ws.send(jpeg)
+
     def __repr__(self):
         return f"<ClientConn {self.addr or self.ip}>"
 
@@ -195,6 +201,18 @@ class Hub:
     # ---- broadcast helpers ----------------------------------------------
     async def broadcast_controllers(self, env: dict) -> None:
         for conn in list(self.controllers.values()):
+            try:
+                await conn.send_env(env)
+            except Exception:
+                pass
+
+    async def broadcast_controller_presence(self) -> None:
+        count = len(self.controllers)
+        env = self.make_env("controller_presence", {
+            "present": count > 0,
+            "controllers_online": count,
+        }, "all")
+        for conn in list(self.players.values()):
             try:
                 await conn.send_env(env)
             except Exception:
@@ -322,11 +340,14 @@ class Hub:
 
     async def _cleanup(self, conn: ClientConn) -> None:
         if conn.role == "player" and conn.ident:
-            self.players.pop(conn.ident, None)
-            self.reg.set_offline(conn.ident)
-            self.mark_wall_dirty()
+            if self.players.get(conn.ident) is conn:
+                self.players.pop(conn.ident, None)
+                self.reg.set_offline(conn.ident)
+                self.mark_wall_dirty()
         elif conn.role == "controller" and conn.ident:
-            self.controllers.pop(conn.ident, None)
+            if self.controllers.get(conn.ident) is conn:
+                self.controllers.pop(conn.ident, None)
+                await self.broadcast_controller_presence()
 
     # ---- dispatch --------------------------------------------------------
     async def _dispatch(self, conn: ClientConn, env: dict, t2: int) -> None:
@@ -457,6 +478,7 @@ class Hub:
                 **self.auth_meta(),
             }, conn.addr)
             await conn.send_env(welcome)
+            await self.broadcast_controller_presence()
         # unknown role: ignore.
 
     async def _on_status(self, conn: ClientConn, env: dict) -> None:
@@ -760,22 +782,34 @@ class Hub:
     async def _on_thumb_meta(self, conn: ClientConn, env: dict) -> None:
         if conn.role != "player":
             return
-        # Remember meta; the next binary frame on this conn is the JPEG.
+        # A second metadata frame before the first binary payload is a protocol
+        # violation. Clear the slot and drop the following orphan binary rather
+        # than pairing it with the wrong metadata.
+        if conn.pending_thumb is not None:
+            conn.pending_thumb = None
+            return
+        # Keep meta on the producing connection until its JPEG arrives. Only then
+        # forward both frames under each controller connection's one send lock.
         conn.pending_thumb = env
-        # Forward the meta to all controllers immediately.
-        if self.controllers_online():
-            fwd = self.make_env("thumb_meta", env["payload"], "all")
-            await self.broadcast_controllers(fwd)
 
     async def _handle_binary(self, conn: ClientConn, data: bytes) -> None:
         # A binary frame is only meaningful right after a thumb_meta (§6.4).
         if conn.role != "player" or conn.pending_thumb is None:
             return
+        pending = conn.pending_thumb
         conn.pending_thumb = None
+        payload = dict(pending.get("payload", {}))
+        # Connection identity is authoritative; never let a player attach a
+        # thumbnail to another device card by spoofing payload.device_id.
+        payload["device_id"] = conn.ident or ""
+        expected = payload.get("bytes")
+        if isinstance(expected, int) and expected > 0 and expected != len(data):
+            return
         if self.controllers_online():
+            fwd = self.make_env("thumb_meta", payload, "all")
             for c in list(self.controllers.values()):
                 try:
-                    await c.send_raw(data)
+                    await c.send_thumb(fwd, data)
                 except Exception:
                     pass
 

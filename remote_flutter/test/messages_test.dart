@@ -227,13 +227,27 @@ void main() {
     test('解析 + mime 默认', () {
       final t = ThumbMeta.fromMap({
         'device_id': 'win-01',
+        'item_id': 'image-01',
+        'runtime_mode': 'visual',
+        'mode_generation': 7,
+        'session_id': 'boot-2',
         'seq': 3,
         'bytes': 4096,
       });
-      expect(t.deviceId, 'win-01');
-      expect(t.seq, 3);
-      expect(t.bytes, 4096);
-      expect(t.mime, 'image/jpeg');
+      expect(t, isNotNull);
+      final parsed = t!;
+      expect(parsed.deviceId, 'win-01');
+      expect(parsed.itemId, 'image-01');
+      expect(parsed.runtimeMode, 'visual');
+      expect(parsed.modeGeneration, 7);
+      expect(parsed.sessionId, 'boot-2');
+      expect(parsed.seq, 3);
+      expect(parsed.bytes, 4096);
+      expect(parsed.mime, 'image/jpeg');
+    });
+
+    test('身份字段不完整时拒绝解析', () {
+      expect(ThumbMeta.fromMap({'device_id': 'win-01', 'bytes': 3}), isNull);
     });
   });
 

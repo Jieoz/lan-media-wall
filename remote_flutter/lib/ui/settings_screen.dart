@@ -225,10 +225,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               label: const Text('批量迁移播放端到此 Broker'),
               onPressed: () => _startBulkBrokerMigration(state),
             ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.wifi_tethering),
+              label: const Text('清除播放端 Broker 并还原 P2P'),
+              onPressed: () => _startP2pRestore(state),
+            ),
             const SizedBox(height: 6),
             Text(
-              '先验证 Broker 可达，再通过当前链路逐台写入；全部确认后控制端才切换。'
-              '部分失败时保留当前链路，可只重试失败设备。Broker 必须使用当前设备已有的 PSK。',
+              '迁移：先验证 Broker 可达，再逐台写入。还原：必须先通过当前 Broker '
+              '清除播放端配置，收到持久化确认后控制端才切回 P2P。直接只切控制端会连接失败。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -254,6 +260,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 8),
           _LogView(lines: state.logLines),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _startP2pRestore(WallState state) async {
+    if (state.connectionMode != ConnectionMode.broker || state.isP2p) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('请先保持 Controller 与播放端连接在当前 Broker 模式')));
+      return;
+    }
+    final eligible = state.devices
+        .where((d) => d.online &&
+            (d.configCapabilities?.supportsTransportConfigure ?? false))
+        .toList(growable: false);
+    if (eligible.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('当前 Broker 上没有在线且支持还原 P2P 的播放端')));
+      return;
+    }
+    final selected = await _selectBrokerMigrationDevices(
+      context,
+      eligible,
+      title: '选择一台要还原到 P2P 的播放端',
+      confirmLabel: '清除并还原',
+      singleSelection: true,
+    );
+    if (!mounted || selected == null || selected.isEmpty) return;
+    if (selected.length != 1) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('请每次只还原一台播放端，确认 P2P 连接后再处理下一台')));
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('还原到 P2P'),
+        content: const Text('将先通过当前 Broker 清除所选播放端的 Broker 配置，'
+            '收到持久化回读后，再把控制端切换到自动发现/P2P。请勿中途关闭应用。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('开始还原')),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    final future = state.restoreDevicesToP2p(selected);
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('还原 P2P'),
+        content: FutureBuilder<Map<String, String>>(
+          future: future,
+          builder: (ctx, snapshot) {
+            if (!snapshot.hasData && snapshot.error == null) {
+              return const Row(children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 16),
+                Expanded(child: Text('正在清除 Broker 配置并验证 P2P…')),
+              ]);
+            }
+            if (snapshot.error != null) return Text('还原失败：${snapshot.error}');
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: snapshot.data!.entries
+                  .map((e) => Text('${e.key}：${e.value}'))
+                  .toList(growable: false),
+            );
+          },
+        ),
+        actions: [
+          FutureBuilder<Map<String, String>>(
+            future: future,
+            builder: (ctx, snapshot) => TextButton(
+              onPressed: snapshot.connectionState == ConnectionState.done
+                  ? () => Navigator.pop(ctx)
+                  : null,
+              child: const Text('完成'),
+            ),
+          ),
         ],
       ),
     );
@@ -314,19 +404,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 Future<Set<String>?> _selectBrokerMigrationDevices(
-    BuildContext context, List<DeviceStatus> devices) async {
-  final selected = devices.map((d) => d.deviceId).toSet();
+  BuildContext context,
+  List<DeviceStatus> devices, {
+  String title = '选择要迁移的播放端',
+  String confirmLabel = '开始迁移',
+  bool singleSelection = false,
+}) async {
+  final selected = singleSelection
+      ? <String>{}
+      : devices.map((d) => d.deviceId).toSet();
   return showDialog<Set<String>>(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setLocal) => AlertDialog(
-        title: const Text('选择要迁移的播放端'),
+        title: Text(title),
         content: SizedBox(
           width: 520,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Row(children: [
+              if (!singleSelection) Row(children: [
                 TextButton(
                   onPressed: () => setLocal(() {
                     selected
@@ -342,7 +439,7 @@ Future<Set<String>?> _selectBrokerMigrationDevices(
                 const Spacer(),
                 Text('已选 ${selected.length}/${devices.length}'),
               ]),
-              Align(
+              if (!singleSelection) Align(
                 alignment: Alignment.centerLeft,
                 child: Wrap(
                   spacing: 6,
@@ -386,6 +483,7 @@ Future<Set<String>?> _selectBrokerMigrationDevices(
                             '${d.deviceId} · ${d.groupId} · ${d.appVersion ?? "未知版本"}'),
                         onChanged: (v) => setLocal(() {
                           if (v == true) {
+                            if (singleSelection) selected.clear();
                             selected.add(d.deviceId);
                           } else {
                             selected.remove(d.deviceId);
@@ -405,7 +503,7 @@ Future<Set<String>?> _selectBrokerMigrationDevices(
             onPressed: selected.isEmpty
                 ? null
                 : () => Navigator.pop(ctx, Set<String>.from(selected)),
-            child: const Text('开始迁移'),
+            child: Text(confirmLabel),
           ),
         ],
       ),

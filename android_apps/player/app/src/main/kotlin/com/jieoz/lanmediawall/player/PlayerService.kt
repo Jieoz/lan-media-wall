@@ -112,11 +112,12 @@ class PlayerService : Service() {
      *  and never deletes twice. Built lazily on first cache request. */
     private var cleanupObj: CacheCleanup? = null
     private val cacheGenerationLock = Any()
-    /** §6.4: item_ids for which we have already OPENED the retriever this session
-     *  (whether or not bytes came back). With the permanent per-item thumbnail
-     *  cache this bounds MMR to one brief open per item — the one-shot contract. */
-    private val thumbAttempted = java.util.Collections.newSetFromMap(
-        java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    /** §6.4 bounded per-item extraction attempts. Successful bytes move into the
+     *  permanent in-memory cache; repeated decoder failures stop after the policy
+     *  limit instead of opening a retriever forever. */
+    private val thumbAttempts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val thumbSession =
+        "${android.os.Process.myPid()}-${android.os.SystemClock.elapsedRealtime()}"
     private val errors = java.util.concurrent.ConcurrentLinkedDeque<String>()
     private val logBuffer = java.util.concurrent.ConcurrentLinkedDeque<String>()
     private val logLock = Any()
@@ -535,7 +536,7 @@ class PlayerService : Service() {
             // them, so a controller never sends and silently times out.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
                 "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
-                "runtime_modes_v1", "music_shuffle_v1")))
+                "runtime_modes_v1", "music_shuffle_v1", "music_playlist_snapshot_v1")))
             put("group_id", settings.groupId)
         }
         link?.send("hello", payload)
@@ -620,6 +621,7 @@ class PlayerService : Service() {
             put("music_playlist_id", musicPlaylist?.playlistId ?: "")
             musicPlaylist?.let { put("music_playlist_revision", it.revision) }
             put("music_playlist_size", musicPlaylist?.items?.size ?: 0)
+            put("active_music_playlist", musicPlaylist?.raw ?: Json.Null)
             put("music_current_item_id", musicCurrentItemId)
             put("music_shuffle_cycle", musicShuffle.cycle)
             put("music_play_count", musicPlayCount)
@@ -649,7 +651,7 @@ class PlayerService : Service() {
             // broker wall snapshots are rebuilt from status.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
                 "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
-                "loop_boundary_sync_v1", "runtime_modes_v1", "music_shuffle_v1")))
+                "loop_boundary_sync_v1", "runtime_modes_v1", "music_shuffle_v1", "music_playlist_snapshot_v1")))
             activeLoopSync?.let { epoch ->
                 put("loop_sync", jsonObj {
                     put("session_id", epoch.sessionId)
@@ -1165,6 +1167,10 @@ class PlayerService : Service() {
     private fun hRestoreRuntimeMode(payload: Json.Obj) {
         if (!targetsMe(payload)) return
         val requestId = payload["request_id"].asString() ?: ""
+        if (runtimeModeState.current != PlaybackMode.STANDBY) {
+            sendRuntimeModeResult(requestId, false, "not_in_standby")
+            return
+        }
         applyRuntimeMode(null, restore = true)
         sendRuntimeModeResult(requestId, true, "")
     }
@@ -1307,10 +1313,10 @@ class PlayerService : Service() {
         pl?.items?.let { if (it.isNotEmpty()) downloader.restoreReadyFromDisk(it) }
         // §6.4: drop cached thumbnails for items the active playlist no longer
         // references, so the per-item thumbnail cache can't grow unbounded. Prune
-        // the one-shot attempt set in lockstep so a re-added item may re-extract.
+        // the bounded attempt map in lockstep so a re-added item may re-extract.
         pl?.items?.map { it.itemId }?.toSet()?.let {
             controllerRef?.retainThumbnails(it)
-            thumbAttempted.retainAll(it)
+            thumbAttempts.keys.retainAll(it)
         }
     }
 
@@ -2247,33 +2253,37 @@ class PlayerService : Service() {
     }
 
     /**
-     * §6.4 one-shot-per-item thumbnail. Decides via [ThumbnailPolicy.decide]:
-     * re-send a cached thumb, extract exactly once (bounded by [thumbAttempted] +
-     * the permanent per-item cache), or suppress. Safe to call on load AND from
-     * the refresh loop — the attempt guard prevents a second decoder open.
+     * §6.4 bounded-per-item thumbnail. Decides via [ThumbnailPolicy.decide]:
+     * re-send a cached thumb, retry extraction a small bounded number of times, or
+     * suppress. Safe to call on load AND from the refresh loop.
      */
     private suspend fun captureAndSendThumbnail(item: MediaItem?) {
         val coordinator = link ?: return
         if (!coordinator.isConnected) return
         if (!(settings.alwaysCollectThumbnails || controllerPresent)) return
         val ctl = controllerRef ?: return
-        if (item == null || item.type != "video") return
+        if (item == null || (item.type != "video" && item.type != "image")) return
         val itemId = item.itemId
         val action = ThumbnailPolicy.decide(
-            isVideo = true,
+            isVideo = item.type == "video",
+            isImage = item.type == "image",
             hasCachedThumbnail = ctl.cachedThumbnail(itemId) != null,
-            alreadyAttempted = thumbAttempted.contains(itemId),
+            attemptCount = thumbAttempts[itemId] ?: 0,
         )
         val res = when (action) {
             ThumbnailPolicy.ThumbAction.REUSE_CACHED -> ctl.cachedThumbnail(itemId)
             ThumbnailPolicy.ThumbAction.EXTRACT -> {
-                // Don't burn the one-shot until the bytes are actually on disk.
-                val localVideo = downloader.readyPath(itemId) ?: return
-                thumbAttempted.add(itemId) // one brief MMR open per item, ever
-                logEvent("thumb_extract item=$itemId trigger=oneshot")
+                // Don't burn an extraction attempt until the bytes are on disk.
+                val localMedia = downloader.readyPath(itemId) ?: return
+                synchronized(thumbAttempts) {
+                    thumbAttempts[itemId] = (thumbAttempts[itemId] ?: 0) + 1
+                }
+                logEvent("thumb_extract item=$itemId type=${item.type} " +
+                    "attempt=${thumbAttempts[itemId]}")
                 ctl.captureThumbnail(
                     itemId = itemId,
-                    sourcePath = localVideo.absolutePath,
+                    mediaType = item.type,
+                    sourcePath = localMedia.absolutePath,
                     positionMs = ctl.snapshot().positionMs,
                     maxWidth = 320,
                     quality = 70,
@@ -2284,6 +2294,10 @@ class PlayerService : Service() {
         val (seq, jpeg) = res
         coordinator.send("thumb_meta", jsonObj {
             put("device_id", settings.deviceId)
+            put("item_id", itemId)
+            put("runtime_mode", runtimeModeState.current.wire)
+            put("mode_generation", modeGeneration.get())
+            put("session_id", thumbSession)
             put("seq", seq)
             put("bytes", jpeg.size)
             put("mime", "image/jpeg")

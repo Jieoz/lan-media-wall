@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import threading
 import time
@@ -123,6 +124,7 @@ class Player:
                          or PlaybackMode.VISUAL)
         self.runtime_mode = PlaybackModeState(current_mode, previous_mode)
         self.mode_generation = 0
+        self.thumb_session = f"{os.getpid()}-{time.monotonic_ns()}"
         self.music_playlist: Optional[Dict[str, Any]] = self.state.music_playlist
         self.music_shuffle = ShuffleBag[str]()
         self.music_current_item_id: Optional[str] = None
@@ -366,7 +368,8 @@ class Player:
             # E0001): a controller must never send and silently time out.
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
-                             "runtime_modes_v1", "music_shuffle_v1"],
+                             "runtime_modes_v1", "music_shuffle_v1",
+                             "music_playlist_snapshot_v1"],
             "group_id": self.group_id,
         })
 
@@ -416,9 +419,11 @@ class Player:
             "state": self._effective_state(snap),
             "runtime_mode": self.runtime_mode.current.value,
             "previous_active_mode": self.runtime_mode.previous_active.value,
+            "mode_generation": self.mode_generation,
             "music_playlist_id": (self.music_playlist or {}).get("playlist_id"),
             "music_playlist_revision": (self.music_playlist or {}).get("revision"),
             "music_playlist_size": len((self.music_playlist or {}).get("items", [])),
+            "active_music_playlist": self.music_playlist,
             "music_current_item_id": self.music_current_item_id,
             "music_shuffle_cycle": self.music_shuffle.cycle,
             "music_play_count": self.music_play_count,
@@ -439,7 +444,8 @@ class Player:
             "cache_summary": self._cache_summary(),
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
-                             "runtime_modes_v1", "music_shuffle_v1"],
+                             "runtime_modes_v1", "music_shuffle_v1",
+                             "music_playlist_snapshot_v1"],
             # §19 remote config: advertise what the safe patch can touch + the
             # current authoritative snapshot (revision for optimistic concurrency,
             # redacted values — never the psk). Old controllers ignore both.
@@ -803,6 +809,10 @@ class Player:
         if not self._targets_me(payload):
             return
         request_id = str(payload.get("request_id", ""))
+        if self.runtime_mode.current is not PlaybackMode.STANDBY:
+            await self._send_runtime_mode_result(
+                request_id, False, "not_in_standby")
+            return
         target = self.runtime_mode.previous_active
         if target is PlaybackMode.STANDBY:
             target = PlaybackMode.VISUAL
@@ -1659,7 +1669,12 @@ class Player:
                 continue
             seq, jpeg = res
             await self.ws.send("thumb_meta", {
-                "device_id": self.device_id, "seq": seq,
+                "device_id": self.device_id,
+                "item_id": (self._current_item() or {}).get("item_id", ""),
+                "runtime_mode": self.runtime_mode.current.value,
+                "mode_generation": self.mode_generation,
+                "session_id": self.thumb_session,
+                "seq": seq,
                 "bytes": len(jpeg), "mime": "image/jpeg"})
             await self.ws.send_binary(jpeg)
 

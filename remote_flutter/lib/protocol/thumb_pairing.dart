@@ -14,10 +14,10 @@ import 'messages.dart';
 ///
 /// 无 Android/Flutter 依赖，可直接在纯 Dart 单测里驱动。
 class ThumbPairing {
-  ThumbPairing({this.onThumb, this.onLog});
+  ThumbPairing({required this.onThumb, this.onLog});
 
   /// 配对完成：交出该设备的缩略图 JPEG 字节。
-  void Function(String deviceId, Uint8List jpeg)? onThumb;
+  final void Function(ThumbMeta meta, Uint8List jpeg) onThumb;
 
   /// 诊断日志。
   void Function(String line)? onLog;
@@ -27,7 +27,13 @@ class ThumbPairing {
 
   /// 处理一个 `thumb_meta` payload：暂存，等紧跟的二进制帧。
   void onMeta(Map<String, dynamic> payload) {
-    _pending = ThumbMeta.fromMap(payload);
+    final meta = ThumbMeta.fromMap(payload);
+    if (meta == null) {
+      _pending = null;
+      onLog?.call('thumb_meta 身份字段不完整，丢弃');
+      return;
+    }
+    _pending = meta;
   }
 
   /// 处理一个二进制帧：与暂存的 [ThumbMeta] 配对。无暂存元信息时丢弃。
@@ -40,8 +46,9 @@ class ThumbPairing {
     _pending = null;
     if (meta.bytes > 0 && bytes.length != meta.bytes) {
       onLog?.call('缩略图字节数不符(meta=${meta.bytes}, got=${bytes.length})');
+      return;
     }
-    onThumb?.call(meta.deviceId, bytes);
+    onThumb(meta, bytes);
   }
 
   /// 清掉悬空的待配对元信息（连接关闭/重连时调用）。

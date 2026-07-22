@@ -610,7 +610,7 @@ void main() {
         controllerId: 'c1',
         nowFn: () => 1,
         linkFactory: (uri) => link = FakeWsLink(uri),
-      )..onThumb = (id, jpeg) => thumbs[id] = jpeg;
+      )..onThumb = (meta, jpeg) => thumbs[meta.deviceId] = jpeg;
       coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
       link.completeReady();
       await Future<void>.delayed(Duration.zero);
@@ -620,7 +620,9 @@ void main() {
       coord.handleFrame(
           'a',
           frame(openCodec(), 'thumb_meta',
-              {'device_id': 'a', 'seq': 1, 'bytes': jpeg.length}));
+              {'device_id': 'a', 'item_id': 'i1', 'runtime_mode': 'visual',
+               'mode_generation': 1, 'session_id': 's1',
+               'seq': 1, 'bytes': jpeg.length}));
       link.injectBinary(jpeg);
       await Future<void>.delayed(Duration.zero);
 
@@ -635,13 +637,64 @@ void main() {
         controllerId: 'c1',
         nowFn: () => 1,
         linkFactory: (uri) => link = FakeWsLink(uri),
-      )..onThumb = (id, jpeg) => thumbs[id] = jpeg;
+      )..onThumb = (meta, jpeg) => thumbs[meta.deviceId] = jpeg;
       coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
       link.completeReady();
       await Future<void>.delayed(Duration.zero);
 
       link.injectBinary(Uint8List.fromList([1, 2, 3]));
       await Future<void>.delayed(Duration.zero);
+      expect(thumbs, isEmpty);
+    });
+
+    test('缩略图(B): JPEG 长度与 thumb_meta 不符时严格丢弃', () async {
+      late FakeWsLink link;
+      final thumbs = <String, Uint8List>{};
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onThumb = (meta, jpeg) => thumbs[meta.deviceId] = jpeg;
+      coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+
+      coord.handleFrame(
+          'a',
+          frame(openCodec(), 'thumb_meta',
+              {'device_id': 'a', 'item_id': 'i1', 'runtime_mode': 'visual',
+               'mode_generation': 1, 'session_id': 's1',
+               'seq': 1, 'bytes': 4}));
+      link.injectBinary(Uint8List.fromList([1, 2, 3]));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(thumbs, isEmpty);
+    });
+
+    test('缩略图(B): payload 设备身份与连接不符时丢弃', () async {
+      late FakeWsLink link;
+      final thumbs = <String, Uint8List>{};
+      final coord = P2pCoordinator(
+        codec: openCodec(),
+        controllerId: 'c1',
+        nowFn: () => 1,
+        linkFactory: (uri) => link = FakeWsLink(uri),
+      )..onThumb = (meta, jpeg) => thumbs[meta.deviceId] = jpeg;
+      coord.setPeers([const P2pPeer(deviceId: 'a', host: 'h', port: 8770)]);
+      link.completeReady();
+      await Future<void>.delayed(Duration.zero);
+
+      final jpeg = Uint8List.fromList([1, 2, 3]);
+      coord.handleFrame(
+          'a',
+          frame(openCodec(), 'thumb_meta',
+              {'device_id': 'b', 'item_id': 'i1', 'runtime_mode': 'visual',
+               'mode_generation': 1, 'session_id': 's1',
+               'seq': 1, 'bytes': jpeg.length}));
+      link.injectBinary(jpeg);
+      await Future<void>.delayed(Duration.zero);
+
       expect(thumbs, isEmpty);
     });
 

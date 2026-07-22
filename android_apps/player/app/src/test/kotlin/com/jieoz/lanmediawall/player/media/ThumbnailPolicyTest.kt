@@ -47,34 +47,61 @@ class ThumbnailPolicyTest {
     @Test fun `a video with no cache extracts once when not yet attempted`() {
         assertEquals(
             ThumbnailPolicy.ThumbAction.EXTRACT,
-            ThumbnailPolicy.decide(isVideo = true, hasCachedThumbnail = false, alreadyAttempted = false),
+            ThumbnailPolicy.decide(isVideo = true, hasCachedThumbnail = false, attemptCount = 0),
         )
     }
 
-    @Test fun `a video already attempted this session is suppressed not re-extracted`() {
-        // The one-shot bound: at most one MMR open per item, so a still-playing
-        // video is probed once, never every tick.
+    @Test fun `failed extraction retries are bounded`() {
+        assertEquals(
+            ThumbnailPolicy.ThumbAction.EXTRACT,
+            ThumbnailPolicy.decide(
+                isVideo = true,
+                hasCachedThumbnail = false,
+                attemptCount = ThumbnailPolicy.MAX_CAPTURE_ATTEMPTS - 1,
+            ),
+        )
         assertEquals(
             ThumbnailPolicy.ThumbAction.SUPPRESS,
-            ThumbnailPolicy.decide(isVideo = true, hasCachedThumbnail = false, alreadyAttempted = true),
+            ThumbnailPolicy.decide(
+                isVideo = true,
+                hasCachedThumbnail = false,
+                attemptCount = ThumbnailPolicy.MAX_CAPTURE_ATTEMPTS,
+            ),
         )
     }
 
     @Test fun `a cached thumbnail is always reused regardless of attempt state`() {
         assertEquals(
             ThumbnailPolicy.ThumbAction.REUSE_CACHED,
-            ThumbnailPolicy.decide(isVideo = true, hasCachedThumbnail = true, alreadyAttempted = false),
+            ThumbnailPolicy.decide(isVideo = true, hasCachedThumbnail = true, attemptCount = 0),
         )
         assertEquals(
             ThumbnailPolicy.ThumbAction.REUSE_CACHED,
-            ThumbnailPolicy.decide(isVideo = true, hasCachedThumbnail = true, alreadyAttempted = true),
+            ThumbnailPolicy.decide(isVideo = true, hasCachedThumbnail = true, attemptCount = ThumbnailPolicy.MAX_CAPTURE_ATTEMPTS),
         )
     }
 
-    @Test fun `non-video items never extract`() {
+    @Test fun `image items extract a real thumbnail`() {
+        assertEquals(
+            ThumbnailPolicy.ThumbAction.EXTRACT,
+            ThumbnailPolicy.decide(
+                isVideo = false,
+                isImage = true,
+                hasCachedThumbnail = false,
+                attemptCount = 0,
+            ),
+        )
+    }
+
+    @Test fun `audio items never extract`() {
         assertEquals(
             ThumbnailPolicy.ThumbAction.SUPPRESS,
-            ThumbnailPolicy.decide(isVideo = false, hasCachedThumbnail = false, alreadyAttempted = false),
+            ThumbnailPolicy.decide(
+                isVideo = false,
+                isImage = false,
+                hasCachedThumbnail = false,
+                attemptCount = 0,
+            ),
         )
     }
 

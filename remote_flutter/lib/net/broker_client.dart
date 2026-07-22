@@ -30,7 +30,7 @@ class BrokerClient {
   void Function(WallSnapshot snapshot)? onWall;
 
   /// 收到某台设备的缩略图 JPEG(thumb_meta + 二进制帧配对完成后)。
-  void Function(String deviceId, Uint8List jpeg)? onThumb;
+  void Function(ThumbMeta meta, Uint8List jpeg)? onThumb;
 
   /// 收到被控端回传的诊断快照文本。
   void Function(String deviceId, String detail)? onDiagnostic;
@@ -84,7 +84,7 @@ class BrokerClient {
   /// 缩略图两帧配对(§6.4：thumb_meta 之后紧跟一个二进制帧)。与 p2p 路径复用
   /// 同一套 [ThumbPairing]，避免两端解析/存储逻辑分叉。
   late final ThumbPairing _thumbs = ThumbPairing(
-    onThumb: (id, jpeg) => onThumb?.call(id, jpeg),
+    onThumb: (meta, jpeg) => onThumb?.call(meta, jpeg),
     onLog: _log,
   );
 

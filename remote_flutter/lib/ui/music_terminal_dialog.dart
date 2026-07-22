@@ -9,8 +9,12 @@ import '../state/wall_state.dart';
 Future<void> showMusicTerminalDialog(
     BuildContext context, WallState state, WallDevice device) async {
   final items = List<MediaItem>.of(state.musicPlaylistFor(device.deviceId));
+  final authoritative = state.hasAuthoritativeMusicPlaylist(device.deviceId);
+  final reportedSize = device.status?.musicPlaylistSize ?? 0;
   var busy = false;
-  var status = '';
+  var status = !authoritative && reportedSize > 0
+      ? '该播放端报告 $reportedSize 首，但未提供完整清单；已禁止空列表覆盖，请先升级播放端'
+      : '';
 
   Future<void> showResult(BuildContext ctx, StateSetter setLocal,
       {required bool playAfterSave}) async {
@@ -143,14 +147,18 @@ Future<void> showMusicTerminalDialog(
                   runSpacing: 8,
                   children: [
                     OutlinedButton.icon(
-                      onPressed: busy ? null : () => showResult(
-                          ctx, setLocal, playAfterSave: false),
+                      onPressed: busy || (!authoritative && reportedSize > 0)
+                          ? null
+                          : () => showResult(
+                              ctx, setLocal, playAfterSave: false),
                       icon: const Icon(Icons.save_outlined),
                       label: const Text('保存列表'),
                     ),
                     FilledButton.icon(
-                      onPressed: busy ? null : () => showResult(
-                          ctx, setLocal, playAfterSave: true),
+                      onPressed: busy || (!authoritative && reportedSize > 0)
+                          ? null
+                          : () => showResult(
+                              ctx, setLocal, playAfterSave: true),
                       icon: const Icon(Icons.music_note),
                       label: const Text('保存并播放'),
                     ),

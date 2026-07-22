@@ -126,6 +126,32 @@ class ActivePlaylist {
   }
 }
 
+class MusicPlaylistSnapshot {
+  final String playlistId;
+  final int revision;
+  final List<MediaItem> items;
+
+  const MusicPlaylistSnapshot({
+    required this.playlistId,
+    required this.revision,
+    required this.items,
+  });
+
+  static MusicPlaylistSnapshot? fromMap(Map<String, dynamic>? m) {
+    if (m == null) return null;
+    final items = ((m['items'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((e) => MediaItem.fromMap(e.cast<String, dynamic>()))
+        .where((e) => e.isAudio)
+        .toList(growable: false);
+    return MusicPlaylistSnapshot(
+      playlistId: _asStr(m['playlist_id']),
+      revision: _asInt(m['revision']),
+      items: items,
+    );
+  }
+}
+
 class PlaylistEditing {
   static List<MediaItem> move(List<MediaItem> source, int from, int to) {
     final out = List<MediaItem>.of(source);
@@ -362,6 +388,7 @@ class DeviceStatus {
   final String musicPlaylistId;
   final int? musicPlaylistRevision;
   final int musicPlaylistSize;
+  final MusicPlaylistSnapshot? activeMusicPlaylist;
   final String? musicCurrentItemId;
   final int musicShuffleCycle;
   final int musicPlayCount;
@@ -417,6 +444,7 @@ class DeviceStatus {
     this.musicPlaylistId = '',
     this.musicPlaylistRevision,
     this.musicPlaylistSize = 0,
+    this.activeMusicPlaylist,
     this.musicCurrentItemId,
     this.musicShuffleCycle = 0,
     this.musicPlayCount = 0,
@@ -470,6 +498,8 @@ class DeviceStatus {
       musicPlaylistRevision: m['music_playlist_revision'] == null
           ? null : _asInt(m['music_playlist_revision']),
       musicPlaylistSize: _asInt(m['music_playlist_size']),
+      activeMusicPlaylist: MusicPlaylistSnapshot.fromMap(
+          (m['active_music_playlist'] as Map?)?.cast<String, dynamic>()),
       musicCurrentItemId: m['music_current_item_id'] as String?,
       musicShuffleCycle: _asInt(m['music_shuffle_cycle']),
       musicPlayCount: _asInt(m['music_play_count']),
@@ -537,6 +567,7 @@ class DeviceStatus {
         musicPlaylistId: musicPlaylistId,
         musicPlaylistRevision: musicPlaylistRevision,
         musicPlaylistSize: musicPlaylistSize,
+        activeMusicPlaylist: activeMusicPlaylist,
         musicCurrentItemId: musicCurrentItemId,
         musicShuffleCycle: musicShuffleCycle,
         musicPlayCount: musicPlayCount,
@@ -620,23 +651,48 @@ class WallSnapshot {
 /// 缩略图元信息（§6.4），随后紧跟一个二进制帧。
 class ThumbMeta {
   final String deviceId;
+  final String itemId;
+  final String runtimeMode;
+  final int? modeGeneration;
+  final String sessionId;
   final int seq;
   final int bytes;
   final String mime;
 
   const ThumbMeta({
     required this.deviceId,
+    this.itemId = '',
+    this.runtimeMode = '',
+    this.modeGeneration,
+    this.sessionId = '',
     required this.seq,
     required this.bytes,
     this.mime = 'image/jpeg',
   });
+  static ThumbMeta? fromMap(Map<String, dynamic> m) {
+    final meta = ThumbMeta(
+      deviceId: _asStr(m['device_id']),
+      itemId: _asStr(m['item_id']),
+      runtimeMode: _asStr(m['runtime_mode']),
+      modeGeneration: m['mode_generation'] == null
+          ? null
+          : _asInt(m['mode_generation']),
+      sessionId: _asStr(m['session_id']),
+      seq: _asInt(m['seq']),
+      bytes: _asInt(m['bytes']),
+      mime: _asStr(m['mime'], 'image/jpeg'),
+    );
+    return meta.hasCompleteIdentity ? meta : null;
+  }
 
-  static ThumbMeta fromMap(Map<String, dynamic> m) => ThumbMeta(
-        deviceId: _asStr(m['device_id']),
-        seq: _asInt(m['seq']),
-        bytes: _asInt(m['bytes']),
-        mime: _asStr(m['mime'], 'image/jpeg'),
-      );
+  bool get hasCompleteIdentity =>
+      deviceId.isNotEmpty &&
+      itemId.isNotEmpty &&
+      runtimeMode.isNotEmpty &&
+      modeGeneration != null &&
+      sessionId.isNotEmpty &&
+      seq > 0 &&
+      bytes > 0;
 }
 
 /// UDP announce（§7 + §13/§14：可带 auth_mode / topology）。

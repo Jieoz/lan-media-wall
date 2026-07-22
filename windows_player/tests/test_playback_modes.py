@@ -86,6 +86,14 @@ def test_player_music_standby_restore_round_trip(tmp_path):
     assert p.ws.sent[-1][0] == "music_playlist_result"
     assert p.ws.sent[-1][1]["ok"] is True
 
+    ws = p.ws
+    assert isinstance(ws, FakeWs)
+    run(p._send_status())
+    assert ws.sent[-1][0] == "status"
+    assert ws.sent[-1][1]["active_music_playlist"]["playlist_id"] == "music-1"
+    assert [item["item_id"] for item in
+            ws.sent[-1][1]["active_music_playlist"]["items"]] == ["a", "b"]
+
     run(p._on_message("set_runtime_mode", {
         "request_id": "req-mode", "device_id": p.device_id, "mode": "music",
     }, {"msg_id": "m-mode"}))
@@ -109,6 +117,18 @@ def test_player_music_standby_restore_round_trip(tmp_path):
     assert p.runtime_mode.current is PlaybackMode.MUSIC
     assert p.state.runtime_mode == "music"
     assert p.play_state == "playing"
+
+    generation = p.mode_generation
+    run(p._on_message("restore_runtime_mode", {
+        "request_id": "req-not-standby", "device_id": p.device_id,
+    }, {"msg_id": "m-not-standby"}))
+    assert p.runtime_mode.current is PlaybackMode.MUSIC
+    assert p.mode_generation == generation
+    ws = p.ws
+    assert isinstance(ws, FakeWs)
+    assert ws.sent[-1][0] == "runtime_mode_result"
+    assert ws.sent[-1][1]["ok"] is False
+    assert ws.sent[-1][1]["error"] == "not_in_standby"
 
 
 def test_music_snapshot_marks_only_immediate_or_stalled_failures(tmp_path):

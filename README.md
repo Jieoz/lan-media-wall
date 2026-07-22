@@ -1,12 +1,20 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
-> **v1.18.9 candidate — open-Broker Android crash + mode-control UX:** Android
+> **v1.19.0 — 音乐清单/缩略图/P2P 恢复闭环：** Player 状态完整回读活动音乐清单，
+> Controller 重启后不再显示 0 首或用空草稿覆盖；图片和视频缩略图携带设备、播放项、
+> 模式、generation/session、序列及长度并由 Broker 原子转发，过期/错配帧严格丢弃。
+> P2P 连接身份只由 welcome/status/ready 建立，业务 payload 不能改写连接归属。
+> 设置页可经当前 Broker 链路清除一台 Player 的持久化 Broker 地址，确认回读后再安全
+> 切回自动发现/P2P；清除/回读失败时保留 Controller 当前 Broker，切换后 20 秒未直连则
+> 明确报错，不把“等待发现”冒充成功。
+
+> **v1.18.9 — open-Broker Android crash + mode-control UX:** Android
 > Broker-client discovery no longer attempts HMAC with an empty key after
 > `transport_configure`; keyless open/optional announces are unsigned and UDP
 > packet failures are contained instead of killing the Player process. Controller
 > music terminals expose **恢复图片/视频**, while **待机 / 退出待机** now sit beside
 > Pause/Resume/Stop in per-device playback controls. Version identity is
-> `1.18.9+1189`; cloud and real-device gates remain pending until run.
+> `1.18.9+1189`; this version remains the last released baseline before v1.19.0.
 >
 > **v1.18.8 (formal release — explicit playback modes):** Android and Windows
 > Players now own three explicit top-level modes: synchronized `visual`,

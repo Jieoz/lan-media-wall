@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.19.0] — 2026-07-22
+
+- **Player-authoritative music recovery** (versionCode **1190**, versionName `1.19.0`). Android and Windows status now return the complete active music playlist and advertise `music_playlist_snapshot_v1`; a restarted Controller rebuilds its terminal from that snapshot. Older Players that report a non-empty count without a snapshot are protected from an accidental empty overwrite.
+- **Identity-safe visual thumbnails.** Android now decodes bounded image thumbnails as well as video frames and retries failed extraction at most three times. Player metadata binds each JPEG to device, item, runtime mode, mode generation, process session, sequence and byte length. Broker forwards metadata plus binary under one send lock and canonicalizes device identity; Controller drops mismatched, stale, out-of-order and wrong-length frames and clears stale previews on item/mode changes.
+- **Safe Broker-to-P2P restore.** Controller clears exactly one selected Player through its current Broker link, waits for persisted `broker_host=""` and `auto_discovery=true` status readback, then switches itself to auto-discovery and requires a direct link within 20 seconds. Failed clear/readback confirmation retains the current Controller Broker configuration; a post-clear direct timeout is reported explicitly instead of being labeled success. Standby restore now rejects non-standby requests with `not_in_standby` on Android and Windows.
+- **Verification boundary.** Python/Broker/Windows suites and cross-platform protocol regressions cover the new contracts; formal promotion still requires the exact release SHA to pass every cloud build/signing lane and real package readback.
+
 ## [v1.18.9] — 2026-07-22
 
 - **Open-Broker Android crash fix** (versionCode **1189**, versionName `1.18.9`). Field log evidence showed `transport_configure` successfully committed an open Broker, then the API19 UDP discovery thread called the legacy always-signing envelope builder with an empty key. `SecretKeySpec(key.length == 0)` escaped the thread and killed the entire Player process every few seconds. Broker-client discovery now follows the selected auth/key mode, emits an unsigned announce for `open` or keyless `optional`, supports an explicit derived device key, and contains per-packet discovery failures so advisory UDP can never take down the kiosk.

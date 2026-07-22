@@ -41,6 +41,14 @@ void main() {
       'runtime_mode': 'music', 'previous_active_mode': 'visual',
       'mode_generation': 3, 'music_playlist_id': 'music-dev-1',
       'music_playlist_revision': 9, 'music_playlist_size': 3,
+      'active_music_playlist': {
+        'playlist_id': 'music-dev-1', 'revision': 9,
+        'items': [
+          {'item_id': 'song-a', 'type': 'audio', 'name': 'A', 'url': 'http://x/a.mp3'},
+          {'item_id': 'song-b', 'type': 'audio', 'name': 'B', 'url': 'http://x/b.mp3'},
+          {'item_id': 'song-c', 'type': 'audio', 'name': 'C', 'url': 'http://x/c.mp3'},
+        ],
+      },
       'music_current_item_id': 'song-b', 'music_shuffle_cycle': 2,
       'music_play_count': 8, 'music_failed_item_ids': ['bad-1'],
       'standby_since_ms': null,
@@ -53,6 +61,9 @@ void main() {
     expect(status.musicPlaylistRevision, 9);
     expect(status.musicCurrentItemId, 'song-b');
     expect(status.musicFailedItemIds, ['bad-1']);
+    expect(status.activeMusicPlaylist?.playlistId, 'music-dev-1');
+    expect(status.activeMusicPlaylist?.revision, 9);
+    expect(status.activeMusicPlaylist?.items.map((e) => e.itemId), ['song-a', 'song-b', 'song-c']);
     expect(status.supportsRuntimeModes, isTrue);
     expect(status.supportsMusicShuffle, isTrue);
   });

@@ -1,12 +1,19 @@
 # LAN Media Wall — Android Player (被控端)
 
-> **v1.18.9 候选版 — 修复开放 Broker 配置后反复闪退：**现场日志确认
+> **v1.19.0 — 音乐状态与视觉缩略图：**`status.active_music_playlist` 完整回读
+> 活动音乐清单；图片与视频均生成受限尺寸 JPEG，并以 item、运行模式、generation、
+> Player session、序列和字节数绑定。提取失败最多重试三次；图片最大边受限，避免
+> API19 盒子无界解码。清除持久化 Broker 后重新选择 P2P server 的策略有回归覆盖。
+> 缩略图 `mode_generation` 与状态协议共用同一个原子 generation 计数器。
+> 单一版本源为 `1.19.0+1190`；实际盒子画面和 direct 重连仍需安装后现场验收。
+>
+> **v1.18.9 正式版 — 修复开放 Broker 配置后反复闪退：**现场日志确认
 > `transport_configure` 成功后，API19 的 UDP discovery responder 在
 > `auth_mode=open`、空密钥下仍调用强制 HMAC，触发
 > `SecretKeySpec(key.length == 0)` 并杀死整个进程。Broker-client announce 现按
 > 实际 auth/key mode 构造；open/无密钥 optional 发空签名，derived device key 走
 > 显式 key 路径；每个 UDP 包的异常也被隔离，辅助发现线程不能再拖垮 kiosk。
-> 单一版本源为 `1.18.9+1189`。
+> 对应版本源为 `1.18.9+1189`。
 >
 > **v1.18.7 — Broker 权威循环边界同步与迁移回滚：**循环视频保存
 > `sync_session_id`、统一 `play_at` 和本地媒体 duration；每个公共循环边界按 Broker

@@ -302,6 +302,7 @@ class PlayerController(
      */
     suspend fun captureThumbnail(
         itemId: String,
+        mediaType: String,
         sourcePath: String,
         positionMs: Long,
         maxWidth: Int = ThumbnailPolicy.CONTROLLER_THUMB_MAX_WIDTH,
@@ -316,18 +317,57 @@ class PlayerController(
             val file = File(sourcePath.removePrefix("file://"))
             if (!file.isFile) return@withContext null
             val extractStarted = SystemClock.elapsedRealtime()
-            val retriever = MediaMetadataRetriever()
-            val frame = try {
-                retriever.setDataSource(file.absolutePath)
-                retriever.getFrameAtTime(
-                    positionMs.coerceAtLeast(0L) * 1000L,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                )
-            } catch (e: Exception) {
-                log("thumb_error stage=extract type=${e.javaClass.simpleName}")
-                null
-            } finally {
-                try { retriever.release() } catch (_: Exception) { }
+            val frame = if (mediaType == "image") {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    null
+                } else {
+                    var sample = 1
+                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample >
+                            ThumbnailPolicy.TRANSITION_FREEZE_MAX_WIDTH * 2) {
+                        sample *= 2
+                    }
+                    val decoded = BitmapFactory.decodeFile(
+                        file.absolutePath,
+                        BitmapFactory.Options().apply {
+                            inSampleSize = sample
+                            inPreferredConfig = Bitmap.Config.ARGB_8888
+                        },
+                    )
+                    val bounded = decoded?.let { source ->
+                        val largest = maxOf(source.width, source.height)
+                        val limit = ThumbnailPolicy.TRANSITION_FREEZE_MAX_WIDTH
+                        if (largest > limit) {
+                            val targetWidth =
+                                (source.width.toLong() * limit / largest).toInt()
+                                    .coerceAtLeast(1)
+                            val targetHeight =
+                                (source.height.toLong() * limit / largest).toInt()
+                                    .coerceAtLeast(1)
+                            Bitmap.createScaledBitmap(
+                                source, targetWidth, targetHeight, true,
+                            ).also { source.recycle() }
+                        } else {
+                            source
+                        }
+                    }
+                    bounded
+                }
+            } else {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(file.absolutePath)
+                    retriever.getFrameAtTime(
+                        positionMs.coerceAtLeast(0L) * 1000L,
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    )
+                } catch (e: Exception) {
+                    log("thumb_error stage=extract type=${e.javaClass.simpleName}")
+                    null
+                } finally {
+                    try { retriever.release() } catch (_: Exception) { }
+                }
             } ?: return@withContext null
             val extractMs = SystemClock.elapsedRealtime() - extractStarted
             // One decode → freeze (near-fullscreen) + controller thumb (small).

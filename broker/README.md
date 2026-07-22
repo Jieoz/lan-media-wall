@@ -5,6 +5,14 @@ controllers (Flutter) connect only to this broker over WebSocket; the broker
 owns the device registry, group assignments, the master clock, status
 aggregation, and command fan-out.
 
+## v1.19.0 — atomic identity-bound thumbnails
+
+Controller presence is broadcast when a Controller joins or leaves, including
+when Players connected first. `thumb_meta` remains paired with its JPEG until
+the binary frame arrives; each Controller receives both frames under one send
+lock. The Broker validates byte length and replaces payload `device_id` with the
+authenticated Player identity before forwarding.
+
 This implements the broker-side responsibilities of
 [`../protocol_spec.md`](../protocol_spec.md) (§2–§10, plus the v1.2 additions
 §13–§15, the v1.3 derived keys §17, and the v1.4 group CRUD §18 / device config

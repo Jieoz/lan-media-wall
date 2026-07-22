@@ -142,6 +142,10 @@ class WallState extends ChangeNotifier {
 
   WallSnapshot _wall = const WallSnapshot();
   final Map<String, Uint8List> _thumbs = {};
+  final Map<String, int> _thumbSeq = {};
+  final Map<String, String> _thumbSession = {};
+  final Map<String, String> _thumbItem = {};
+  final Map<String, int> _thumbModeGeneration = {};
 
   /// §6.4 the ONE shared media-push progress state machine (E0001). Fed by
   /// [_onWall] for BOTH transports (P2P and broker converge there), so progress
@@ -201,8 +205,22 @@ class WallState extends ChangeNotifier {
       _runtimeModeResults[deviceId];
   MusicPlaylistResult? musicPlaylistResultFor(String deviceId) =>
       _musicPlaylistResults[deviceId];
-  List<MediaItem> musicPlaylistFor(String deviceId) =>
-      List.unmodifiable(_musicDrafts[deviceId] ?? const <MediaItem>[]);
+  List<MediaItem> musicPlaylistFor(String deviceId) {
+    DeviceStatus? status;
+    for (final device in _wall.devices) {
+      if (device.deviceId == deviceId) {
+        status = device;
+        break;
+      }
+    }
+    final snapshot = status?.activeMusicPlaylist;
+    if (snapshot != null) return List.unmodifiable(snapshot.items);
+    return List.unmodifiable(_musicDrafts[deviceId] ?? const <MediaItem>[]);
+  }
+
+  bool hasAuthoritativeMusicPlaylist(String deviceId) => _wall.devices
+      .where((d) => d.deviceId == deviceId)
+      .any((d) => d.activeMusicPlaylist != null);
 
   /// broker 单播只按 device_id 路由；同一台设备同一时刻只挂一个 pending 请求，
   /// 因此用 device_id 作 key。空 device_id（组播/广播场景）统一落到 '*' 桶，
@@ -746,8 +764,8 @@ class WallState extends ChangeNotifier {
     _linkPhase.remove(resolved);
     _linkError.remove(deviceId);
     _linkError.remove(resolved);
-    _thumbs.remove(deviceId);
-    _thumbs.remove(resolved);
+    _dropThumb(deviceId);
+    _dropThumb(resolved);
     _p2p.forgetDevice(deviceId);
     if (resolved != deviceId) _p2p.forgetDevice(resolved);
     _progress.forgetDevice(deviceId);
@@ -776,6 +794,16 @@ class WallState extends ChangeNotifier {
     _wall = snap;
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final device in snap.devices) {
+      final thumbItem = _thumbItem[device.deviceId];
+      final thumbGeneration = _thumbModeGeneration[device.deviceId];
+      if (!device.online ||
+          device.runtimeMode != RuntimeMode.visual ||
+          device.current == null ||
+          (thumbItem != null && thumbItem != device.current!.itemId) ||
+          (thumbGeneration != null &&
+              thumbGeneration != device.modeGeneration)) {
+        _dropThumb(device.deviceId);
+      }
       final state = device.updateState;
       if (state != null && state.isNotEmpty) {
         _updateStatus[device.deviceId] = state;
@@ -840,9 +868,56 @@ class WallState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _onThumb(String deviceId, Uint8List jpeg) {
-    _thumbs[deviceId] = jpeg;
+  void _onThumb(ThumbMeta meta, Uint8List jpeg) {
+    final device = deviceById(meta.deviceId);
+    if (device == null || device.current == null) return;
+    if (meta.itemId.isEmpty ||
+        meta.runtimeMode.isEmpty ||
+        meta.modeGeneration == null ||
+        meta.sessionId.isEmpty ||
+        meta.seq <= 0 ||
+        meta.bytes <= 0) {
+      _pushLog('丢弃身份不完整的缩略图(${meta.deviceId})');
+      return;
+    }
+    if (meta.bytes > 0 && jpeg.length != meta.bytes) {
+      _pushLog('丢弃损坏缩略图(${meta.deviceId}): 字节长度不符');
+      return;
+    }
+    if (meta.itemId.isNotEmpty && device.current?.itemId != meta.itemId) {
+      _pushLog('丢弃过期缩略图(${meta.deviceId}): 播放项已变化');
+      return;
+    }
+    if (meta.modeGeneration != null &&
+        meta.modeGeneration != device.modeGeneration) {
+      _pushLog('丢弃过期缩略图(${meta.deviceId}): 模式代次已变化');
+      return;
+    }
+    if (device.runtimeMode != RuntimeMode.visual ||
+        (meta.runtimeMode.isNotEmpty &&
+            meta.runtimeMode != device.runtimeMode.name)) {
+      _pushLog('丢弃过期缩略图(${meta.deviceId}): 当前不是图片/视频模式');
+      return;
+    }
+    final previousSession = _thumbSession[meta.deviceId];
+    final previousSeq = previousSession == meta.sessionId
+        ? (_thumbSeq[meta.deviceId] ?? -1)
+        : -1;
+    if (meta.seq <= previousSeq) return;
+    _thumbSession[meta.deviceId] = meta.sessionId;
+    _thumbSeq[meta.deviceId] = meta.seq;
+    _thumbItem[meta.deviceId] = meta.itemId;
+    _thumbModeGeneration[meta.deviceId] = meta.modeGeneration!;
+    _thumbs[meta.deviceId] = jpeg;
     notifyListeners();
+  }
+
+  void _dropThumb(String deviceId) {
+    _thumbs.remove(deviceId);
+    _thumbSeq.remove(deviceId);
+    _thumbSession.remove(deviceId);
+    _thumbItem.remove(deviceId);
+    _thumbModeGeneration.remove(deviceId);
   }
 
   void _onConn(ConnState s) {
@@ -1658,6 +1733,85 @@ class WallState extends ChangeNotifier {
       useWss: useWss, requestId: requestId,
     ));
     return requestId;
+  }
+
+  Future<void> _clearTransportAndWait(String deviceId) async {
+    final requestId =
+        'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
+    final completer = Completer<Map<String, dynamic>>();
+    _pendingConfigResults[requestId] = completer;
+    try {
+      _send('transport_configure', Commands.transportConfigure(
+        deviceId: deviceId,
+        brokerHost: '',
+        requestId: requestId,
+      ));
+      final result =
+          await completer.future.timeout(const Duration(seconds: 8));
+      if (result['ok'] != true) {
+        throw StateError('播放端拒绝清除 Broker 配置');
+      }
+      final applied =
+          (result['applied'] as Map?)?.cast<String, dynamic>() ?? const {};
+      if ((applied['broker_host']?.toString() ?? '').trim().isNotEmpty ||
+          applied['auto_discovery'] != true) {
+        throw StateError('播放端未确认恢复自动发现/P2P');
+      }
+      final deadline = DateTime.now().add(const Duration(seconds: 8));
+      while (DateTime.now().isBefore(deadline)) {
+        final snapshot = deviceById(deviceId)?.configSnapshot;
+        if (snapshot != null &&
+            (snapshot.brokerHost ?? '').trim().isEmpty &&
+            snapshot.autoDiscovery) {
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+      throw StateError('播放端未在状态中回读已持久化的 P2P 配置');
+    } finally {
+      _pendingConfigResults.remove(requestId);
+    }
+  }
+
+  /// Clear the persisted Broker override while the current Broker link is still
+  /// alive, then move this controller to discovery/P2P. A Player sends its durable
+  /// readback before rebuilding transport, so a successful result cannot be an
+  /// optimistic UI-only acknowledgement.
+  Future<Map<String, String>> restoreDevicesToP2p(
+      Iterable<String> deviceIds) async {
+    final ids = deviceIds.toSet();
+    if (ids.isEmpty) throw ArgumentError('至少选择一台播放端');
+    if (ids.length != 1) {
+      throw ArgumentError('P2P 还原必须逐台执行，避免部分设备切换失败后失联');
+    }
+    final results = <String, String>{};
+    await Future.wait(ids.map((id) async {
+      try {
+        await _clearTransportAndWait(id);
+        results[id] = '已清除 Broker 配置';
+      } catch (e) {
+        results[id] = '失败：$e';
+      }
+    }));
+    final cleared = results.entries
+        .where((entry) => entry.value == '已清除 Broker 配置')
+        .map((entry) => entry.key)
+        .toSet();
+    if (cleared.isEmpty) return results;
+
+    await updateSettings(connectionMode: ConnectionMode.autoP2p);
+    final directDeadline = DateTime.now().add(const Duration(seconds: 20));
+    while (DateTime.now().isBefore(directDeadline) &&
+        !cleared.every(_p2p.connectedIds.contains)) {
+      _discovery.discover();
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    for (final id in cleared) {
+      results[id] = _p2p.connectedIds.contains(id)
+          ? 'P2P 已连接'
+          : '失败：播放端已清除 Broker，但 20 秒内未建立 P2P 直连';
+    }
+    return results;
   }
 
   Future<void> _configureTransportAndWait(

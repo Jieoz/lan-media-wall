@@ -2,6 +2,7 @@ package com.jieoz.lanmediawall.player.media
 
 /** Pure allocation + scheduling policy for controller thumbnail capture (§6.4). */
 object ThumbnailPolicy {
+    const val MAX_CAPTURE_ATTEMPTS = 3
     private const val NORMAL_INTERVAL_MS = 5_000L
     private const val LEGACY_VIDEO_INTERVAL_MS = 15_000L
 
@@ -58,14 +59,19 @@ object ThumbnailPolicy {
      *     at most once, not every tick.
      * That one-shot-per-item bound is what upstream approved as safe. So:
      *   - cached thumbnail → always just re-sent ([REUSE_CACHED]);
-     *   - video, no cache, not yet attempted → [EXTRACT] once;
-     *   - video, no cache, already attempted this session → [SUPPRESS] (no repeat open);
-     *   - non-video items never extract here (image stills are drawn by the controller).
+     *   - visual item, no cache, below the bounded retry limit → [EXTRACT];
+     *   - visual item, no cache, retry limit reached → [SUPPRESS];
+     *   - audio/non-visual items never extract here.
      */
-    fun decide(isVideo: Boolean, hasCachedThumbnail: Boolean, alreadyAttempted: Boolean): ThumbAction {
-        if (hasCachedThumbnail) return ThumbAction.REUSE_CACHED
-        if (!isVideo) return ThumbAction.SUPPRESS
-        if (alreadyAttempted) return ThumbAction.SUPPRESS
-        return ThumbAction.EXTRACT
+    fun decide(
+        isVideo: Boolean,
+        isImage: Boolean = false,
+        hasCachedThumbnail: Boolean,
+        attemptCount: Int,
+    ): ThumbAction = when {
+        hasCachedThumbnail -> ThumbAction.REUSE_CACHED
+        !isVideo && !isImage -> ThumbAction.SUPPRESS
+        attemptCount >= MAX_CAPTURE_ATTEMPTS -> ThumbAction.SUPPRESS
+        else -> ThumbAction.EXTRACT
     }
 }

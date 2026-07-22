@@ -87,7 +87,7 @@ class P2pCoordinator {
 
   /// 收到某台被控端的缩略图 JPEG（thumb_meta + 紧跟的二进制帧配对完成后）。
   /// 与 broker 路径 [BrokerClient.onThumb] 行为一致（复用 [ThumbPairing]）。
-  void Function(String deviceId, Uint8List jpeg)? onThumb;
+  void Function(ThumbMeta meta, Uint8List jpeg)? onThumb;
 
   /// 单台对端连接态变化（§14.5 可见性）：connecting/connected/failed，
   /// failed 时 [reason] 给出原因（超时/拒绝/握手失败）。UI 据此画每张卡的状态。
@@ -229,7 +229,14 @@ class P2pCoordinator {
     // 缩略图两帧配对：与 broker 路径复用同一 [ThumbPairing]。thumb_meta 文本帧在
     // _onText 里喂给它，紧跟的二进制帧在 binaryStream listener 里喂给它。
     final thumbs = ThumbPairing(
-      onThumb: (id, jpeg) => onThumb?.call(id, jpeg),
+      onThumb: (meta, jpeg) {
+        final actualId = _keyForLink(link);
+        if (actualId == null || meta.deviceId != actualId) {
+          _log('缩略图设备身份不符(meta=${meta.deviceId}, link=$actualId)，丢弃');
+          return;
+        }
+        onThumb?.call(meta, jpeg);
+      },
       onLog: _log,
     );
     // 所有回调都用 [_keyForLink] 解析「这条 link **当前**挂在哪个 key 下」,而非闭包
@@ -283,8 +290,15 @@ class P2pCoordinator {
   ///  - welcome 等无 payload.device_id:从 `from`(如 `player:and-b87bfc8e49`)剥前缀。
   /// 取不到(空/无前缀)→ null,不触发归一(维持占位 key)。
   static String? _realIdOf(Envelope env) {
-    final pid = env.payload['device_id'];
-    if (pid is String && pid.isNotEmpty) return pid;
+    // Only identity-bearing handshake/status frames may rename a live link.
+    // Application payloads such as thumb_meta also contain device_id, but that
+    // value must be checked against the established link identity, never used
+    // to rewrite it (otherwise a spoofed thumbnail renames its own connection).
+    if (env.type == 'welcome' || env.type == 'status' || env.type == 'ready') {
+      final pid = env.payload['device_id'];
+      if (pid is String && pid.isNotEmpty) return pid;
+    }
+    if (env.type != 'welcome') return null;
     final from = env.from;
     final i = from.indexOf(':');
     if (i >= 0 && i + 1 < from.length) return from.substring(i + 1);
