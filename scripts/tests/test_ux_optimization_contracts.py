@@ -222,6 +222,17 @@ def test_single_device_dialog_tracks_confirmed_live_mode_snapshot() -> None:
     assert "_DeviceStatusView(device: liveDevice)" in dialog
     assert "_DeviceTransportRow(state: liveState, device: liveDevice)" in dialog
 
+    state = _read(WALL_STATE)
+    reducer = state[
+        state.index("void _onRuntimeModeResult"):
+        state.index("void _onMusicPlaylistResult")
+    ]
+    assert "_runtimeModeRequests.settle(" in reducer
+    assert "admission != RuntimeModeReplyAdmission.accept" in reducer
+    assert "RuntimeModeReplyAdmission.superseded" in reducer
+    assert "stale-or-device-mismatch" in reducer
+    assert reducer.index("admission != RuntimeModeReplyAdmission.accept") < reducer.index("_wall = WallSnapshot")
+
 
 def test_android_discovery_thread_contains_advisory_packet_failures() -> None:
     discovery = _read(
