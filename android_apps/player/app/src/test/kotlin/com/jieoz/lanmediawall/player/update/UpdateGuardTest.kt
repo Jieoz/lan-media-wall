@@ -62,6 +62,69 @@ class UpdateGuardTest {
         assertTrue(d is UpdateGuard.Decision.Proceed)
     }
 
+    @Test
+    fun accepts_broker_local_update_without_hmac() {
+        val d = UpdateGuard.decide(
+            authed = false,
+            brokerLocal = true,
+            currentVersionCode = 10,
+            targetVersionCode = 11,
+            url = url,
+            sha256 = goodSha,
+        )
+        assertTrue(d is UpdateGuard.Decision.Proceed)
+    }
+
+    @Test
+    fun rejects_open_frame_that_is_not_authenticated_p2p_or_configured_broker() {
+        val d = UpdateGuard.decide(
+            authed = false,
+            p2pLocal = false,
+            brokerLocal = false,
+            currentVersionCode = 10,
+            targetVersionCode = 11,
+            url = url,
+            sha256 = goodSha,
+        )
+        assertEquals("unauthorized", (d as UpdateGuard.Decision.Reject).reason)
+    }
+
+    @Test
+    fun broker_local_still_rejects_non_newer_update() {
+        val d = UpdateGuard.decide(
+            authed = false,
+            brokerLocal = true,
+            currentVersionCode = 11,
+            targetVersionCode = 11,
+            url = url,
+            sha256 = goodSha,
+        )
+        assertTrue((d as UpdateGuard.Decision.Reject).reason.startsWith("not-newer"))
+    }
+
+    @Test
+    fun broker_local_still_requires_url_and_sha256() {
+        val missingUrl = UpdateGuard.decide(
+            authed = false,
+            brokerLocal = true,
+            currentVersionCode = 10,
+            targetVersionCode = 11,
+            url = null,
+            sha256 = goodSha,
+        )
+        assertEquals("missing-url", (missingUrl as UpdateGuard.Decision.Reject).reason)
+
+        val badSha = UpdateGuard.decide(
+            authed = false,
+            brokerLocal = true,
+            currentVersionCode = 10,
+            targetVersionCode = 11,
+            url = url,
+            sha256 = "z".repeat(64),
+        )
+        assertEquals("bad-sha256", (badSha as UpdateGuard.Decision.Reject).reason)
+    }
+
     // --- guardrail 2: monotonic versionCode -----------------------------
 
     @Test

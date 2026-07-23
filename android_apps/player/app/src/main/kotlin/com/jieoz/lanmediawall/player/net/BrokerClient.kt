@@ -52,6 +52,9 @@ class BrokerClient(
      *  to verify broker downlink when we're dk-only (no PSK). Null → if we also
      *  lack the PSK, derived broker frames fail closed (dropped). */
     private val brokerKey: ByteArray? = null,
+    /** True only for the persisted operator-configured Broker endpoint. Open LAN
+     *  auto-discovery clients must not become an unauthenticated OTA channel. */
+    val operatorConfigured: Boolean = false,
     private val timeSyncIntervalS: Long = 30,
     private val pingIntervalS: Long = 20,
 ) : CoordinatorLink {
@@ -261,3 +264,35 @@ class BrokerClient(
         scheduler.shutdownNow()
     }
 }
+
+/**
+ * Single construction seam from transport selection into [BrokerClient].
+ * The authority bit comes only from [TransportSelector], so a discovered
+ * Broker cannot accidentally become an operator-approved OTA source.
+ */
+internal fun brokerClientForPlan(
+    plan: TransportSelector.Plan.Client,
+    psk: String,
+    deviceId: String,
+    clock: ClockSync,
+    onConnect: () -> Unit,
+    onMessage: (type: String, payload: Json.Obj, env: Envelope.Parsed) -> Unit,
+    deviceKey: ByteArray? = null,
+    brokerKey: ByteArray? = null,
+): BrokerClient = BrokerClient(
+    url = plan.url,
+    psk = psk,
+    deviceId = deviceId,
+    clock = clock,
+    onConnect = onConnect,
+    onMessage = onMessage,
+    initialAuthMode = plan.authMode,
+    initialKeyMode = plan.keyMode,
+    deviceKey = deviceKey,
+    brokerKey = brokerKey,
+    operatorConfigured = plan.configured,
+)
+
+/** The only unauthenticated Broker transport allowed to reach the OTA guard. */
+internal fun isOperatorConfiguredBrokerLink(link: CoordinatorLink?): Boolean =
+    (link as? BrokerClient)?.operatorConfigured == true

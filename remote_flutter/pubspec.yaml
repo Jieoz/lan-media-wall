@@ -1,10 +1,10 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.19.1+1191: explicit persisted broker/auto/p2p intent and revision-bound
-# Broker-to-P2P readback before the Controller leaves its old route.
+# v1.19.2+1192: Broker-link OTA for open LAN deployments plus playback-mode
+# visibility and music/visual shortcuts in the normal playback control row.
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.19.1+1191
+version: 1.19.2+1192
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

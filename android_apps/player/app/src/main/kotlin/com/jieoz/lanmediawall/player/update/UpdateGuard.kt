@@ -7,7 +7,8 @@ package com.jieoz.lanmediawall.player.update
  * contract lives in one place with tests:
  *
  *   1. AUTHORIZED        — either the frame's HMAC signature was recomputed +
- *      matched (`env.authed`) OR it arrived over the local P2P controller link.
+ *      matched (`env.authed`) OR it arrived over an operator-owned local link
+ *      (accepted P2P controller link or configured Broker link).
  *   2. MONOTONIC VERSION — target versionCode must be strictly greater than the
  *      running one (blocks downgrade + replay of an old update_app).
  *   3. WELL-FORMED       — url + a 64-hex sha256 must be present (the sha256 is
@@ -27,6 +28,11 @@ object UpdateGuard {
     /**
      * @param authed          env.authed — was the frame's signature verified?
      * @param p2pLocal        frame came over the accepted local P2P controller link.
+     * @param brokerLocal     frame came over the configured broker link. Broker
+     *                        deployments commonly run auth_mode=open for zero-touch
+     *                        LAN installs; the broker connection itself is the
+     *                        operator channel, while version/sha/signer guards still
+     *                        prevent replay, tampering, and wrong-signer installs.
      * @param currentVersionCode  BuildConfig.VERSION_CODE of the running app.
      * @param targetVersionCode   payload `version_code` (null if absent).
      * @param url             payload `url` of the APK on the broker media store.
@@ -35,14 +41,15 @@ object UpdateGuard {
     fun decide(
         authed: Boolean,
         p2pLocal: Boolean = false,
+        brokerLocal: Boolean = false,
         currentVersionCode: Int,
         targetVersionCode: Int?,
         url: String?,
         sha256: String?,
     ): Decision {
-        // 1. authorized frame only. Broker mode requires HMAC auth; local P2P direct
-        // control is treated as an explicit operator channel for bootstrap updates.
-        if (!authed && !p2pLocal) return Decision.Reject("unauthorized")
+        // 1. authorized frame only. Local P2P direct control and the configured
+        // Broker link are explicit operator channels for bootstrap/field updates.
+        if (!authed && !p2pLocal && !brokerLocal) return Decision.Reject("unauthorized")
         // 3a. url required
         if (url.isNullOrBlank()) return Decision.Reject("missing-url")
         // 3b. sha256 required + shape-checked (integrity gate before install)

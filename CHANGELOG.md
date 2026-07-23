@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.19.2] — 2026-07-23
+
+- **Broker-link OTA for open LAN deployments** (versionCode **1192**, versionName `1.19.2`). Android `update_app` now treats the configured Broker connection as an operator-owned local channel, so open-mode Broker pushes no longer stop at `update:unauthorized`. The existing monotonic versionCode, required URL/sha256, post-download sha256 verification, and platform same-signer install guards remain intact; logs now include `brokerLocal=true` for field diagnosis.
+- **Controller playback-mode visibility.** Device cards and the single-device status panel show the current runtime mode as `图片/视频` / `音乐终端` / `待机` instead of hiding it inside the music terminal dialog.
+- **Playback control row owns mode actions.** The normal per-device playback controls now include `切换音乐终端`, `保存并播放`, and `恢复图片/视频`, so operators do not have to enter the music-terminal editor just to switch modes or resume visual playback.
+
 ## [v1.19.1] — 2026-07-23
 
 - **Explicit persisted transport intent** (versionCode **1191**, versionName `1.19.1`). Android and Windows now distinguish `broker`, `auto`, and `p2p`. A Player explicitly restored to P2P skips Broker discovery and starts its local WebSocket server even while a Broker continues advertising on the LAN.

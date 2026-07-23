@@ -28,6 +28,8 @@ import com.jieoz.lanmediawall.player.media.PlayerController
 import com.jieoz.lanmediawall.player.media.ThumbnailPolicy
 import com.jieoz.lanmediawall.player.media.TransitionPolicy
 import com.jieoz.lanmediawall.player.net.BrokerClient
+import com.jieoz.lanmediawall.player.net.brokerClientForPlan
+import com.jieoz.lanmediawall.player.net.isOperatorConfiguredBrokerLink
 import com.jieoz.lanmediawall.player.net.AuthMode
 import com.jieoz.lanmediawall.player.net.CoordinatorLink
 import com.jieoz.lanmediawall.player.net.Discovery
@@ -292,8 +294,8 @@ class PlayerService : Service() {
                 // the endpoint we're actually dialing.
                 ConnState.set(ConnState.Phase.CONNECTING_BROKER,
                     brokerHintFromWsUrl(plan.url))
-                BrokerClient(
-                    url = plan.url,
+                brokerClientForPlan(
+                    plan = plan,
                     psk = settings.psk,
                     deviceId = settings.deviceId,
                     clock = clock,
@@ -307,7 +309,6 @@ class PlayerService : Service() {
                             onBrokerMessage(type, payload, env, generation)
                         }
                     },
-                    initialKeyMode = plan.keyMode,
                     deviceKey = deviceKey,
                     brokerKey = brokerKey,
                 )
@@ -2213,14 +2214,16 @@ class PlayerService : Service() {
         val url = payload["url"].asString()
         val sha = payload["sha256"].asString()
         val p2pLocal = link is com.jieoz.lanmediawall.player.net.P2pServer
-        logEvent("update_app recv authed=${env.authed} p2pLocal=$p2pLocal " +
+        val brokerLocal = isOperatorConfiguredBrokerLink(link)
+        logEvent("update_app recv authed=${env.authed} p2pLocal=$p2pLocal brokerLocal=$brokerLocal " +
             "target=$targetCode current=${BuildConfig.VERSION_CODE} " +
             "url=${url ?: "null"} sha_len=${sha?.length ?: 0}")
-        logEvent("UPDATE_STAGE=recv authed=${env.authed} p2pLocal=$p2pLocal " +
+        logEvent("UPDATE_STAGE=recv authed=${env.authed} p2pLocal=$p2pLocal brokerLocal=$brokerLocal " +
             "target=$targetCode current=${BuildConfig.VERSION_CODE}")
         val decision = com.jieoz.lanmediawall.player.update.UpdateGuard.decide(
             authed = env.authed,
             p2pLocal = p2pLocal,
+            brokerLocal = brokerLocal,
             currentVersionCode = BuildConfig.VERSION_CODE,
             targetVersionCode = targetCode,
             url = url,
