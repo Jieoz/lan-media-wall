@@ -2,7 +2,8 @@
 
 > **v1.19.1 — 强制 P2P 不再被 Broker 抢回：** 持久化 `transport_mode` 明确区分
 > `broker`、`auto`、`p2p`。显式 P2P 跳过 UDP Broker 探测并直接监听本机端口；传输模式、
-> endpoint 和 revision 原子落盘后，先经旧链路回传结果与状态快照，再重建 transport。
+> endpoint 和 revision 原子落盘后，先经旧链路回传结果与状态快照，并验证两个帧均已成功入队，
+> 再重建 transport；断链或写入失败会恢复旧配置并保留尚未拆除的旧链路。
 > 旧配置按 endpoint/自动发现语义兼容迁移。单一版本源为 `1.19.1+1191`。
 >
 > **v1.19.0 — 音乐状态与视觉缩略图：**`status.active_music_playlist` 完整回读

@@ -46,6 +46,7 @@ import com.jieoz.lanmediawall.player.net.get
 import com.jieoz.lanmediawall.player.net.jsonArr
 import com.jieoz.lanmediawall.player.net.jsonObj
 import com.jieoz.lanmediawall.player.net.jsonStrArr
+import com.jieoz.lanmediawall.player.net.sendRequired
 import com.jieoz.lanmediawall.player.sync.ClockSync
 import com.jieoz.lanmediawall.player.sync.LoopBoundarySync
 import com.jieoz.lanmediawall.player.update.RootInstaller
@@ -588,7 +589,7 @@ class PlayerService : Service() {
         }
     }
 
-    private fun sendStatus() {
+    private fun sendStatus(required: Boolean = false) {
         val ip = refreshDeviceIp()
         val ctl = controllerRef
         val snap = ctl?.snapshot()
@@ -682,7 +683,8 @@ class PlayerService : Service() {
             MainActivity.backendDecisionLabel?.let { put("video_backend", it) }
             put("errors", jsonStrArr(errors.toList().takeLast(5)))
         }
-        link?.send("status", payload)
+        if (required) link.sendRequired("status", payload)
+        else link?.send("status", payload)
     }
 
     /**
@@ -1979,13 +1981,15 @@ class PlayerService : Service() {
 
     private fun sendConfigResult(requestId: String?, ok: Boolean, applied: Json.Obj = jsonObj {},
         rejected: Json = jsonArr(emptyList<Json>()), conflict: Boolean = false,
-        pending: Json.Obj = jsonObj {}) {
-        link?.send("config_patch_result", jsonObj {
+        pending: Json.Obj = jsonObj {}, required: Boolean = false) {
+        val resultPayload = jsonObj {
             requestId?.let { put("request_id", it) }
             put("device_id", settings.deviceId); put("ok", ok); put("conflict", conflict)
             put("revision", settings.configRevision); put("applied", applied); put("rejected", rejected)
             put("pending", pending); put("requires_restart", false)
-        })
+        }
+        if (required) link.sendRequired("config_patch_result", resultPayload)
+        else link?.send("config_patch_result", resultPayload)
     }
 
     /** Safe patch: fields are deliberately limited to name/group/audio. */
@@ -2093,7 +2097,7 @@ class PlayerService : Service() {
                 put("broker_host", settings.brokerHost); put("broker_port", settings.brokerPort)
                 put("use_wss", settings.useWss); put("transport_mode", settings.transportIntent.wire)
                 put("auto_discovery", settings.transportIntent == TransportSelector.Intent.AUTO)
-            }, pending = jsonObj { put("transport", "reconnecting") })
+            }, pending = jsonObj { put("transport", "reconnecting") }, required = true)
         } catch (t: Throwable) {
             settings.commitTransport(previousIntent, previousHost, previousPort, previousWss)
             logEvent("transport_configure_ack_failed restored=${previousIntent.wire}")
@@ -2103,7 +2107,7 @@ class PlayerService : Service() {
             // Publish the committed snapshot over the still-live old route before
             // tearing it down; the Controller uses this as phase-1 readback.
             try {
-                sendStatus()
+                sendStatus(required = true)
             } catch (t: Throwable) {
                 if (settings.configRevision == appliedRevision) {
                     settings.commitTransport(previousIntent, previousHost, previousPort, previousWss)

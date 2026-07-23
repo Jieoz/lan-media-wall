@@ -37,3 +37,17 @@ interface CoordinatorLink {
     /** Stop and release all resources. */
     fun stop()
 }
+
+/**
+ * Send a phase-boundary frame whose successful enqueue is required before the
+ * caller may tear down this link. Implementations report disconnect/write
+ * failure as `null`; convert that transport-level result into an exception so
+ * transaction code cannot accidentally continue as if the frame was sent.
+ */
+internal fun CoordinatorLink?.sendRequired(
+    type: String,
+    payload: Json,
+    to: String = "broker",
+): String = checkNotNull(this?.send(type, payload, to)) {
+    "required coordinator frame was not sent: $type"
+}
