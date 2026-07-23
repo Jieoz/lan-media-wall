@@ -708,6 +708,30 @@ class Hub:
         device_id = p.get("device_id")
         if not device_id:
             return
+        target = self.players.get(device_id)
+        if target is not None:
+            # Entries in players are expected to be authenticated registrations;
+            # never fall back to a routing-table alias for correlation identity.
+            if not target.ident:
+                return
+            request_id = str(p.get("request_id") or "")
+            # Old controllers omitted request_id. Preserve that wire contract
+            # without broadcasting the result: serialize one legacy request per
+            # target Player under an internal correlation key. Authenticated
+            # Player identity still binds the matching terminal result.
+            target_identity = target.ident
+            correlation_key = request_id or f"legacy-device:{target_identity}"
+            fingerprint = json.dumps(
+                {"type": env["type"], "payload": p}, sort_keys=True,
+                separators=(",", ":"), ensure_ascii=False)
+            proposed = (conn.ident or "", target_identity, fingerprint)
+            existing = self._config_req_origin.get(correlation_key)
+            if existing is not None and existing != proposed:
+                return
+            self._config_req_origin[correlation_key] = proposed
+            self._config_req_origin.move_to_end(correlation_key)
+            while len(self._config_req_origin) > self._CONFIG_REQ_ORIGIN_MAX:
+                self._config_req_origin.popitem(last=False)
         dev = self.reg.get(device_id)
         if dev is not None:
             name = p.get("device_name")
@@ -723,21 +747,7 @@ class Hub:
         # transport_configure / rotate_device_key reach their dedicated player
         # handlers (registry side-effects above only apply to configure_device
         # name/group fields — the other two carry none).
-        target = self.players.get(device_id)
         if target is not None:
-            request_id = str(p.get("request_id") or "")
-            if request_id:
-                fingerprint = json.dumps(
-                    {"type": env["type"], "payload": p}, sort_keys=True,
-                    separators=(",", ":"), ensure_ascii=False)
-                proposed = (conn.ident or "", str(device_id), fingerprint)
-                existing = self._config_req_origin.get(request_id)
-                if existing is not None and existing != proposed:
-                    return
-                self._config_req_origin[request_id] = proposed
-                self._config_req_origin.move_to_end(request_id)
-                while len(self._config_req_origin) > self._CONFIG_REQ_ORIGIN_MAX:
-                    self._config_req_origin.popitem(last=False)
             fwd = self.make_env(env["type"], p, f"player:{device_id}")
             try:
                 await target.send_env(fwd)
@@ -750,7 +760,8 @@ class Hub:
             return
         payload = dict(env["payload"])
         request_id = str(payload.get("request_id") or "")
-        origin = self._config_req_origin.get(request_id)
+        correlation_key = request_id or f"legacy-device:{conn.ident}"
+        origin = self._config_req_origin.get(correlation_key)
         if origin is None:
             return
         controller_id, expected_device, _fingerprint = origin
@@ -766,7 +777,7 @@ class Hub:
                 f"controller:{controller_id}"))
         except Exception:
             return
-        self._config_req_origin.pop(request_id, None)
+        self._config_req_origin.pop(correlation_key, None)
 
     async def _on_create_group(self, conn: ClientConn, env: dict) -> None:
         """§18.1: create an empty group (idempotent)."""

@@ -74,3 +74,41 @@ def test_config_request_id_collision_is_fail_closed(tmp_path):
     _run(hub._on_configure_device(first, base))
     _run(hub._on_configure_device(second, base))
     assert len(player.sent) == 1
+
+
+def test_legacy_result_without_request_id_uses_single_target_bound_route(tmp_path):
+    hub = _hub(tmp_path)
+    controller = _Conn("controller", "ctl-a")
+    observer = _Conn("controller", "ctl-b")
+    player = _Conn("player", "dev-a")
+    attacker = _Conn("player", "dev-b")
+    hub.controllers = {"ctl-a": controller, "ctl-b": observer}
+    # The routing table key is not trusted as Player identity. Correlation must
+    # use the authenticated target connection's ident on both reservation and
+    # result lookup, even if a stale/alias key selected that connection.
+    hub.players = {"legacy-alias": player, "dev-b": attacker}
+
+    request = {"type": "configure_device", "payload": {
+        "device_id": "legacy-alias", "volume": 40}}
+    _run(hub._on_configure_device(controller, request))
+    assert len(player.sent) == 1
+
+    competing = {"type": "configure_device", "payload": {
+        "device_id": "legacy-alias", "volume": 41}}
+    _run(hub._on_configure_device(observer, competing))
+    assert len(player.sent) == 1, "legacy no-ID requests must serialize per Player"
+
+    result = {"type": "config_patch_result", "payload": {
+        "device_id": "spoofed", "ok": True, "revision": 8,
+        "applied": {"volume": 40}}}
+    _run(hub._on_config_result(attacker, result))
+    assert controller.sent == []
+
+    _run(hub._on_config_result(player, result))
+    assert len(controller.sent) == 1
+    assert observer.sent == []
+    assert controller.sent[0]["payload"]["device_id"] == "dev-a"
+    assert hub._config_req_origin == {}, "successful terminal delivery must pop reservation"
+
+    _run(hub._on_config_result(player, result))
+    assert len(controller.sent) == 1

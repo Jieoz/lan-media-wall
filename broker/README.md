@@ -9,7 +9,9 @@ aggregation, and command fan-out.
 
 Broker remains payload-transparent for `transport_mode`; the same release SHA
 routes the Player's durable `broker` / `auto` / `p2p` result and status readback
-before the old client link closes.
+before the old client link closes. Config results are unicast only to the
+initiating Controller: modern requests use `request_id`; legacy no-ID requests
+are serialized per target Player and remain bound to its authenticated identity.
 
 ## v1.19.0 — atomic identity-bound thumbnails
 
