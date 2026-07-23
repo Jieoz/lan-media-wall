@@ -209,6 +209,20 @@ def test_playback_controls_group_modes_and_keep_list_commit_in_editor() -> None:
     assert "!authoritative && reportedSize > 0" in music
 
 
+def test_single_device_dialog_tracks_confirmed_live_mode_snapshot() -> None:
+    dev = _read(DEVWALL)
+    dialog = dev[
+        dev.index("Future<void> _configureDeviceDialog"):
+        dev.index("class _DeviceTransportRow")
+    ]
+    # showDialog is an Overlay: rebuilding the pane underneath is insufficient.
+    # The dialog itself subscribes and re-resolves the immutable device view.
+    assert "ctx.watch<WallState>()" in dialog
+    assert "candidate.deviceId == device.deviceId" in dialog
+    assert "_DeviceStatusView(device: liveDevice)" in dialog
+    assert "_DeviceTransportRow(state: liveState, device: liveDevice)" in dialog
+
+
 def test_android_discovery_thread_contains_advisory_packet_failures() -> None:
     discovery = _read(
         ANDROID / "kotlin/com/jieoz/lanmediawall/player/net/Discovery.kt"

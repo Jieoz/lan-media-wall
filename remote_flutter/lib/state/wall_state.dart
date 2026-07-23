@@ -1059,6 +1059,29 @@ class WallState extends ChangeNotifier {
     final result = RuntimeModeResult.fromMap(payload);
     if (result.deviceId.isEmpty) return;
     _runtimeModeResults[result.deviceId] = result;
+    // runtime_mode_result is a device-confirmed fact, not an optimistic command
+    // ACK. Fold it into the current immutable wall snapshot immediately so all
+    // status views (including Overlay dialogs) converge without waiting for the
+    // next periodic wall broadcast.
+    final wall = _wall;
+    if (result.ok && result.mode != null) {
+      var matched = false;
+      final devices = wall.devices.map((device) {
+        if (device.deviceId != result.deviceId) return device;
+        matched = true;
+        return device.copyWith(
+          runtimeMode: result.mode,
+          previousActiveMode: result.previousActiveMode,
+        );
+      }).toList(growable: false);
+      if (matched) {
+        _wall = WallSnapshot(
+          serverTime: wall.serverTime,
+          groups: wall.groups,
+          devices: devices,
+        );
+      }
+    }
     final pending = _pendingRuntimeMode.remove(result.requestId);
     if (pending != null && !pending.isCompleted) pending.complete(result);
     _pushLog('[${result.deviceId}] runtime_mode_result '

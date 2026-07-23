@@ -83,4 +83,19 @@ void main() {
     expect(result.mode, RuntimeMode.standby);
     expect(result.previousActiveMode, RuntimeMode.music);
   });
+
+  test('confirmed runtime result can update immutable device view', () {
+    final original = DeviceStatus.fromMap({
+      'device_id': 'd',
+      'group_id': 'default',
+      'runtime_mode': 'visual',
+    });
+    final confirmed = original.copyWith(
+      runtimeMode: RuntimeMode.standby,
+      previousActiveMode: RuntimeMode.visual,
+    );
+    expect(original.runtimeMode, RuntimeMode.visual);
+    expect(confirmed.runtimeMode, RuntimeMode.standby);
+    expect(confirmed.previousActiveMode, RuntimeMode.visual);
+  });
 }

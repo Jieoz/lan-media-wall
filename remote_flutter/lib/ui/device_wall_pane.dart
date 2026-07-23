@@ -817,10 +817,23 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setLocal) => AlertDialog(
-        title: Text(device.deviceName.isEmpty
-            ? '单台面板 · ${device.deviceId}'
-            : '单台面板 · ${device.deviceName}'),
+      builder: (ctx, setLocal) {
+        // A dialog lives in an Overlay, so rebuilding the device wall beneath it
+        // does not refresh this subtree. Subscribe here and resolve the latest
+        // immutable device snapshot by id. Mode and power controls therefore
+        // follow only device-confirmed status, never an optimistic local toggle.
+        final liveState = ctx.watch<WallState>();
+        var liveDevice = device;
+        for (final candidate in liveState.wallDevices) {
+          if (candidate.deviceId == device.deviceId) {
+            liveDevice = candidate;
+            break;
+          }
+        }
+        return AlertDialog(
+        title: Text(liveDevice.deviceName.isEmpty
+            ? '单台面板 · ${liveDevice.deviceId}'
+            : '单台面板 · ${liveDevice.deviceName}'),
         content: SizedBox(
           width: 460,
           child: SingleChildScrollView(
@@ -828,7 +841,7 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _DeviceStatusView(device: device),
+                _DeviceStatusView(device: liveDevice),
                 const Divider(height: 20),
                 // 播放控制(即时下发,单播这一台)。
                 Align(
@@ -837,7 +850,7 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                       style: Theme.of(ctx).textTheme.labelLarge),
                 ),
                 const SizedBox(height: 6),
-                _DeviceTransportRow(state: state, device: device),
+                _DeviceTransportRow(state: liveState, device: liveDevice),
                 const SizedBox(height: 12),
                 // §19 改名/设组/音量(「应用」时统一提交)。
                 Align(
@@ -970,16 +983,7 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                         showPushToDeviceDialog(context, state, device);
                       },
                     ),
-                    FilledButton.tonalIcon(
-                      icon: const Icon(Icons.library_music),
-                      label: const Text('音乐终端'),
-                      onPressed: st?.supportsMusicShuffle == true
-                          ? () {
-                              Navigator.pop(ctx);
-                              showMusicTerminalDialog(context, state, device);
-                            }
-                          : null,
-                    ),
+
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -1102,7 +1106,8 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('应用配置')),
         ],
-      ),
+      );
+      },
     ),
   );
   if (ok != true) return;
