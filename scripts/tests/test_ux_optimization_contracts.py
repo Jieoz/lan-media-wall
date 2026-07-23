@@ -163,10 +163,14 @@ def test_sent_ack_helper_defined_once() -> None:
 def test_runtime_mode_controls_match_operator_mental_model() -> None:
     music = _read(MUSIC_TERMINAL)
     dev = _read(DEVWALL)
-    # Leaving music is an explicit visual-mode action, not the standby-only
-    # restore command whose label gave no clue that pictures/videos return.
-    assert "恢复图片/视频" in music
-    assert "RuntimeMode.visual" in music
+    # Mode switching belongs to the normal playback controls. The music dialog
+    # is a list editor and must not carry a second, divergent mode-control row.
+    assert "播放模式" in dev
+    assert "SegmentedButton<RuntimeMode>" in dev
+    assert "'图片/视频'" in dev
+    assert "'音乐终端'" in dev
+    assert "恢复图片/视频" not in music
+    assert "RuntimeMode.visual" not in music
     assert "RuntimeMode.standby" not in music
     assert "恢复前态" not in music
     # Standby is an output/playback control beside Stop, with a visible inverse.
@@ -176,27 +180,58 @@ def test_runtime_mode_controls_match_operator_mental_model() -> None:
     assert "'退出待机'" in transport
     assert "setDeviceRuntimeMode" in transport
     assert "restoreDeviceRuntimeMode" in transport
-    assert "RuntimeMode.standby, '待机命令已发送" in transport
-    assert "result.ok\n                  ? '设备已退出待机" in transport
+    assert "setMode(RuntimeMode.standby" in transport
+    assert "? '设备已退出待机，恢复" in transport
 
 
-def test_playback_controls_include_music_shortcuts_without_non_authoritative_save() -> None:
+def test_playback_controls_group_modes_and_keep_list_commit_in_editor() -> None:
     dev = _read(DEVWALL)
+    music = _read(MUSIC_TERMINAL)
     transport = dev[dev.index("class _DeviceTransportRow"):]
-    # The normal playback-control row, not only the music-terminal dialog, owns
-    # the operator's three common mode actions.
-    assert "'切换音乐终端'" in transport
-    assert "'保存并播放'" in transport
-    assert "'恢复图片/视频'" in transport
+    # One mode selector replaces three copied action buttons. Playlist mutation
+    # remains in one editor, while entering music mode from playback controls
+    # starts the already-confirmed device playlist.
+    assert "section('播放'" in transport
+    assert "section('播放模式'" in transport
+    assert "section('音乐列表'" in transport
+    assert "section('电源'" in transport
+    assert "'编辑音乐列表'" in transport
+    assert "'切换音乐终端'" not in transport
+    assert "'保存并播放'" not in transport
+    assert "'恢复图片/视频'" not in transport
     assert "RuntimeMode.music" in transport
     assert "RuntimeMode.visual" in transport
-    # 保存并播放 must only become active from an authoritative device playlist.
-    # A stale local draft plus a legacy `music_playlist_size:0` status must not
-    # be enough to overwrite the device.
-    assert "hasAuthoritativeMusicPlaylist(deviceId)" in transport
-    assert "canMusic && hasAuthoritativeMusicList && localMusicItems.isNotEmpty" in transport
-    assert "(hasAuthoritativeMusicList || (st?.musicPlaylistSize ?? 0) == 0)" not in transport
-    assert "items: localMusicItems" in transport
+    assert "保存并播放" not in music
+    assert "恢复图片/视频" not in music
+    assert "'保存列表'" in music
+    # Legacy devices that report a count without a complete snapshot remain
+    # protected from an empty overwrite inside the sole commit surface.
+    assert "!authoritative && reportedSize > 0" in music
+
+
+def test_single_device_dialog_tracks_confirmed_live_mode_snapshot() -> None:
+    dev = _read(DEVWALL)
+    dialog = dev[
+        dev.index("Future<void> _configureDeviceDialog"):
+        dev.index("class _DeviceTransportRow")
+    ]
+    # showDialog is an Overlay: rebuilding the pane underneath is insufficient.
+    # The dialog itself subscribes and re-resolves the immutable device view.
+    assert "ctx.watch<WallState>()" in dialog
+    assert "candidate.deviceId == device.deviceId" in dialog
+    assert "_DeviceStatusView(device: liveDevice)" in dialog
+    assert "_DeviceTransportRow(state: liveState, device: liveDevice)" in dialog
+
+    state = _read(WALL_STATE)
+    reducer = state[
+        state.index("void _onRuntimeModeResult"):
+        state.index("void _onMusicPlaylistResult")
+    ]
+    assert "_runtimeModeRequests.settle(" in reducer
+    assert "admission != RuntimeModeReplyAdmission.accept" in reducer
+    assert "RuntimeModeReplyAdmission.superseded" in reducer
+    assert "stale-or-device-mismatch" in reducer
+    assert reducer.index("admission != RuntimeModeReplyAdmission.accept") < reducer.index("_wall = WallSnapshot")
 
 
 def test_android_discovery_thread_contains_advisory_packet_failures() -> None:

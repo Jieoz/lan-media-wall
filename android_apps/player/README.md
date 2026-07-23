@@ -1,5 +1,10 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.3 候选 — Broker OTA 现场资格目标：** Player 协议逻辑沿用 v1.19.2 的
+> 受限 `brokerLocal` 授权；指定设备先经已验证 P2P 路径进入 1.19.2，再以配置 Broker
+> 完成 `1.19.2 → 1.19.3`，才能证明该代码真实执行。不会让仍运行 1.19.1 的旧 Guard
+> 放行未鉴权 Broker 帧。单一版本源为 `1.19.3+1193`。
+>
 > **v1.19.2 — Broker OTA 与播放控制补齐：** `update_app` 经已配置 Broker 链路抵达时，
 > 在 `auth_mode=open` 下也视为现场操作员通道，继续保留 versionCode 严格递增、sha256、
 > 平台同签名护栏；日志会显式打印 `brokerLocal=true`。控制端设备卡/单台面板显示当前

@@ -820,7 +820,7 @@ force-stop App)→ 仅在 pm 回 `Success` 时 `RESTART_APP` 重新拉起 App。
 - `version_code` 为**目标 APK 的 Android versionCode**(整数,单调递增)。
 
 ### 23.2 四条安全护栏(被控端**必须**全部满足才安装)
-1. **授权帧**:broker 模式下 `update_app` 帧的 §3 签名**必须验签通过**(`authed`)；P2P 直连模式下,来自已接入本机 P2P 控制链路的 `update_app` 视为本地操作者授权,可用于零配置首装后的自更新。非鉴权 broker 帧与非 P2P 本地链路帧一律拒绝(`rejected:unauthorized`)。
+1. **授权来源**:满足下列任一条件才可进入下载阶段：① §3 签名验签通过(`authed`)；② 来自已接入本机 P2P 控制链路(`p2pLocal`)；③ 在 `auth_mode=open` 的现场部署中，来自**操作员明确持久化配置为 BROKER**后创建的当前活动 BrokerClient(`brokerLocal`)。`AUTO` 自动发现、历史/stale endpoint 相同或 envelope 自报 Broker 身份都不能产生 `brokerLocal`。三者均不成立则拒绝(`rejected:unauthorized`)。
 2. **版本单调**:`version_code` **必须严格大于**当前运行版本,否则拒(`rejected:not-newer`),防降级/重放旧指令。
 3. **完整性**:`url` + 64 位十六进制 `sha256` 必填;下载完成后**重算 sha256 比对**,不符则删除文件、拒装
    (`failed:sha256-mismatch`),绝不半装。
@@ -828,6 +828,7 @@ force-stop App)→ 仅在 pm 回 `Success` 时 `RESTART_APP` 重新拉起 App。
 
 ### 23.3 边界
 - 仅内网。broker 模式建议使用 §13 `auth_mode`≠`open` + PSK；P2P 直连更新依赖物理在场/同网段控制端临时 HTTP URL,不要暴露到公网。
+- **旧版启动边界**:v1.19.1 及更早版本没有 `brokerLocal` 判定，目标 APK 中的新代码不能授权自身下载。无 PSK 的开放 Broker 不得伪造 `authed` 或放宽旧 Guard；应先用已受信的 P2P 本地路径把指定设备升级到 v1.19.2，再以 `v1.19.2 → 更高版本` 验证配置 Broker OTA。
 - 无 root(守护进程不可达)→ 回 `failed:install-failed`,不影响其他功能。
 - `pm install` 失败(如 `INSTALL_FAILED_*`)→ 回 `failed:pm_failed:<detail>`;暂存 APK 立即删除,**不整机重启**。
 
