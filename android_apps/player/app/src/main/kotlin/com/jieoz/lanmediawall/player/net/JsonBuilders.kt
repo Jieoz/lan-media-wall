@@ -42,11 +42,16 @@ operator fun Json.get(key: String): Json? = (this as? Json.Obj)?.entries?.get(ke
 fun Json?.asString(): String? = (this as? Json.Str)?.value
 
 fun Json?.asLongOrNull(): Long? = when (this) {
-    is Json.Num -> raw.toDoubleOrNull()?.toLong()
+    // Protocol integer fields are lexical integers. Never truncate decimals,
+    // accept NaN/Infinity, or wrap values outside the target range.
+    is Json.Num -> raw.toLongOrNull()
     else -> null
 }
 
-fun Json?.asIntOrNull(): Int? = this.asLongOrNull()?.toInt()
+fun Json?.asIntOrNull(): Int? = when (this) {
+    is Json.Num -> raw.toIntOrNull()
+    else -> null
+}
 
 fun Json?.asBoolOrNull(): Boolean? = (this as? Json.Bool)?.value
 

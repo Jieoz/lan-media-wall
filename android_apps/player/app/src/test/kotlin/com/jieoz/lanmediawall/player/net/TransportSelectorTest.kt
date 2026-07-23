@@ -5,10 +5,30 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TransportSelectorTest {
+    @Test fun `auto intent may select a discoverable broker`() {
+        val plan = TransportSelector.select(
+            TransportSelector.Config(
+                intent = TransportSelector.Intent.AUTO,
+                brokerHost = "",
+                brokerPort = 8770,
+                useWss = false,
+                configuredKeyMode = KeyMode.DERIVED,
+                hasKeyMaterial = false,
+            ),
+            listOf(DiscoveryDecision.Announce(
+                brokerHint = "10.10.8.108:8770", topology = "dedicated",
+                authMode = AuthMode.OPEN.wire, deviceId = null,
+            )),
+        )
+
+        assertTrue(plan is TransportSelector.Plan.Client)
+        assertEquals("ws://10.10.8.108:8770", (plan as TransportSelector.Plan.Client).url)
+    }
+
     @Test fun `cleared broker config restores p2p server even when key material remains`() {
         val plan = TransportSelector.select(
             TransportSelector.Config(
-                isConfigured = false,
+                intent = TransportSelector.Intent.AUTO,
                 brokerHost = "",
                 brokerPort = 8770,
                 useWss = false,
@@ -24,10 +44,33 @@ class TransportSelectorTest {
         assertEquals(AuthMode.OPTIONAL, server.authMode)
     }
 
+    @Test fun `explicit p2p intent ignores a discoverable broker`() {
+        val plan = TransportSelector.select(
+            TransportSelector.Config(
+                intent = TransportSelector.Intent.P2P,
+                brokerHost = "",
+                brokerPort = 8770,
+                useWss = false,
+                configuredKeyMode = KeyMode.GLOBAL,
+                hasKeyMaterial = true,
+            ),
+            announces = listOf(
+                DiscoveryDecision.Announce(
+                    brokerHint = "10.10.8.108:8770",
+                    topology = "dedicated",
+                    authMode = "open",
+                    deviceId = "broker",
+                ),
+            ),
+        )
+
+        assertTrue(plan is TransportSelector.Plan.P2pServer)
+    }
+
     @Test fun `configured broker remains the authoritative client endpoint`() {
         val plan = TransportSelector.select(
             TransportSelector.Config(
-                isConfigured = true,
+                intent = TransportSelector.Intent.BROKER,
                 brokerHost = "10.10.8.108",
                 brokerPort = 8770,
                 useWss = false,

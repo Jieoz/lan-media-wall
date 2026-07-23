@@ -5,6 +5,12 @@ controllers (Flutter) connect only to this broker over WebSocket; the broker
 owns the device registry, group assignments, the master clock, status
 aggregation, and command fan-out.
 
+## v1.19.1 — transparent transport-intent routing
+
+Broker remains payload-transparent for `transport_mode`; the same release SHA
+routes the Player's durable `broker` / `auto` / `p2p` result and status readback
+before the old client link closes.
+
 ## v1.19.0 — atomic identity-bound thumbnails
 
 Controller presence is broadcast when a Controller joins or leaves, including

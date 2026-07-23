@@ -1,5 +1,10 @@
 # LAN Media Wall — Windows 10 Player
 
+> **v1.19.1 — 显式 transport intent：** Windows Player 与 Android 对齐，持久化
+> `broker` / `auto` / `p2p`；`p2p` 不执行 Broker probe，配置回执和状态回读在旧链路
+> 关闭前完成。旧 endpoint 和 `topology.auto` 配置保持原语义。单一版本源为
+> `1.19.1+1191`。
+>
 > **v1.19.0 — 音乐清单权威回读：**状态返回完整 `active_music_playlist` 并声明
 > `music_playlist_snapshot_v1`，Controller 重启后可恢复设备实际清单；缩略图 metadata
 > 同步携带 item、模式、generation、Player session、序列和长度。非 standby 状态调用

@@ -1,6 +1,7 @@
 package com.jieoz.lanmediawall.player
 
 import android.content.Context
+import com.jieoz.lanmediawall.player.net.TransportSelector
 import android.content.SharedPreferences
 import com.jieoz.lanmediawall.player.net.AuthMode
 import com.jieoz.lanmediawall.player.net.KeyMode
@@ -27,6 +28,7 @@ class Settings(context: Context) {
     // §7: single plain store for both config and (LAN-only) secrets. Kept as a
     // named alias so the secret accessors below read as "this is the secret bag".
     private val securePrefs: SharedPreferences get() = prefs
+    private val transportLock = Any()
 
     val deviceId: String
         get() {
@@ -72,6 +74,48 @@ class Settings(context: Context) {
      * dial a phantom broker. See [com.jieoz.lanmediawall.player.PlayerService].
      */
     val hasBroker: Boolean get() = brokerHost.isNotBlank()
+
+    /** Persisted operator intent. Legacy installs migrate deterministically from
+     * the endpoint: non-empty broker → BROKER, empty → AUTO. Explicit remote
+     * restore writes P2P so a still-discoverable Broker cannot capture the box. */
+    var transportIntent: TransportSelector.Intent
+        get() = synchronized(transportLock) {
+            prefs.getString(KEY_TRANSPORT_INTENT, null)
+                ?.let(TransportSelector.Intent::parse)
+                ?: (if (hasBroker) TransportSelector.Intent.BROKER
+                    else TransportSelector.Intent.AUTO).also { migrated ->
+                    check(prefs.edit().putString(KEY_TRANSPORT_INTENT, migrated.wire).commit()) {
+                        "failed to persist migrated transport intent"
+                    }
+                }
+        }
+        set(value) = synchronized(transportLock) {
+            check(prefs.edit().putString(KEY_TRANSPORT_INTENT, value.wire).commit()) {
+                "failed to persist transport intent"
+            }
+        }
+
+    /** Atomically persist a transport decision and its revision before acking it. */
+    fun commitTransport(
+        intent: TransportSelector.Intent,
+        host: String,
+        port: Int,
+        wss: Boolean,
+    ): Int = synchronized(transportLock) {
+        val normalizedHost = host.trim()
+        require((intent == TransportSelector.Intent.BROKER) == normalizedHost.isNotEmpty())
+        val revision = configRevision + 1
+        val editor = prefs.edit()
+            .putString(KEY_TRANSPORT_INTENT, intent.wire)
+            .putInt(KEY_BROKER_PORT, port)
+            .putBoolean(KEY_USE_WSS, wss)
+            .putBoolean(KEY_CONFIGURED, true)
+            .putInt(KEY_CONFIG_REVISION, revision)
+        if (normalizedHost.isEmpty()) editor.remove(KEY_BROKER_HOST)
+        else editor.putString(KEY_BROKER_HOST, normalizedHost)
+        check(editor.commit()) { "failed to persist transport configuration" }
+        revision
+    }
 
     var brokerPort: Int
         get() = prefs.getInt(KEY_BROKER_PORT, 8770)
@@ -195,6 +239,8 @@ class Settings(context: Context) {
      */
     fun applyPairing(p: com.jieoz.lanmediawall.player.pair.PairUri) {
         brokerHost = p.host
+        transportIntent = if (p.host.isBlank()) TransportSelector.Intent.AUTO
+            else TransportSelector.Intent.BROKER
         brokerPort = p.port
         useWss = p.wss
         p.group?.let { groupId = it }
@@ -231,6 +277,7 @@ class Settings(context: Context) {
         prefs.edit()
             .remove(KEY_CONFIGURED)
             .remove(KEY_BROKER_HOST)
+            .remove(KEY_TRANSPORT_INTENT)
             .remove(KEY_BROKER_PORT)
             .remove(KEY_USE_WSS)
             .remove(KEY_GROUP_ID)
@@ -249,6 +296,7 @@ class Settings(context: Context) {
         private const val KEY_CONFIGURED = "configured"
         private const val KEY_GROUP_ID = "group_id"
         private const val KEY_BROKER_HOST = "broker_host"
+        private const val KEY_TRANSPORT_INTENT = "transport_intent"
         private const val KEY_BROKER_PORT = "broker_port"
         private const val KEY_USE_WSS = "use_wss"
         private const val KEY_PSK = "psk"

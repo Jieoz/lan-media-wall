@@ -336,6 +336,7 @@ class ConfigSnapshot {
   final int? brokerPort;
   final bool? useWss;
   final bool autoDiscovery;
+  final String transportMode;
   final bool requiresRestart;
 
   const ConfigSnapshot({
@@ -349,6 +350,7 @@ class ConfigSnapshot {
     this.brokerPort,
     this.useWss,
     this.autoDiscovery = true,
+    this.transportMode = 'auto',
     this.requiresRestart = false,
   });
 
@@ -370,6 +372,9 @@ class ConfigSnapshot {
           : _asInt(transport['broker_port']),
       useWss: transport['use_wss'] is bool ? transport['use_wss'] as bool : null,
       autoDiscovery: _asBool(transport['auto_discovery'], true),
+      transportMode: transport['transport_mode'] is String
+          ? transport['transport_mode'] as String
+          : (_asBool(transport['auto_discovery'], true) ? 'auto' : 'broker'),
       requiresRestart: _asBool(m['requires_restart']),
     );
   }
@@ -1077,6 +1082,7 @@ class Commands {
   static Map<String, dynamic> transportConfigure({
     required String deviceId,
     required String brokerHost,
+    required String transportMode,
     int? brokerPort,
     bool? useWss,
     String? requestId,
@@ -1084,6 +1090,7 @@ class Commands {
   }) => {
     'device_id': deviceId,
     'broker_host': brokerHost,
+    'transport_mode': transportMode,
     if (brokerPort != null) 'broker_port': brokerPort,
     if (useWss != null) 'use_wss': useWss,
     if (requestId != null) 'request_id': requestId,

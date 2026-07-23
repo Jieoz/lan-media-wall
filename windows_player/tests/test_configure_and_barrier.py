@@ -10,6 +10,9 @@ Verifies:
 import asyncio
 import os
 import sys
+from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -155,6 +158,234 @@ def test_configure_device_rejects_legacy_transport_and_key(tmp_path):
     assert rebuilds == []
     assert p.state.broker_host is None
     assert p.state.psk_override is None
+
+
+def test_explicit_p2p_intent_skips_discoverable_broker(tmp_path, monkeypatch):
+    p = _player(tmp_path)
+    p.state.set_transport_mode("p2p")
+    probes = []
+
+    class _Probe:
+        @staticmethod
+        def probe_for_broker(**_kwargs):
+            probes.append(True)
+            return M.topology_mod.BrokerFound(
+                host="10.10.8.108", port=8770,
+                auth_mode=p.auth.mode, key_mode=p.auth.key_mode,
+            )
+
+    monkeypatch.setattr(M, "discovery_probe_mod", _Probe)
+    decision = p._discover_decision()
+
+    assert decision.role == M.topology_mod.ROLE_P2P_SERVER
+    assert probes == []
+
+
+def test_transport_configure_persists_explicit_p2p_intent(tmp_path):
+    p = _player(tmp_path)
+    rebuilds = []
+
+    async def _fake_rebuild():
+        rebuilds.append(True)
+
+    p._rebuild_transport = _fake_rebuild  # type: ignore[assignment]
+
+    _run(p._h_transport_configure({
+        "device_id": p.device_id,
+        "request_id": "restore-p2p",
+        "broker_host": "",
+        "transport_mode": "p2p",
+    }, {}))
+
+    results = [payload for kind, payload in p.ws.sent if kind == "config_patch_result"]
+    assert results[-1]["ok"] is True
+    assert results[-1]["applied"]["transport_mode"] == "p2p"
+    assert p.state.transport_mode == "p2p"
+    assert C.PersistentState.load(p._state_dir).transport_mode == "p2p"  # type: ignore[attr-defined]
+    assert rebuilds == [True]
+
+
+def test_legacy_clear_without_mode_remains_auto_not_sticky_p2p(tmp_path):
+    p = _player(tmp_path)
+    rebuilds = []
+
+    async def _fake_rebuild():
+        rebuilds.append(p.state.transport_mode)
+
+    p._rebuild_transport = _fake_rebuild  # type: ignore[assignment]
+    _run(p._h_transport_configure({
+        "device_id": p.device_id,
+        "request_id": "legacy-clear",
+        "broker_host": "",
+    }, {}))
+    result = [pl for kind, pl in p.ws.sent
+              if kind == "config_patch_result"][-1]
+    assert result["ok"] is True
+    assert result["applied"]["transport_mode"] == "auto"
+    assert p.state.transport_mode == "auto"
+    assert rebuilds == ["auto"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("broker_port", 0),
+    ("broker_port", float("nan")),
+    ("use_wss", "yes"),
+])
+def test_transport_configure_rejects_invalid_fields_without_mutation(
+        tmp_path, field, value):
+    p = _player(tmp_path)
+    before = dict(p.state.data)
+    _run(p._h_transport_configure({
+        "device_id": p.device_id,
+        "request_id": "bad-transport",
+        "broker_host": "10.0.0.8",
+        "transport_mode": "broker",
+        field: value,
+    }, {}))
+    result = [pl for kind, pl in p.ws.sent
+              if kind == "config_patch_result"][-1]
+    assert result["ok"] is False
+    assert p.state.data == before
+
+
+def test_commit_transport_does_not_mutate_memory_when_replace_fails(
+        tmp_path, monkeypatch):
+    state = C.PersistentState.load(tmp_path / "state")
+    before = dict(state.data)
+
+    def _fail_replace(self, target):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(Path, "replace", _fail_replace)
+    with pytest.raises(OSError, match="simulated"):
+        state.commit_transport(mode="p2p", host="")
+    assert state.data == before
+
+
+def test_transport_configure_reports_persist_failure_without_rebuild(
+        tmp_path, monkeypatch):
+    p = _player(tmp_path)
+    rebuilds = []
+
+    def _fail_commit(**_kwargs):
+        raise OSError("disk full")
+
+    async def _fake_rebuild(**_kwargs):
+        rebuilds.append(True)
+
+    monkeypatch.setattr(p.state, "commit_transport", _fail_commit)
+    p._rebuild_transport_with_rollback = _fake_rebuild  # type: ignore[assignment]
+    _run(p._h_transport_configure({
+        "device_id": p.device_id,
+        "request_id": "persist-failure",
+        "broker_host": "",
+        "transport_mode": "p2p",
+    }, {}))
+    result = [pl for kind, pl in p.ws.sent
+              if kind == "config_patch_result"][-1]
+    assert result["ok"] is False
+    assert result["rejected"] == [{
+        "field": "transport_mode", "reason": "persist_failed"}]
+    assert rebuilds == []
+
+
+def test_broker_timeout_rolls_back_exact_prior_p2p_intent(tmp_path):
+    p = _player(tmp_path)
+    p.state.commit_transport(mode="p2p", host="")
+    revision = p.state.commit_transport(
+        mode="broker", host="10.0.0.8", port=8770, use_wss=False)
+    rebuilds = []
+
+    async def _fake_rebuild():
+        rebuilds.append(p.state.transport_mode)
+
+    p._rebuild_transport = _fake_rebuild  # type: ignore[assignment]
+    _run(p._rebuild_transport_with_rollback(
+        revision=revision,
+        new_mode="broker",
+        old_mode="p2p",
+        old_host="",
+        old_port=8770,
+        old_wss=False,
+        rollback_timeout_ms=0,
+    ))
+    assert rebuilds == ["broker", "p2p"]
+    assert p.state.transport_mode == "p2p"
+    assert p.state.broker_host is None
+    assert p.cfg.get("broker", "host") == "127.0.0.1"
+    assert p.cfg.get("topology", "auto") is False
+
+
+def test_broker_migration_accepts_welcome_only_from_expected_generation(tmp_path):
+    p = _player(tmp_path)
+    p.state.commit_transport(mode="p2p", host="")
+    revision = p.state.commit_transport(
+        mode="broker", host="10.0.0.8", port=8770, use_wss=False)
+    rebuilds = []
+
+    async def _fake_rebuild():
+        rebuilds.append(p.state.transport_mode)
+        return 42
+
+    p._rebuild_transport = _fake_rebuild  # type: ignore[assignment]
+    p._welcomed_transport_generation = 42
+    _run(p._rebuild_transport_with_rollback(
+        revision=revision, new_mode="broker", old_mode="p2p",
+        old_host="", old_port=8770, old_wss=False,
+        rollback_timeout_ms=0))
+    assert rebuilds == ["broker"]
+    assert p.state.transport_mode == "broker"
+
+
+def test_broker_migration_ignores_stale_generation_welcome(tmp_path):
+    p = _player(tmp_path)
+    p.state.commit_transport(mode="p2p", host="")
+    revision = p.state.commit_transport(
+        mode="broker", host="10.0.0.8", port=8770, use_wss=False)
+    rebuilds = []
+
+    async def _fake_rebuild():
+        rebuilds.append(p.state.transport_mode)
+        return 42
+
+    p._rebuild_transport = _fake_rebuild  # type: ignore[assignment]
+    p._welcomed_transport_generation = 41
+    _run(p._rebuild_transport_with_rollback(
+        revision=revision, new_mode="broker", old_mode="p2p",
+        old_host="", old_port=8770, old_wss=False,
+        rollback_timeout_ms=0))
+    assert rebuilds == ["broker", "p2p"]
+    assert p.state.transport_mode == "p2p"
+
+
+def test_transport_phase1_status_failure_restores_old_route_without_rebuild(tmp_path):
+    p = _player(tmp_path)
+    old_ws = p.ws
+    p._active_transport_generation = 17
+    p.state.commit_transport(mode="p2p", host="")
+    p._apply_transport_state()
+    rebuilds = []
+
+    async def _fail_status():
+        raise ConnectionError("old route closed")
+
+    async def _fake_rebuild(**_kwargs):
+        rebuilds.append(True)
+
+    p._send_status = _fail_status  # type: ignore[assignment]
+    p._rebuild_transport_with_rollback = _fake_rebuild  # type: ignore[assignment]
+    _run(p._h_transport_configure({
+        "device_id": p.device_id, "request_id": "status-failure",
+        "broker_host": "10.0.0.8", "broker_port": 8770,
+        "use_wss": False, "transport_mode": "broker",
+    }, {}))
+    assert p.state.transport_mode == "p2p"
+    assert p.state.broker_host is None
+    assert p.cfg.get("broker", "host") == "127.0.0.1"
+    assert p.cfg.get("topology", "auto") is False
+    assert p.ws is old_ws
+    assert p._active_transport_generation == 17
+    assert rebuilds == []
 
 
 # ---- §21 prefetch barrier ------------------------------------------

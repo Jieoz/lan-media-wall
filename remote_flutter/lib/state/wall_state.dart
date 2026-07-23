@@ -185,6 +185,7 @@ class WallState extends ChangeNotifier {
   final Map<String, String> _updateDetail = {};
   final Map<String, Map<String, dynamic>> _configPatchResults = {};
   final Map<String, Completer<Map<String, dynamic>>> _pendingConfigResults = {};
+  final Map<String, int> _brokerMigrationRevision = {};
   int _nextConfigRequest = 0;
   final Map<String, RuntimeModeResult> _runtimeModeResults = {};
   final Map<String, MusicPlaylistResult> _musicPlaylistResults = {};
@@ -1730,12 +1731,15 @@ class WallState extends ChangeNotifier {
     final requestId = 'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
     _send('transport_configure', Commands.transportConfigure(
       deviceId: deviceId, brokerHost: brokerHost, brokerPort: brokerPort,
-      useWss: useWss, requestId: requestId,
+      useWss: useWss,
+      transportMode: brokerHost.trim().isEmpty ? 'auto' : 'broker',
+      requestId: requestId,
     ));
     return requestId;
   }
 
   Future<void> _clearTransportAndWait(String deviceId) async {
+    final previousRevision = deviceById(deviceId)?.configSnapshot?.revision ?? -1;
     final requestId =
         'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
     final completer = Completer<Map<String, dynamic>>();
@@ -1744,6 +1748,7 @@ class WallState extends ChangeNotifier {
       _send('transport_configure', Commands.transportConfigure(
         deviceId: deviceId,
         brokerHost: '',
+        transportMode: 'p2p',
         requestId: requestId,
       ));
       final result =
@@ -1753,16 +1758,21 @@ class WallState extends ChangeNotifier {
       }
       final applied =
           (result['applied'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final appliedRevision = result['revision'] is num
+          ? (result['revision'] as num).toInt()
+          : -1;
       if ((applied['broker_host']?.toString() ?? '').trim().isNotEmpty ||
-          applied['auto_discovery'] != true) {
-        throw StateError('播放端未确认恢复自动发现/P2P');
+          applied['transport_mode'] != 'p2p' ||
+          appliedRevision <= previousRevision) {
+        throw StateError('播放端未确认持久化 P2P 传输模式');
       }
       final deadline = DateTime.now().add(const Duration(seconds: 8));
       while (DateTime.now().isBefore(deadline)) {
         final snapshot = deviceById(deviceId)?.configSnapshot;
         if (snapshot != null &&
+            snapshot.revision == appliedRevision &&
             (snapshot.brokerHost ?? '').trim().isEmpty &&
-            snapshot.autoDiscovery) {
+            snapshot.transportMode == 'p2p') {
           return;
         }
         await Future<void>.delayed(const Duration(milliseconds: 150));
@@ -1816,6 +1826,7 @@ class WallState extends ChangeNotifier {
 
   Future<void> _configureTransportAndWait(
       String deviceId, BrokerTarget target) async {
+    final previousRevision = deviceById(deviceId)?.configSnapshot?.revision ?? -1;
     final requestId =
         'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
     final completer = Completer<Map<String, dynamic>>();
@@ -1824,6 +1835,7 @@ class WallState extends ChangeNotifier {
       _send('transport_configure', Commands.transportConfigure(
         deviceId: deviceId,
         brokerHost: target.host,
+        transportMode: 'broker',
         brokerPort: target.port,
         useWss: target.secure,
         requestId: requestId,
@@ -1842,11 +1854,33 @@ class WallState extends ChangeNotifier {
           normalizeRemoteHost(applied['broker_host']?.toString() ?? '');
       final appliedPort = applied['broker_port'] as int?;
       final appliedSecure = applied['use_wss'] as bool?;
+      final appliedMode = applied['transport_mode']?.toString();
+      final appliedRevision = result['revision'] is int
+          ? result['revision'] as int
+          : -1;
       if (appliedHost != normalizeRemoteHost(target.host) ||
           appliedPort != target.port ||
-          appliedSecure != target.secure) {
+          appliedSecure != target.secure ||
+          appliedMode != 'broker' ||
+          appliedRevision <= previousRevision) {
         throw StateError('播放端回读值与目标 Broker 不一致');
       }
+      final deadline = DateTime.now().add(const Duration(seconds: 8));
+      while (DateTime.now().isBefore(deadline)) {
+        final snapshot = deviceById(deviceId)?.configSnapshot;
+        if (snapshot != null &&
+            snapshot.revision == appliedRevision &&
+            snapshot.transportMode == 'broker' &&
+            normalizeRemoteHost(snapshot.brokerHost ?? '') ==
+                normalizeRemoteHost(target.host) &&
+            snapshot.brokerPort == target.port &&
+            snapshot.useWss == target.secure) {
+          _brokerMigrationRevision[deviceId] = appliedRevision;
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      throw StateError('未在旧链路收到精确 revision 的 Broker 状态快照');
     } finally {
       _pendingConfigResults.remove(requestId);
     }
@@ -1861,11 +1895,15 @@ class WallState extends ChangeNotifier {
   bool _deviceConnectedToBroker(String deviceId, BrokerTarget target) {
     final device = deviceById(deviceId);
     final snapshot = device?.configSnapshot;
-    if (device == null || !device.online || snapshot == null) return false;
+    final expectedRevision = _brokerMigrationRevision[deviceId];
+    if (device == null || !device.online || snapshot == null ||
+        expectedRevision == null) return false;
     return normalizeRemoteHost(snapshot.brokerHost ?? '') ==
             normalizeRemoteHost(target.host) &&
         snapshot.brokerPort == target.port &&
-        snapshot.useWss == target.secure;
+        snapshot.useWss == target.secure &&
+        snapshot.transportMode == 'broker' &&
+        snapshot.revision == expectedRevision;
   }
 
   /// Transactionally move selected Players from live P2P links to one Broker.

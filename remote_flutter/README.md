@@ -1,5 +1,9 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.19.1：显式强制 P2P。** Controller 发送 `transport_mode:p2p`，并在切换自身
+> 连接前验证 Player 的持久化回执、递增 revision 和状态快照均为 P2P。普通清空 Broker
+> 使用 `auto`，不再与强制 P2P 混淆。单一版本源为 `1.19.1+1191`。
+>
 > **v1.19.0：权威清单、严格缩略图与安全 P2P 还原。**音乐终端从 Player 的完整
 > `active_music_playlist` 恢复，旧 Player 仅报告非零数量时禁止空列表覆盖。缩略图严格
 > 校验连接设备、播放项、模式、generation/session、序列和长度，并在换项/离开 visual

@@ -1,5 +1,10 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.1 — 强制 P2P 不再被 Broker 抢回：** 持久化 `transport_mode` 明确区分
+> `broker`、`auto`、`p2p`。显式 P2P 跳过 UDP Broker 探测并直接监听本机端口；传输模式、
+> endpoint 和 revision 原子落盘后，先经旧链路回传结果与状态快照，再重建 transport。
+> 旧配置按 endpoint/自动发现语义兼容迁移。单一版本源为 `1.19.1+1191`。
+>
 > **v1.19.0 — 音乐状态与视觉缩略图：**`status.active_music_playlist` 完整回读
 > 活动音乐清单；图片与视频均生成受限尺寸 JPEG，并以 item、运行模式、generation、
 > Player session、序列和字节数绑定。提取失败最多重试三次；图片最大边受限，避免

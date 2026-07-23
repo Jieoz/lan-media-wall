@@ -111,10 +111,10 @@ void main() {
         'device_id': 'and-01',
         'config_capabilities': {
           'safe_fields': ['device_name', 'group_id', 'volume', 'muted'],
-          'transport_fields': ['broker_host', 'broker_port', 'use_wss'],
+          'transport_fields': ['transport_mode', 'broker_host', 'broker_port', 'use_wss'],
           'transport_configure': true,
           'rotate_device_key': true,
-          'config_version': 1,
+          'config_version': 2,
         },
         'config_snapshot': {
           'revision': 7,
@@ -130,6 +130,7 @@ void main() {
             'broker_port': 8771,
             'use_wss': true,
             'auto_discovery': false,
+            'transport_mode': 'broker',
           },
         },
       });
@@ -137,6 +138,7 @@ void main() {
       expect(d.configCapabilities?.supportsTransportConfigure, isTrue);
       expect(d.configSnapshot?.revision, 7);
       expect(d.configSnapshot?.brokerHost, '10.0.0.8');
+      expect(d.configSnapshot?.transportMode, 'broker');
       expect(d.configSnapshot?.pskConfigured, isTrue);
     });
 
@@ -167,9 +169,10 @@ void main() {
 
       final transport = Commands.transportConfigure(
         deviceId: 'and-01', brokerHost: '', brokerPort: 8770,
-        useWss: false, requestId: 'transport-8',
+        useWss: false, transportMode: 'p2p', requestId: 'transport-8',
       );
       expect(transport['broker_host'], '');
+      expect(transport['transport_mode'], 'p2p');
       expect(transport['request_id'], 'transport-8');
 
       final key = Commands.rotateDeviceKey(

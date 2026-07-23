@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.19.1] — 2026-07-23
+
+- **Explicit persisted transport intent** (versionCode **1191**, versionName `1.19.1`). Android and Windows now distinguish `broker`, `auto`, and `p2p`. A Player explicitly restored to P2P skips Broker discovery and starts its local WebSocket server even while a Broker continues advertising on the LAN.
+- **Durable two-phase handoff.** `transport_configure` persists endpoint, intent, and revision before acknowledging, then emits a matching status snapshot over the old route before rebuilding. Controller requires the acknowledged intent, a strictly newer revision, and an exact-revision status readback before switching itself for either Broker→P2P restore or P2P→Broker migration.
+- **Fail-closed migration and rollback.** Invalid numeric/boolean fields and persistence failures leave the active route untouched. Broker results are unicast only to the initiating Controller and bound to the authenticated target Player. New-Broker success is tied to the exact transport generation; a stale welcome, phase-1 send failure, or welcome timeout restores the complete prior runtime and durable transport tuple.
+- **Compatible migration.** Existing saved Broker endpoints migrate to `broker`; endpoint-free auto-discovery installs remain `auto`. Only an explicit restore command writes `p2p`. Invalid mode/endpoint combinations are rejected.
+
 ## [v1.19.0] — 2026-07-22
 
 - **Player-authoritative music recovery** (versionCode **1190**, versionName `1.19.0`). Android and Windows status now return the complete active music playlist and advertise `music_playlist_snapshot_v1`; a restarted Controller rebuilds its terminal from that snapshot. Older Players that report a non-empty count without a snapshot are protected from an accidental empty overwrite.

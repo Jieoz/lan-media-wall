@@ -1,5 +1,10 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.19.1 — 显式 P2P 传输意图：** Player 持久化区分 `broker`、`auto`、`p2p`。
+> “还原到 P2P”不再等价于“清空 Broker 地址”：即使局域网 Broker 仍在广播，Player 也会
+> 跳过 Broker 探测并启动本地 WebSocket Server。Controller 仅在收到持久化回执、递增
+> revision 和同模式状态回读后切换自身链路。单一版本源为 `1.19.1+1191`。
+>
 > **v1.19.0 — 音乐清单/缩略图/P2P 恢复闭环：** Player 状态完整回读活动音乐清单，
 > Controller 重启后不再显示 0 首或用空草稿覆盖；图片和视频缩略图携带设备、播放项、
 > 模式、generation/session、序列及长度并由 Broker 原子转发，过期/错配帧严格丢弃。

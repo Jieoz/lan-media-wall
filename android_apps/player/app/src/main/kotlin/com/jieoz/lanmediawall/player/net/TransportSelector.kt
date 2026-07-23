@@ -10,19 +10,26 @@ package com.jieoz.lanmediawall.player.net
  * the broker→client / none→p2p-server branch is unit-testable without an Android
  * runtime, sockets, or timers — the brief's requirement.
  *
- * Precedence (mirrors windows topology.decide_topology + main.py):
- *   1. a **configured** (paired, §15) broker → connect to it as a client. This
- *      keeps modes A/B byte-for-byte: a paired player always dials its broker
- *      and never silently flips to p2p just because a probe missed. The
- *      configured endpoint is offered to [DiscoveryDecision] as the first
- *      candidate so it deterministically wins.
- *   2. otherwise the discovered announces decide: a real `broker_hint` →
- *      connect as a client (a broker someone else cohosts, mode B); nothing
- *      usable → **p2p server fallback** (mode C, §14.3).
+ * [Intent] is authoritative: BROKER dials the persisted endpoint, P2P always
+ * starts the local server, and AUTO may adopt a discovered broker before
+ * falling back to P2P. Keeping P2P distinct from AUTO is essential: clearing a
+ * Broker override while that Broker is still discoverable must not immediately
+ * select it again.
  *
  * The result is a pure function of its inputs — no I/O here.
  */
 object TransportSelector {
+
+    enum class Intent(val wire: String) {
+        AUTO("auto"),
+        BROKER("broker"),
+        P2P("p2p");
+
+        companion object {
+            fun fromWire(raw: String?): Intent? = values().firstOrNull { it.wire == raw }
+            fun parse(raw: String?): Intent = fromWire(raw) ?: AUTO
+        }
+    }
 
     /** What [select] resolved to. The service builds the matching transport. */
     sealed class Plan {
@@ -44,9 +51,7 @@ object TransportSelector {
 
     /** The device's local configuration relevant to transport choice. */
     data class Config(
-        /** True once first-boot pairing/setup completed (§15). A configured
-         *  device has a real broker endpoint and must stay in client mode. */
-        val isConfigured: Boolean,
+        val intent: Intent,
         val brokerHost: String,
         val brokerPort: Int,
         val useWss: Boolean,
@@ -74,9 +79,16 @@ object TransportSelector {
         // device that has key material signs (`optional`), else stays open.
         val p2pAuth = if (config.hasKeyMaterial) AuthMode.OPTIONAL else AuthMode.OPEN
 
-        // 1. configured (paired) broker wins — offer it to decide() first so a
-        //    paired player keeps dialing its broker (modes A/B unchanged).
-        val candidates = if (config.isConfigured) {
+        if (config.intent == Intent.P2P) {
+            return Plan.P2pServer(
+                authMode = p2pAuth,
+                keyMode = config.configuredKeyMode,
+                listenPort = config.p2pListenPort,
+            )
+        }
+
+        // A persisted broker intent wins. AUTO considers only discovery.
+        val candidates = if (config.intent == Intent.BROKER) {
             buildList {
                 add(
                     DiscoveryDecision.Announce(
@@ -98,10 +110,10 @@ object TransportSelector {
         // configured path bootstraps OPTIONAL (BrokerClient's historical start
         // mode); unconfigured discovery uses OPEN as the §15.3 zero-config base
         // (a discovered announce that declares a mode overrides it in decide()).
-        val fallbackAuth = if (config.isConfigured) AuthMode.OPTIONAL else AuthMode.OPEN
+        val fallbackAuth = if (config.intent == Intent.BROKER) AuthMode.OPTIONAL else AuthMode.OPEN
         return when (val d = DiscoveryDecision.decide(candidates, fallbackAuth = fallbackAuth)) {
             is DiscoveryDecision.Decision.ConnectBroker -> {
-                val configured = config.isConfigured &&
+                val configured = config.intent == Intent.BROKER &&
                     d.endpoint.host == config.brokerHost && d.endpoint.port == config.brokerPort
                 Plan.Client(
                     url = urlFor(d.endpoint, config, configured),

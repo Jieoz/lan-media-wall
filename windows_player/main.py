@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import logging
 import os
 import sys
@@ -84,8 +85,11 @@ class Player:
     def __init__(self, cfg: config_mod.Config, *, cohost: Optional[bool] = None):
         self.cfg = cfg
         self.state = config_mod.PersistentState.load(cfg.state_dir)
+        self._baseline_broker = copy.deepcopy(cfg.raw.get("broker", {}))
+        self._baseline_topology_auto = bool(
+            cfg.raw.get("topology", {}).get("auto", True))
         # §19: remote broker overrides win over yaml defaults for next dial.
-        config_mod.apply_state_transport(self.cfg, self.state)
+        self._apply_transport_state()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
 
         self.device_id = self.state.device_id
@@ -152,6 +156,9 @@ class Player:
         # §19: transport rebuild serializes against overlapping configure_device.
         self._transport_rebuild_lock = asyncio.Lock()
         self._ws_task: Optional[asyncio.Task] = None
+        self._transport_generation = 0
+        self._active_transport_generation = 0
+        self._welcomed_transport_generation = 0
 
         # OS-coupled subsystems (created in start())
         self.watchdog = None
@@ -179,6 +186,24 @@ class Player:
             return None
 
     # --- §14 transport selection -------------------------------------
+    def _apply_transport_state(self) -> None:
+        """Rebuild the runtime transport overlay from immutable config baseline."""
+        self.cfg.raw["broker"] = copy.deepcopy(self._baseline_broker)
+        self.cfg.raw.setdefault("topology", {})["auto"] = self._baseline_topology_auto
+        config_mod.apply_state_transport(self.cfg, self.state)
+        mode = self.state.data.get("transport_mode")
+        if mode in ("auto", "broker", "p2p"):
+            self.cfg.raw.setdefault("topology", {})["auto"] = mode == "auto"
+
+    def _transport_intent(self) -> str:
+        explicit = self.state.data.get("transport_mode")
+        if explicit in ("auto", "broker", "p2p"):
+            return explicit
+        if self.state.broker_host:
+            return "broker"
+        return "auto" if bool(self.cfg.get("topology", "auto", default=True)) \
+            else "broker"
+
     def _discover_decision(self) -> topology_mod.Decision:
         """Decide client vs p2p-server from a UDP discovery probe (§14.5).
 
@@ -189,6 +214,7 @@ class Player:
         fallback_mode = self.auth.mode
         fallback_key_mode = self.auth.key_mode
         auto = bool(self.cfg.get("topology", "auto", default=True))
+        intent = self._transport_intent()
         p2p_port = int(self.cfg.get("topology", "p2p_listen_port", default=8770))
         timeout = float(self.cfg.get("topology", "discover_timeout_s", default=3.0))
 
@@ -198,8 +224,13 @@ class Player:
                 None, cohost=True, fallback_auth_mode=fallback_mode,
                 fallback_key_mode=fallback_key_mode, p2p_listen_port=p2p_port)
 
+        if intent == "p2p":
+            return topology_mod.decide_topology(
+                None, cohost=False, fallback_auth_mode=fallback_mode,
+                fallback_key_mode=fallback_key_mode, p2p_listen_port=p2p_port)
+
         found = None
-        if auto and discovery_probe_mod is not None:
+        if intent == "auto" and auto and discovery_probe_mod is not None:
             try:
                 found = discovery_probe_mod.probe_for_broker(
                     psk=self.cfg.psk, auth_mode=self.auth.mode,
@@ -209,7 +240,7 @@ class Player:
             except Exception as exc:
                 log.warning("discovery probe failed (%s); using configured broker",
                             exc)
-        if found is None and not auto:
+        if found is None and intent == "broker":
             # auto off → trust the configured broker host/port (mode A).
             found = topology_mod.BrokerFound(
                 host=self.cfg.get("broker", "host", default="127.0.0.1"),
@@ -221,6 +252,16 @@ class Player:
 
     def _build_transport(self, decision: topology_mod.Decision):
         """Construct the BrokerClient or P2PServer for `decision` (§14)."""
+        self._transport_generation += 1
+        generation = self._transport_generation
+        self._active_transport_generation = generation
+
+        async def on_message(type_, payload, env):
+            if (type_ == "welcome" and
+                    generation == self._active_transport_generation):
+                self._welcomed_transport_generation = generation
+            await self._on_message(type_, payload, env)
+
         self.auth.adopt(decision.auth_mode)
         self.auth.adopt_key_mode(decision.key_mode)
         interval = float(self.cfg.get("time_sync_interval_s", default=30))
@@ -233,7 +274,7 @@ class Player:
             return P2PServer(
                 psk=self.cfg.psk, device_id=self.device_id,
                 group_id=self.group_id, clock=self.clock, auth_state=self.auth,
-                on_connect=self._on_p2p_connect, on_message=self._on_message,
+                on_connect=self._on_p2p_connect, on_message=on_message,
                 listen_port=int(decision.listen_port or 8770),
                 time_sync_interval_s=interval)
 
@@ -251,7 +292,7 @@ class Player:
                  decision.topology, url, self.auth.mode)
         return BrokerClient(
             url, psk=self.cfg.psk, device_id=self.device_id, clock=self.clock,
-            on_connect=self._on_connect, on_message=self._on_message,
+            on_connect=self._on_connect, on_message=on_message,
             time_sync_interval_s=interval, auth_state=self.auth)
 
     def _spawn_cohost_broker(self) -> None:
@@ -467,7 +508,7 @@ class Player:
             # than the ordinary safe patch (§19.3/§19.5).
             "transport_configure": True,
             "rotate_device_key": True,
-            "config_version": 1,
+            "config_version": 2,
         }
 
     def _config_snapshot(self) -> Dict[str, Any]:
@@ -494,7 +535,8 @@ class Player:
                 "broker_host": self.state.broker_host,
                 "broker_port": self.state.broker_port,
                 "use_wss": self.state.use_wss,
-                "auto_discovery": self.state.broker_host is None,
+                "transport_mode": self._transport_intent(),
+                "auto_discovery": self._transport_intent() == "auto",
             },
             "pending": {},
             "requires_restart": False,
@@ -1400,31 +1442,107 @@ class Player:
                 "pending": {}, "requires_restart": False}, to="controller")
             return
         host_s = host.strip()
-        if not host_s:
-            self.state.clear_broker()
-            # apply_state_transport is also the canonical inverse overlay: it
-            # restores the baseline topology rather than leaving a stale broker
-            # config in memory after an explicit clear.
-            config_mod.apply_state_transport(self.cfg, self.state)
-            self.cfg.raw.setdefault("topology", {})["auto"] = True
-            applied = {"broker_host": "", "auto_discovery": True}
-        else:
-            port = payload.get("broker_port")
-            port_i = int(port) if isinstance(port, (int, float)) else None
-            use_wss = payload.get("use_wss")
-            use_wss_b = bool(use_wss) if isinstance(use_wss, bool) else None
-            self.state.set_broker(host=host_s, port=port_i, use_wss=use_wss_b)
-            config_mod.apply_state_transport(self.cfg, self.state)
-            applied = {"broker_host": host_s, "broker_port": self.state.broker_port,
-                       "use_wss": self.state.use_wss}
-        revision = self.state.bump_config_revision()
-        asyncio.create_task(self._rebuild_transport())
-        await self.ws.send("config_patch_result", {
-            "request_id": request_id, "device_id": self.device_id,
-            "ok": True, "revision": revision,
-            "applied": applied, "rejected": [],
-            "pending": {"transport": "reconnecting"}, "requires_restart": False},
-            to="controller")
+        old_mode = self._transport_intent()
+        old_host = self.state.broker_host or (
+            str(self.cfg.get("broker", "host", default=""))
+            if old_mode == "broker" else "")
+        old_port = self.state.broker_port or int(
+            self.cfg.get("broker", "port", default=8770))
+        old_wss = self.state.use_wss
+        if old_wss is None:
+            old_wss = bool(self.cfg.get("broker", "use_wss", default=False))
+        mode = payload.get("transport_mode")
+        if mode is None:
+            # Legacy clear meant "resume discovery". Sticky P2P must be explicit.
+            mode = "auto" if not host_s else "broker"
+        if mode not in ("auto", "broker", "p2p") or \
+                ((mode == "broker") != bool(host_s)):
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "revision": self.state.config_revision, "applied": {},
+                "rejected": [{"field": "transport_mode",
+                              "reason": config_mod.REJECT_INVALID_VALUE}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        port = payload.get("broker_port")
+        use_wss = payload.get("use_wss")
+        rollback_timeout = payload.get("rollback_timeout_ms", 30_000)
+        if ("broker_port" in payload and
+                (not isinstance(port, int) or isinstance(port, bool) or
+                 not 1 <= port <= 65535)) or \
+                ("use_wss" in payload and not isinstance(use_wss, bool)):
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "revision": self.state.config_revision, "applied": {},
+                "rejected": [{"field": "broker_port" if "broker_port" in payload
+                              else "use_wss",
+                              "reason": config_mod.REJECT_INVALID_VALUE}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        if (not isinstance(rollback_timeout, int) or
+                isinstance(rollback_timeout, bool)):
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "revision": self.state.config_revision, "applied": {},
+                "rejected": [{"field": "rollback_timeout_ms",
+                              "reason": config_mod.REJECT_INVALID_VALUE}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        rollback_timeout = max(10_000, min(120_000, rollback_timeout))
+        try:
+            if not host_s:
+                revision = self.state.commit_transport(mode=mode, host="")
+                # apply_state_transport is also the canonical inverse overlay: it
+                # restores the baseline topology rather than leaving a stale broker
+                # config in memory after an explicit clear.
+                self._apply_transport_state()
+                self.cfg.raw.setdefault("topology", {})["auto"] = mode == "auto"
+                applied = {"broker_host": "", "transport_mode": mode,
+                           "auto_discovery": mode == "auto"}
+            else:
+                revision = self.state.commit_transport(
+                    mode="broker", host=host_s, port=port, use_wss=use_wss)
+                self._apply_transport_state()
+                applied = {"broker_host": host_s, "broker_port": self.state.broker_port,
+                           "use_wss": self.state.use_wss, "transport_mode": "broker",
+                           "auto_discovery": False}
+        except (OSError, ValueError):
+            await self.ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": False, "revision": self.state.config_revision, "applied": {},
+                "rejected": [{"field": "transport_mode",
+                              "reason": "persist_failed"}],
+                "pending": {}, "requires_restart": False}, to="controller")
+            return
+        ws = self.ws
+        try:
+            if ws is None:
+                raise RuntimeError("transport link unavailable")
+            await ws.send("config_patch_result", {
+                "request_id": request_id, "device_id": self.device_id,
+                "ok": True, "revision": revision,
+                "applied": applied, "rejected": [],
+                "pending": {"transport": "reconnecting"}, "requires_restart": False},
+                to="controller")
+            # Phase-1 readback travels over the still-live old route. Only then is
+            # the transport replaced with the newly committed intent.
+            await self._send_status()
+        except Exception as exc:
+            if self.state.config_revision == revision:
+                restore_host = old_host if old_mode == "broker" else ""
+                self.state.commit_transport(
+                    mode=old_mode, host=restore_host,
+                    port=old_port if restore_host else None,
+                    use_wss=old_wss if restore_host else None)
+                self._apply_transport_state()
+            log.error("transport phase-1 send failed; old link retained: %s", exc)
+            return
+        asyncio.create_task(self._rebuild_transport_with_rollback(
+            revision=revision, new_mode=mode,
+            old_mode=old_mode, old_host=old_host,
+            old_port=old_port, old_wss=old_wss,
+            rollback_timeout_ms=rollback_timeout,
+        ))
 
     # --- §19.5 rotate_device_key (secret material, signed-frame only) --
     async def _h_rotate_device_key(self, payload, env) -> None:
@@ -1454,7 +1572,7 @@ class Player:
                 "pending": {}, "requires_restart": False}, to="controller")
             return
         self.state.set_psk(psk.strip())
-        config_mod.apply_state_transport(self.cfg, self.state)
+        self._apply_transport_state()
         revision = self.state.bump_config_revision()
         try:
             self.auth.psk = self.cfg.psk  # type: ignore[attr-defined]
@@ -1467,7 +1585,7 @@ class Player:
             "applied": {"psk_configured": True}, "rejected": [],
             "pending": {}, "requires_restart": False}, to="controller")
 
-    async def _rebuild_transport(self) -> None:
+    async def _rebuild_transport(self) -> Optional[int]:
         """Stop the live WS/discovery link and re-bootstrap from current cfg.
 
         status/thumbnail/kiosk loops keep running; only the coordinator link
@@ -1504,9 +1622,41 @@ class Player:
                 # refresh discovery advertisement for the new topology
                 self._restart_discovery_only()
                 self._ws_task = asyncio.create_task(self.ws.run(), name="ws")
+                return self._active_transport_generation
             except Exception as exc:
                 log.exception("transport rebuild failed: %s", exc)
                 self._errors.append(f"transport_rebuild:{type(exc).__name__}")
+                return None
+
+    async def _rebuild_transport_with_rollback(
+            self, *, revision: int, new_mode: str, old_mode: str,
+            old_host: str, old_port: int, old_wss: bool,
+            rollback_timeout_ms: int) -> None:
+        """Rebuild a committed transport and restore the prior route on timeout."""
+        expected_generation = await self._rebuild_transport()
+        if new_mode != "broker":
+            return
+        deadline = time.monotonic() + rollback_timeout_ms / 1000.0
+        while time.monotonic() < deadline and self.state.config_revision == revision:
+            if (expected_generation is not None and
+                    self._welcomed_transport_generation == expected_generation):
+                return
+            await asyncio.sleep(0.25)
+        if (self.state.config_revision != revision or
+                (expected_generation is not None and
+                 self._welcomed_transport_generation == expected_generation)):
+            return
+        restore_host = old_host if old_mode == "broker" else ""
+        self.state.commit_transport(
+            mode=old_mode, host=restore_host,
+            port=old_port if restore_host else None,
+            use_wss=old_wss if restore_host else None,
+        )
+        self._apply_transport_state()
+        self.cfg.raw.setdefault("topology", {})["auto"] = old_mode == "auto"
+        log.error("transport_configure rollback revision=%s mode=%s",
+                  revision, old_mode)
+        await self._rebuild_transport()
 
     def _restart_discovery_only(self) -> None:
         """Re-bind DiscoveryResponder after a transport rebuild (§14)."""

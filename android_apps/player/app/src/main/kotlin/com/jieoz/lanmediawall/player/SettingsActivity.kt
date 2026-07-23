@@ -712,9 +712,14 @@ class SettingsActivity : AppCompatActivity() {
         // back to the p2p server (§14.3). Writing it unconditionally is what lets
         // an operator *clear* a bad broker and return to auto-discovery, and
         // stops a blank field from silently keeping a stale/phantom host.
-        settings.brokerHost = host
-        settings.brokerPort = port
-        settings.useWss = binding.inputUseWss.isChecked
+        settings.commitTransport(
+            intent = if (host.isBlank())
+                com.jieoz.lanmediawall.player.net.TransportSelector.Intent.AUTO
+            else com.jieoz.lanmediawall.player.net.TransportSelector.Intent.BROKER,
+            host = host,
+            port = port,
+            wss = binding.inputUseWss.isChecked,
+        )
         settings.groupId = if (groupId.isEmpty()) "default" else groupId
         settings.psk = psk
         settings.alwaysCollectThumbnails = binding.inputAlwaysThumbs.isChecked

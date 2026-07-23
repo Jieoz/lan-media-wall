@@ -191,6 +191,7 @@ class Hub:
         # invariant as cache operations, but keep an independent namespace so
         # unrelated request types cannot complete each other.
         self._runtime_req_origin: "OrderedDict[str, tuple]" = OrderedDict()
+        self._config_req_origin: "OrderedDict[str, tuple]" = OrderedDict()
         self.discovery: Optional[discovery_mod.Discovery] = None
         self.media: Optional[media_mod.MediaServer] = None
 
@@ -406,7 +407,7 @@ class Hub:
             # §19 config patch outcome (safe patch / transport_configure /
             # rotate_device_key) relays player->controllers, else broker mode
             # would drop it and the controller's pending request would time out.
-            "config_patch_result": self._on_relay_to_controllers,
+            "config_patch_result": self._on_config_result,
             # §27/§28 cache lifecycle: requests fan controller->player; results
             # unicast player->initiating controller (role-safe, no broadcast).
             "cache_cleanup": self._on_cache_request,
@@ -724,11 +725,48 @@ class Hub:
         # name/group fields — the other two carry none).
         target = self.players.get(device_id)
         if target is not None:
+            request_id = str(p.get("request_id") or "")
+            if request_id:
+                fingerprint = json.dumps(
+                    {"type": env["type"], "payload": p}, sort_keys=True,
+                    separators=(",", ":"), ensure_ascii=False)
+                proposed = (conn.ident or "", str(device_id), fingerprint)
+                existing = self._config_req_origin.get(request_id)
+                if existing is not None and existing != proposed:
+                    return
+                self._config_req_origin[request_id] = proposed
+                self._config_req_origin.move_to_end(request_id)
+                while len(self._config_req_origin) > self._CONFIG_REQ_ORIGIN_MAX:
+                    self._config_req_origin.popitem(last=False)
             fwd = self.make_env(env["type"], p, f"player:{device_id}")
             try:
                 await target.send_env(fwd)
             except Exception:
                 pass
+
+    async def _on_config_result(self, conn: ClientConn, env: dict) -> None:
+        """Unicast a config terminal result to its initiating controller."""
+        if conn.role != "player" or not conn.ident:
+            return
+        payload = dict(env["payload"])
+        request_id = str(payload.get("request_id") or "")
+        origin = self._config_req_origin.get(request_id)
+        if origin is None:
+            return
+        controller_id, expected_device, _fingerprint = origin
+        if conn.ident != expected_device:
+            return
+        controller = self.controllers.get(controller_id)
+        if controller is None:
+            return
+        payload["device_id"] = conn.ident
+        try:
+            await controller.send_env(self.make_env(
+                "config_patch_result", payload,
+                f"controller:{controller_id}"))
+        except Exception:
+            return
+        self._config_req_origin.pop(request_id, None)
 
     async def _on_create_group(self, conn: ClientConn, env: dict) -> None:
         """§18.1: create an empty group (idempotent)."""
@@ -838,6 +876,7 @@ class Hub:
     # ---- §27/§28 cache cleanup / inventory (role-safe, unicast result) ---
     _CACHE_REQ_ORIGIN_MAX = 512  # bounded FIFO (idempotency/correlation req #5)
     _RUNTIME_REQ_ORIGIN_MAX = 512
+    _CONFIG_REQ_ORIGIN_MAX = 512
 
     async def _on_runtime_request(self, conn: ClientConn, env: dict) -> None:
         """Route controller mode/music operations and remember their initiator."""

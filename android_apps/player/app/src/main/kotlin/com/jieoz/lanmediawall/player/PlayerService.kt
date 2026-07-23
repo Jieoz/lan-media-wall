@@ -144,8 +144,8 @@ class PlayerService : Service() {
     @Volatile private var lastLoopExpectedMs: Long? = null
     @Volatile private var loopBoundaryCount = 0L
     @Volatile private var loopCorrectionCount = 0L
-    /** Last authenticated/accepted broker welcome; used by staged transport rollback. */
-    @Volatile private var lastBrokerWelcomeAtMs = 0L
+    /** Exact transport generation whose authenticated Broker welcome was accepted. */
+    @Volatile private var lastBrokerWelcomeGeneration = -1L
     private var deviceIp = "0.0.0.0"
 
     private data class ActiveLoopSync(
@@ -249,18 +249,15 @@ class PlayerService : Service() {
             ?.let { Envelope.hexToBytes(it) }
         val hasKeyMaterial = Envelope.hasUsableKey(settings.psk) || deviceKey != null
 
-        // a player with a real (paired) broker host trusts it (no probe needed);
-        // a box with a blank broker — whether never configured OR "configured"
-        // via the zero-config path (§2, broker left empty) — probes the LAN for a
-        // coordinator and falls back to the p2p server if none answers (§14.5).
-        // Keying off hasBroker (not isConfigured) is the fix for a box that saved
-        // setup with an empty broker and used to dead-dial a phantom host.
-        val hasBroker = settings.hasBroker
-        val announces = if (hasBroker) {
+        // Persisted intent is authoritative: BROKER trusts its endpoint, AUTO
+        // probes the LAN, and P2P never probes (so a live Broker cannot recapture
+        // a box that was explicitly restored to direct mode).
+        val intent = settings.transportIntent
+        val announces = if (intent == TransportSelector.Intent.BROKER) {
             ConnState.set(ConnState.Phase.CONNECTING_BROKER,
                 "${settings.brokerHost}:${settings.brokerPort}")
             emptyList()
-        } else {
+        } else if (intent == TransportSelector.Intent.AUTO) {
             // §2: no broker configured → tell the UI we're probing the LAN.
             ConnState.set(ConnState.Phase.DISCOVERING)
             DiscoveryProbe(
@@ -270,12 +267,13 @@ class PlayerService : Service() {
                 keyMode = keyMode,
                 deviceKey = deviceKey,
             ).probe(timeoutMs = 3000)
+        } else {
+            emptyList()
         }
 
         val plan = TransportSelector.select(
             TransportSelector.Config(
-                // "configured" for transport = has a real broker to dial.
-                isConfigured = hasBroker,
+                intent = intent,
                 brokerHost = settings.brokerHost,
                 brokerPort = settings.brokerPort,
                 useWss = settings.useWss,
@@ -305,7 +303,7 @@ class PlayerService : Service() {
                     },
                     onMessage = { type, payload, env ->
                         if (ownsTransportGeneration(transportGeneration, generation)) {
-                            onBrokerMessage(type, payload, env)
+                            onBrokerMessage(type, payload, env, generation)
                         }
                     },
                     initialKeyMode = plan.keyMode,
@@ -332,7 +330,7 @@ class PlayerService : Service() {
                     },
                     onMessage = { type, payload, env ->
                         if (ownsTransportGeneration(transportGeneration, generation)) {
-                            onBrokerMessage(type, payload, env)
+                            onBrokerMessage(type, payload, env, generation)
                         }
                     },
                     // §2 可见性:控制器已连上(WS 握手过)但入站帧持续被丢弃时,
@@ -388,7 +386,7 @@ class PlayerService : Service() {
                 // plan.url) rather than the empty configured host. Keying off
                 // hasBroker (not isConfigured) is the fix for "两台互不发现" when a
                 // broker exists but this box's broker field was never filled.
-                val hint = if (settings.hasBroker) {
+                val hint = if (settings.transportIntent == TransportSelector.Intent.BROKER) {
                     "${settings.brokerHost}:${settings.brokerPort}"
                 } else {
                     brokerHintFromWsUrl(plan.url)
@@ -879,7 +877,8 @@ class PlayerService : Service() {
     }
 
     // --- inbound dispatch (§6, §9, §10) ------------------------------
-    private fun onBrokerMessage(type: String, payload: Json.Obj, env: Envelope.Parsed) {
+    private fun onBrokerMessage(type: String, payload: Json.Obj, env: Envelope.Parsed,
+        generation: Long) {
         when (type) {
             "cache_prefetch" -> hCachePrefetch(payload)
             // §27/§28 destructive/inventory ops. Handled OFF the generic-ack
@@ -911,7 +910,7 @@ class PlayerService : Service() {
             "rotate_device_key" -> hRotateDeviceKey(payload, env)
             "update_app" -> hUpdateApp(payload, env)
             "resume_last" -> scope.launch { resumeLast() }
-            "welcome" -> hWelcome(payload)
+            "welcome" -> hWelcome(payload, generation)
             "controller_presence" -> hControllerPresence(payload)
             else -> return
         }
@@ -925,8 +924,8 @@ class PlayerService : Service() {
         }
     }
 
-    private fun hWelcome(payload: Json.Obj) {
-        lastBrokerWelcomeAtMs = System.currentTimeMillis()
+    private fun hWelcome(payload: Json.Obj, generation: Long) {
+        lastBrokerWelcomeGeneration = generation
         // §4.2: broker's group_id is authoritative for players.
         payload["group_id"].asString()?.let { gid ->
             if (gid != settings.groupId) settings.groupId = gid
@@ -1956,10 +1955,10 @@ class PlayerService : Service() {
     // --- §19 remote configuration ------------------------------------
     private fun configCapabilitiesJson() = jsonObj {
         put("safe_fields", jsonStrArr(listOf("device_name", "group_id", "volume", "muted")))
-        put("transport_fields", jsonStrArr(listOf("broker_host", "broker_port", "use_wss")))
+        put("transport_fields", jsonStrArr(listOf("transport_mode", "broker_host", "broker_port", "use_wss")))
         put("transport_configure", true)
         put("rotate_device_key", true)
-        put("config_version", 1)
+        put("config_version", 2)
     }
 
     private fun configSnapshotJson() = jsonObj {
@@ -1971,7 +1970,9 @@ class PlayerService : Service() {
         })
         put("transport", jsonObj {
             put("broker_host", settings.brokerHost); put("broker_port", settings.brokerPort)
-            put("use_wss", settings.useWss); put("auto_discovery", !settings.hasBroker)
+            put("use_wss", settings.useWss)
+            put("transport_mode", settings.transportIntent.wire)
+            put("auto_discovery", settings.transportIntent == TransportSelector.Intent.AUTO)
         })
         put("pending", jsonObj {}); put("requires_restart", false)
     }
@@ -2001,7 +2002,7 @@ class PlayerService : Service() {
         val allowed = setOf("device_id", "request_id", "base_revision", "device_name", "group_id", "volume", "muted")
         val rejected = payload.entries.keys.filter { it !in allowed }.map { key -> jsonObj {
             put("field", key); put("reason", when (key) {
-                "broker_host", "broker_port", "use_wss" -> "high_risk_transport"
+                "transport_mode", "broker_host", "broker_port", "use_wss" -> "high_risk_transport"
                 "psk" -> "high_risk_secret"
                 else -> "unknown_field"
             })
@@ -2043,55 +2044,98 @@ class PlayerService : Service() {
         val previousHost = settings.brokerHost
         val previousPort = settings.brokerPort
         val previousWss = settings.useWss
+        val previousIntent = settings.transportIntent
         val next = host.trim()
-        if (next.isEmpty()) {
-            settings.brokerHost = ""
-        } else {
-            settings.brokerHost = next
-            payload["broker_port"].asIntOrNull()?.takeIf { it in 1..65535 }?.let { settings.brokerPort = it }
-            payload["use_wss"].asBoolOrNull()?.let { settings.useWss = it }
-            settings.markConfigured()
+        val hasIntent = payload.entries.containsKey("transport_mode")
+        val rawIntent = payload["transport_mode"].asString()
+        val requestedIntent = if (!hasIntent) {
+            // Legacy controllers used an empty endpoint to return to discovery;
+            // only the new explicit field is allowed to create sticky P2P.
+            if (next.isEmpty()) TransportSelector.Intent.AUTO else TransportSelector.Intent.BROKER
+        } else TransportSelector.Intent.fromWire(rawIntent)
+        val hasPort = payload.entries.containsKey("broker_port")
+        val requestedPort = payload["broker_port"].asIntOrNull()
+        val hasUseWss = payload.entries.containsKey("use_wss")
+        val requestedUseWss = payload["use_wss"].asBoolOrNull()
+        if (requestedIntent == null ||
+            (requestedIntent == TransportSelector.Intent.BROKER) != next.isNotEmpty() ||
+            (hasPort && (requestedPort == null || requestedPort !in 1..65535)) ||
+            (hasUseWss && requestedUseWss == null)
+        ) {
+            sendConfigResult(requestId, false, rejected = jsonArr(listOf(jsonObj {
+                put("field", when {
+                    requestedIntent == null -> "transport_mode"
+                    hasPort && (requestedPort == null || requestedPort !in 1..65535) -> "broker_port"
+                    hasUseWss && requestedUseWss == null -> "use_wss"
+                    else -> "transport_mode"
+                })
+                put("reason", "invalid_value")
+            })))
+            return
         }
-        settings.bumpConfigRevision()
-        val appliedRevision = settings.configRevision
+        val nextPort = requestedPort ?: settings.brokerPort
+        val nextWss = requestedUseWss ?: settings.useWss
+        val appliedRevision = try {
+            settings.commitTransport(requestedIntent, next, nextPort, nextWss)
+        } catch (t: Throwable) {
+            sendConfigResult(requestId, false, rejected = jsonArr(listOf(jsonObj {
+                put("field", "transport_mode"); put("reason", "persist_failed")
+            })))
+            return
+        }
         val rollbackTimeoutMs = (payload["rollback_timeout_ms"].asLongOrNull()
             ?: TRANSPORT_ROLLBACK_TIMEOUT_MS).coerceIn(10_000L, 120_000L)
         // Return the durable readback while the old link is still alive. Only
         // after this terminal result is on the wire do we tear down P2P/current
         // broker and try the new endpoint.
-        sendConfigResult(requestId, true, jsonObj {
-            put("broker_host", settings.brokerHost); put("broker_port", settings.brokerPort)
-            put("use_wss", settings.useWss); put("auto_discovery", !settings.hasBroker)
-        }, pending = jsonObj { put("transport", "reconnecting") })
+        try {
+            sendConfigResult(requestId, true, jsonObj {
+                put("broker_host", settings.brokerHost); put("broker_port", settings.brokerPort)
+                put("use_wss", settings.useWss); put("transport_mode", settings.transportIntent.wire)
+                put("auto_discovery", settings.transportIntent == TransportSelector.Intent.AUTO)
+            }, pending = jsonObj { put("transport", "reconnecting") })
+        } catch (t: Throwable) {
+            settings.commitTransport(previousIntent, previousHost, previousPort, previousWss)
+            logEvent("transport_configure_ack_failed restored=${previousIntent.wire}")
+            return
+        }
         scope.launch {
-            val attemptStartedAt = System.currentTimeMillis()
-            lastBrokerWelcomeAtMs = 0L
+            // Publish the committed snapshot over the still-live old route before
+            // tearing it down; the Controller uses this as phase-1 readback.
+            try {
+                sendStatus()
+            } catch (t: Throwable) {
+                if (settings.configRevision == appliedRevision) {
+                    settings.commitTransport(previousIntent, previousHost, previousPort, previousWss)
+                }
+                logEvent("transport_configure_status_failed restored=${previousIntent.wire}")
+                return@launch
+            }
+            delay(150)
             try {
                 rebuildTransport()
             } catch (t: Throwable) {
                 ConnState.set(ConnState.Phase.START_FAILED, t.message ?: "transport rebuild failed")
             }
+            val expectedGeneration = transportGeneration
             // Clearing a broker intentionally returns to P2P and needs no broker
             // welcome. A later config revision supersedes this rollback owner.
-            if (next.isEmpty()) return@launch
-            val deadline = attemptStartedAt + rollbackTimeoutMs
+            if (requestedIntent != TransportSelector.Intent.BROKER) return@launch
+            val deadline = System.currentTimeMillis() + rollbackTimeoutMs
             while (isActive && System.currentTimeMillis() < deadline &&
                 settings.configRevision == appliedRevision) {
-                if (lastBrokerWelcomeAtMs >= attemptStartedAt) {
+                if (lastBrokerWelcomeGeneration == expectedGeneration) {
                     logEvent("transport_configure_committed revision=$appliedRevision")
                     return@launch
                 }
                 delay(250)
             }
             if (!isActive || settings.configRevision != appliedRevision ||
-                lastBrokerWelcomeAtMs >= attemptStartedAt) return@launch
+                lastBrokerWelcomeGeneration == expectedGeneration) return@launch
             // New endpoint never completed the authenticated welcome. Restore the
             // exact prior transport and rebuild it, so an incorrect host/PSK cannot
             // strand a whole batch beyond remote recovery.
-            settings.brokerHost = previousHost
-            settings.brokerPort = previousPort
-            settings.useWss = previousWss
-            settings.bumpConfigRevision()
+            settings.commitTransport(previousIntent, previousHost, previousPort, previousWss)
             logEvent("transport_configure_rollback failed_revision=$appliedRevision " +
                 "restored=${if (previousHost.isBlank()) "p2p" else "$previousHost:$previousPort"}")
             try {

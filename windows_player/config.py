@@ -10,6 +10,7 @@ first-boot settable + persisted) and §10 resume_last.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import socket
@@ -91,6 +92,12 @@ def _hex_to_bytes(hexkey: Any) -> Optional[bytes]:
 class Config:
     raw: Dict[str, Any]
     path: Optional[Path] = None
+
+    def __post_init__(self) -> None:
+        # Callers and tests commonly start from a shallow dict(DEFAULTS). Make
+        # runtime transport overlays instance-local instead of mutating the
+        # module defaults shared by later Player instances.
+        self.raw = copy.deepcopy(self.raw)
 
     # convenience typed accessors --------------------------------------
     @property
@@ -211,7 +218,7 @@ SAFE_CONFIG_FIELDS = ("device_name", "group_id", "volume", "muted")
 # High-risk transport fields — moved OUT of the safe patch into transport_configure
 # (§19.3). Listing them here lets the safe patch reject them with a precise hint
 # instead of a generic "unknown".
-TRANSPORT_CONFIG_FIELDS = ("broker_host", "broker_port", "use_wss")
+TRANSPORT_CONFIG_FIELDS = ("transport_mode", "broker_host", "broker_port", "use_wss")
 
 # Secret material — only rotate_device_key may change it, and only on a signed
 # frame. Never echoed in any snapshot (redaction boundary, §19.5).
@@ -367,6 +374,53 @@ class PersistentState:
     def broker_host(self) -> Optional[str]:
         host = self.data.get("broker_host")
         return host if isinstance(host, str) else None
+
+    @property
+    def transport_mode(self) -> str:
+        mode = self.data.get("transport_mode")
+        if mode in ("auto", "broker", "p2p"):
+            return mode
+        return "broker" if self.broker_host else "auto"
+
+    def set_transport_mode(self, mode: str) -> None:
+        if mode not in ("auto", "broker", "p2p"):
+            raise ValueError("invalid transport mode")
+        self.data["transport_mode"] = mode
+        self.save()
+
+    def commit_transport(self, *, mode: str, host: str,
+                         port: Optional[int] = None,
+                         use_wss: Optional[bool] = None) -> int:
+        """Atomically persist transport intent, endpoint, and revision."""
+        host_s = host.strip()
+        if mode not in ("auto", "broker", "p2p") or \
+                ((mode == "broker") != bool(host_s)):
+            raise ValueError("inconsistent transport mode and broker host")
+        next_data = copy.deepcopy(self.data)
+        if host_s:
+            next_data["broker_host"] = host_s
+            if port is not None:
+                if isinstance(port, bool) or not 1 <= int(port) <= 65535:
+                    raise ValueError("invalid broker port")
+                next_data["broker_port"] = int(port)
+            if use_wss is not None:
+                if not isinstance(use_wss, bool):
+                    raise ValueError("invalid use_wss")
+                next_data["use_wss"] = use_wss
+        else:
+            next_data.pop("broker_host", None)
+            next_data.pop("broker_port", None)
+            next_data.pop("use_wss", None)
+        next_data["transport_mode"] = mode
+        revision = self.config_revision + 1
+        next_data["config_revision"] = revision
+        with self._lock:
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(next_data, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(self.path)
+            self.data = next_data
+        return revision
 
     @property
     def broker_port(self) -> Optional[int]:
