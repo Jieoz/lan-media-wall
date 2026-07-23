@@ -1,5 +1,14 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.19.2 — Broker OTA 与播放控制补齐：** 经已配置 Broker 链路抵达的
+> `update_app` 在开放局域网部署中视为现场操作员通道，不再卡在
+> `authed=false p2pLocal=false → update:unauthorized`，同时继续保留
+> versionCode 严格递增、必填 URL/sha256、下载后 sha256 复验和平台同签名安装护栏。
+> Player 日志会显式打印 `brokerLocal=true` 便于现场定位。Controller 设备卡和单台
+> 面板显示当前播放模式（图片/视频、音乐终端、待机），普通播放控制区直接提供
+> 「切换音乐终端」「保存并播放」「恢复图片/视频」，这些操作不再被藏在音乐终端弹窗。
+> 单一版本源为 `1.19.2+1192`。
+>
 > **v1.19.1 — 显式 P2P 传输意图：** Player 持久化区分 `broker`、`auto`、`p2p`。
 > “还原到 P2P”不再等价于“清空 Broker 地址”：即使局域网 Broker 仍在广播，Player 也会
 > 跳过 Broker 探测并启动本地 WebSocket Server。Controller 仅在收到持久化回执、递增

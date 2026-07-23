@@ -39,6 +39,9 @@ object TransportSelector {
             val authMode: AuthMode,
             val keyMode: KeyMode,
             val topology: String,
+            /** True only when this client endpoint came from the persisted
+             *  operator-configured Broker intent, not opportunistic discovery. */
+            val configured: Boolean,
         ) : Plan()
 
         /** Become the p2p WS server (mode C, §14.3). */
@@ -122,6 +125,7 @@ object TransportSelector {
                     // discovered one starts GLOBAL and adopts via welcome (§17.3).
                     keyMode = if (configured) config.configuredKeyMode else KeyMode.GLOBAL,
                     topology = d.topology,
+                    configured = configured,
                 )
             }
             is DiscoveryDecision.Decision.StartP2pServer -> Plan.P2pServer(

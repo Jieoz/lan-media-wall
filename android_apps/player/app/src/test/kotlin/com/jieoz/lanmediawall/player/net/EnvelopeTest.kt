@@ -27,7 +27,7 @@ class EnvelopeTest {
     @Test
     fun canonical_nested_nonAscii_sortedKeys() {
         val payload = jsonObj {
-            put("device_name", "大厅左屏")
+            put("device_name", "\u5927\u5385\u5de6\u5c4f")
             put("screen", jsonObj { put("w", 1920); put("h", 1080) })
             put("capabilities", jsonStrArr(listOf("video", "image")))
             put("group_id", "lobby")
@@ -38,7 +38,7 @@ class EnvelopeTest {
             put("alpha", 2)
         }
         val expected =
-            "{\"alpha\":2,\"capabilities\":[\"video\",\"image\"],\"device_name\":\"大厅左屏\",\"group_id\":\"lobby\",\"muted\":false,\"online\":true,\"screen\":{\"h\":1080,\"w\":1920},\"volume\":80,\"zeta\":1}"
+            "{\"alpha\":2,\"capabilities\":[\"video\",\"image\"],\"device_name\":\"\u5927\u5385\u5de6\u5c4f\",\"group_id\":\"lobby\",\"muted\":false,\"online\":true,\"screen\":{\"h\":1080,\"w\":1920},\"volume\":80,\"zeta\":1}"
         assertEquals(expected, CanonicalJson.encode(payload))
     }
 
@@ -49,10 +49,10 @@ class EnvelopeTest {
 
     @Test
     fun canonical_string_escaping() {
-        // a"b\c<newline>d<tab>e/f<><>中
-        val s = "a\"b\\c\nd\te/f中"
+        // a"b\c<newline>d<tab>e/f<U+0001><U+001F><U+4E2D>
+        val s = "a\"b\\c\nd\te/f\u0001\u001f\u4e2d"
         val payload = jsonObj { put("s", s) }
-        val expected = "{\"s\":\"a\\\"b\\\\c\\nd\\te/f\\u0001\\u001f中\"}"
+        val expected = "{\"s\":\"a\\\"b\\\\c\\nd\\te/f\\u0001\\u001f\u4e2d\"}"
         assertEquals(expected, CanonicalJson.encode(payload))
     }
 
@@ -76,7 +76,7 @@ class EnvelopeTest {
     @Test
     fun hmac_hello_vector() {
         val payload = jsonObj {
-            put("device_name", "大厅左屏")
+            put("device_name", "\u5927\u5385\u5de6\u5c4f")
             put("screen", jsonObj { put("w", 1920); put("h", 1080) })
             put("capabilities", jsonStrArr(listOf("video", "image")))
             put("group_id", "lobby")
@@ -100,7 +100,7 @@ class EnvelopeTest {
 
     @Test
     fun hmac_escaping_vector() {
-        val payload = jsonObj { put("s", "a\"b\\c\nd\te/f中") }
+        val payload = jsonObj { put("s", "a\"b\\c\nd\te/f\u0001\u001f\u4e2d") }
         val sig = Envelope.sign(psk, 1, "x", "m3", 42L, "a", "b", payload)
         assertEquals("89efc2eff634df85500b3104044260bb57baa98d9527daeb49bcdb9e31ee64c3", sig)
     }
@@ -127,7 +127,7 @@ class EnvelopeTest {
         val payload = jsonObj {
             put("device_id", "and-1")
             put("state", "playing")
-            put("name", "宣传片.mp4")
+            put("name", "\u5ba3\u4f20\u7247.mp4")
         }
         val env = Envelope.build(psk, "status", "player:and-1", "broker", payload)
         val wire = Envelope.toWire(env)
@@ -193,6 +193,6 @@ class EnvelopeTest {
     @Test
     fun parse_unicode_escape_decodes() {
         val parsed = Json.parse("{\"s\":\"\\u4e2d\\u6587\"}")
-        assertEquals("{\"s\":\"中文\"}", CanonicalJson.encode(parsed))
+        assertEquals("{\"s\":\"\u4e2d\u6587\"}", CanonicalJson.encode(parsed))
     }
 }

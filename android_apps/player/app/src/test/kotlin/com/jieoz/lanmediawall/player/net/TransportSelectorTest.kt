@@ -22,7 +22,9 @@ class TransportSelectorTest {
         )
 
         assertTrue(plan is TransportSelector.Plan.Client)
-        assertEquals("ws://10.10.8.108:8770", (plan as TransportSelector.Plan.Client).url)
+        val client = plan as TransportSelector.Plan.Client
+        assertEquals("ws://10.10.8.108:8770", client.url)
+        assertEquals(false, client.configured)
     }
 
     @Test fun `cleared broker config restores p2p server even when key material remains`() {
@@ -86,6 +88,7 @@ class TransportSelectorTest {
                 authMode = AuthMode.OPTIONAL,
                 keyMode = KeyMode.GLOBAL,
                 topology = "dedicated",
+                configured = true,
             ),
             plan,
         )

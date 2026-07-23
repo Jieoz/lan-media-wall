@@ -176,8 +176,27 @@ def test_runtime_mode_controls_match_operator_mental_model() -> None:
     assert "'退出待机'" in transport
     assert "setDeviceRuntimeMode" in transport
     assert "restoreDeviceRuntimeMode" in transport
-    assert "result.ok && result.mode == RuntimeMode.standby" in transport
+    assert "RuntimeMode.standby, '待机命令已发送" in transport
     assert "result.ok\n                  ? '设备已退出待机" in transport
+
+
+def test_playback_controls_include_music_shortcuts_without_non_authoritative_save() -> None:
+    dev = _read(DEVWALL)
+    transport = dev[dev.index("class _DeviceTransportRow"):]
+    # The normal playback-control row, not only the music-terminal dialog, owns
+    # the operator's three common mode actions.
+    assert "'切换音乐终端'" in transport
+    assert "'保存并播放'" in transport
+    assert "'恢复图片/视频'" in transport
+    assert "RuntimeMode.music" in transport
+    assert "RuntimeMode.visual" in transport
+    # 保存并播放 must only become active from an authoritative device playlist.
+    # A stale local draft plus a legacy `music_playlist_size:0` status must not
+    # be enough to overwrite the device.
+    assert "hasAuthoritativeMusicPlaylist(deviceId)" in transport
+    assert "canMusic && hasAuthoritativeMusicList && localMusicItems.isNotEmpty" in transport
+    assert "(hasAuthoritativeMusicList || (st?.musicPlaylistSize ?? 0) == 0)" not in transport
+    assert "items: localMusicItems" in transport
 
 
 def test_android_discovery_thread_contains_advisory_packet_failures() -> None:

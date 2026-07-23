@@ -1,5 +1,11 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.2 — Broker OTA 与播放控制补齐：** `update_app` 经已配置 Broker 链路抵达时，
+> 在 `auth_mode=open` 下也视为现场操作员通道，继续保留 versionCode 严格递增、sha256、
+> 平台同签名护栏；日志会显式打印 `brokerLocal=true`。控制端设备卡/单台面板显示当前
+> 播放模式，播放控制区直接提供「切换音乐终端」「保存并播放」「恢复图片/视频」。
+> 单一版本源为 `1.19.2+1192`。
+>
 > **v1.19.1 — 强制 P2P 不再被 Broker 抢回：** 持久化 `transport_mode` 明确区分
 > `broker`、`auto`、`p2p`。显式 P2P 跳过 UDP Broker 探测并直接监听本机端口；传输模式、
 > endpoint 和 revision 原子落盘后，先经旧链路回传结果与状态快照，并验证两个帧均已成功入队，
