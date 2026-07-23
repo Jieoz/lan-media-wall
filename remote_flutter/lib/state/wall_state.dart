@@ -20,6 +20,7 @@ import '../util/apk_manifest.dart';
 import 'broker_migration.dart';
 import 'cache_ops.dart';
 import 'media_progress.dart';
+import 'runtime_mode_request_tracker.dart';
 
 /// 持久化键。
 class _Keys {
@@ -190,6 +191,8 @@ class WallState extends ChangeNotifier {
   final Map<String, RuntimeModeResult> _runtimeModeResults = {};
   final Map<String, MusicPlaylistResult> _musicPlaylistResults = {};
   final Map<String, Completer<RuntimeModeResult>> _pendingRuntimeMode = {};
+  final RuntimeModeRequestTracker _runtimeModeRequests =
+      RuntimeModeRequestTracker();
   final Map<String, Completer<MusicPlaylistResult>> _pendingMusicPlaylist = {};
   final Map<String, List<MediaItem>> _musicDrafts = {};
   final Map<String, List<MediaItem>> _pendingMusicItems = {};
@@ -335,6 +338,19 @@ class WallState extends ChangeNotifier {
   @visibleForTesting
   void debugIngestCacheInventoryResult(Map<String, dynamic> payload) =>
       _onCacheInventoryResult(payload);
+
+  /// Runtime-mode test seam: keep the real pending/correlation/timer reducer but
+  /// skip the live transport, then settle it through [debugIngestRuntimeModeResult].
+  @visibleForTesting
+  bool debugHoldOutboundRuntimeMode = false;
+
+  @visibleForTesting
+  String? debugLatestRuntimeModeRequestFor(String deviceId) =>
+      _runtimeModeRequests.latestForDevice(deviceId);
+
+  @visibleForTesting
+  void debugIngestRuntimeModeResult(Map<String, dynamic> payload) =>
+      _onRuntimeModeResult(payload);
 
   List<AnnounceInfo> get discovered => List.unmodifiable(_discovered);
   ConnState get conn => _conn;
@@ -1058,11 +1074,34 @@ class WallState extends ChangeNotifier {
   void _onRuntimeModeResult(Map<String, dynamic> payload) {
     final result = RuntimeModeResult.fromMap(payload);
     if (result.deviceId.isEmpty) return;
+    final pending = _pendingRuntimeMode.remove(result.requestId);
+    final admission = _runtimeModeRequests.settle(
+      requestId: result.requestId,
+      actualDeviceId: result.deviceId,
+    );
+    if (pending == null || admission != RuntimeModeReplyAdmission.accept) {
+      final reason = switch (admission) {
+        RuntimeModeReplyAdmission.superseded => 'superseded',
+        RuntimeModeReplyAdmission.staleOrDeviceMismatch =>
+          'stale-or-device-mismatch',
+        RuntimeModeReplyAdmission.accept => 'missing-pending-completer',
+      };
+      _pushLog('[${result.deviceId}] 陈旧/迟到 runtime_mode_result '
+          '(req=${result.requestId} reason=$reason)已忽略');
+      if (pending != null && !pending.isCompleted) {
+        pending.complete(RuntimeModeResult(
+          requestId: result.requestId,
+          deviceId: result.deviceId,
+          ok: false,
+          error: reason,
+        ));
+      }
+      return;
+    }
     _runtimeModeResults[result.deviceId] = result;
     // runtime_mode_result is a device-confirmed fact, not an optimistic command
-    // ACK. Fold it into the current immutable wall snapshot immediately so all
-    // status views (including Overlay dialogs) converge without waiting for the
-    // next periodic wall broadcast.
+    // ACK. Fold only the latest correlated result into the immutable wall
+    // snapshot so Overlay controls converge without accepting replayed results.
     final wall = _wall;
     if (result.ok && result.mode != null) {
       var matched = false;
@@ -1082,8 +1121,7 @@ class WallState extends ChangeNotifier {
         );
       }
     }
-    final pending = _pendingRuntimeMode.remove(result.requestId);
-    if (pending != null && !pending.isCompleted) pending.complete(result);
+    if (!pending.isCompleted) pending.complete(result);
     _pushLog('[${result.deviceId}] runtime_mode_result '
         '${result.ok ? result.mode?.name ?? 'ok' : 'failed:${result.error}'}');
     notifyListeners();
@@ -1449,17 +1487,22 @@ class WallState extends ChangeNotifier {
     final requestId = 'mode-${++_nextRuntimeModeRequest}-${_nowMs()}';
     final completer = Completer<RuntimeModeResult>();
     _pendingRuntimeMode[requestId] = completer;
+    _runtimeModeRequests.register(requestId: requestId, deviceId: deviceId);
     try {
-      _send('set_runtime_mode', Commands.setRuntimeMode(
-        requestId: requestId, deviceId: deviceId, mode: mode,
-      ), deviceId: deviceId);
+      if (!debugHoldOutboundRuntimeMode) {
+        _send('set_runtime_mode', Commands.setRuntimeMode(
+          requestId: requestId, deviceId: deviceId, mode: mode,
+        ), deviceId: deviceId);
+      }
     } catch (e) {
       _pendingRuntimeMode.remove(requestId);
+      _runtimeModeRequests.cancel(requestId);
       completer.completeError(e);
       return completer.future;
     }
     Timer(const Duration(seconds: 10), () {
       final pending = _pendingRuntimeMode.remove(requestId);
+      _runtimeModeRequests.cancel(requestId);
       if (pending != null && !pending.isCompleted) {
         pending.complete(RuntimeModeResult(
           requestId: requestId, deviceId: deviceId, ok: false,
@@ -1481,17 +1524,22 @@ class WallState extends ChangeNotifier {
     final requestId = 'restore-${++_nextRuntimeModeRequest}-${_nowMs()}';
     final completer = Completer<RuntimeModeResult>();
     _pendingRuntimeMode[requestId] = completer;
+    _runtimeModeRequests.register(requestId: requestId, deviceId: deviceId);
     try {
-      _send('restore_runtime_mode', Commands.restoreRuntimeMode(
-        requestId: requestId, deviceId: deviceId,
-      ), deviceId: deviceId);
+      if (!debugHoldOutboundRuntimeMode) {
+        _send('restore_runtime_mode', Commands.restoreRuntimeMode(
+          requestId: requestId, deviceId: deviceId,
+        ), deviceId: deviceId);
+      }
     } catch (e) {
       _pendingRuntimeMode.remove(requestId);
+      _runtimeModeRequests.cancel(requestId);
       completer.completeError(e);
       return completer.future;
     }
     Timer(const Duration(seconds: 10), () {
       final pending = _pendingRuntimeMode.remove(requestId);
+      _runtimeModeRequests.cancel(requestId);
       if (pending != null && !pending.isCompleted) {
         pending.complete(RuntimeModeResult(
           requestId: requestId, deviceId: deviceId, ok: false,
