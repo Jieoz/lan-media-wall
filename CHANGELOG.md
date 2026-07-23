@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.19.3] — 2026-07-23
+
+- **Playback controls are composed by intent, not copied actions.** Per-device controls are grouped into playback transport, a single authoritative `图片/视频` / `音乐终端` mode selector, music-list editing, and contextual standby power. The music dialog is now solely a list editor and no longer duplicates mode-switch actions.
+- **Broker OTA qualification boundary made explicit.** A Player still running 1.19.1 cannot execute the 1.19.2 `brokerLocal` authorization code contained in its target APK. Field qualification therefore bootstraps the designated device to 1.19.2 over the already-proven P2P path, then proves the actual fixed path with `1.19.2 → 1.19.3` over the configured open Broker. The old guard is not weakened or bypassed.
+
 ## [v1.19.2] — 2026-07-23
 
 - **Broker-link OTA for open LAN deployments** (versionCode **1192**, versionName `1.19.2`). Android `update_app` now treats the configured Broker connection as an operator-owned local channel, so open-mode Broker pushes no longer stop at `update:unauthorized`. The existing monotonic versionCode, required URL/sha256, post-download sha256 verification, and platform same-signer install guards remain intact; logs now include `brokerLocal=true` for field diagnosis.

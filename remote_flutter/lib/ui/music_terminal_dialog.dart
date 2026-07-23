@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
 
+/// 音乐列表编辑器。模式切换属于设备播放控制区，这里只负责上传、排序和提交列表。
 Future<void> showMusicTerminalDialog(
     BuildContext context, WallState state, WallDevice device) async {
   final items = List<MediaItem>.of(state.musicPlaylistFor(device.deviceId));
@@ -16,8 +17,7 @@ Future<void> showMusicTerminalDialog(
       ? '该播放端报告 $reportedSize 首，但未提供完整清单；已禁止空列表覆盖，请先升级播放端'
       : '';
 
-  Future<void> showResult(BuildContext ctx, StateSetter setLocal,
-      {required bool playAfterSave}) async {
+  Future<void> saveList(BuildContext ctx, StateSetter setLocal) async {
     setLocal(() {
       busy = true;
       status = '等待设备确认音乐列表…';
@@ -31,16 +31,7 @@ Future<void> showMusicTerminalDialog(
             : '设备拒绝列表：${result.error}');
         return;
       }
-      if (!playAfterSave) {
-        setLocal(() => status = '设备已确认音乐列表 revision=${result.revision}');
-        return;
-      }
-      setLocal(() => status = '列表已确认，等待设备进入音乐模式…');
-      final mode = await state.setDeviceRuntimeMode(
-          device.deviceId, RuntimeMode.music);
-      setLocal(() => status = mode.ok && mode.mode == RuntimeMode.music
-          ? '设备已进入音乐模式'
-          : '模式切换失败：${mode.error.isEmpty ? '状态未确认' : mode.error}');
+      setLocal(() => status = '设备已确认音乐列表 revision=${result.revision}');
     } catch (e) {
       setLocal(() => status = '操作失败：$e');
     } finally {
@@ -52,7 +43,7 @@ Future<void> showMusicTerminalDialog(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setLocal) => AlertDialog(
-        title: Text('音乐终端 · ${device.deviceName.isEmpty ? device.deviceId : device.deviceName}'),
+        title: Text('编辑音乐列表 · ${device.deviceName.isEmpty ? device.deviceId : device.deviceName}'),
         content: SizedBox(
           width: 520,
           child: SingleChildScrollView(
@@ -60,8 +51,8 @@ Future<void> showMusicTerminalDialog(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text('当前模式：${device.status?.runtimeMode.name ?? '未知'} · '
-                    '设备列表 ${device.status?.musicPlaylistSize ?? 0} 首'),
+                Text('设备列表 ${device.status?.musicPlaylistSize ?? 0} 首 · '
+                    '保存后可在播放控制区切换到“音乐终端”模式'),
                 const SizedBox(height: 8),
                 FilledButton.tonalIcon(
                   onPressed: busy ? null : () async {
@@ -146,43 +137,12 @@ Future<void> showMusicTerminalDialog(
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    OutlinedButton.icon(
-                      onPressed: busy || (!authoritative && reportedSize > 0)
-                          ? null
-                          : () => showResult(
-                              ctx, setLocal, playAfterSave: false),
-                      icon: const Icon(Icons.save_outlined),
-                      label: const Text('保存列表'),
-                    ),
                     FilledButton.icon(
                       onPressed: busy || (!authoritative && reportedSize > 0)
                           ? null
-                          : () => showResult(
-                              ctx, setLocal, playAfterSave: true),
-                      icon: const Icon(Icons.music_note),
-                      label: const Text('保存并播放'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: busy ? null : () async {
-                        setLocal(() {
-                          busy = true;
-                          status = '等待设备恢复图片/视频模式…';
-                        });
-                        try {
-                          final result = await state.setDeviceRuntimeMode(
-                              device.deviceId, RuntimeMode.visual);
-                          setLocal(() => status = result.ok &&
-                                  result.mode == RuntimeMode.visual
-                              ? '设备已恢复图片/视频模式'
-                              : '恢复图片/视频失败：${result.error.isEmpty ? '状态未确认' : result.error}');
-                        } catch (e) {
-                          setLocal(() => status = '恢复图片/视频失败：$e');
-                        } finally {
-                          setLocal(() => busy = false);
-                        }
-                      },
-                      icon: const Icon(Icons.ondemand_video),
-                      label: const Text('恢复图片/视频'),
+                          : () => saveList(ctx, setLocal),
+                      icon: const Icon(Icons.save_outlined),
+                      label: const Text('保存列表'),
                     ),
                   ],
                 ),

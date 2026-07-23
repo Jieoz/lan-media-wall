@@ -1206,8 +1206,9 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
   }
 }
 
-/// 单台播放控制行(§9/§v1.13/§6.3c):传输控制、运行模式、音乐终端快捷动作
-/// 处于同一层级。全部锁定该 deviceId 单播；真实状态由设备回传快照确认。
+/// 单台播放控制区：按“播放 / 模式 / 音乐列表 / 电源”分组，避免把音乐
+/// 终端弹窗里的提交按钮原样复制到主界面。全部锁定该 deviceId 单播；
+/// 真实模式仍由设备回传快照确认。
 class _DeviceTransportRow extends StatelessWidget {
   const _DeviceTransportRow({required this.state, required this.device});
   final WallState state;
@@ -1219,10 +1220,7 @@ class _DeviceTransportRow extends StatelessWidget {
     final st = device.status;
     final canRuntime = st?.supportsRuntimeModes == true;
     final canMusic = st?.supportsMusicShuffle == true;
-    final localMusicItems = state.musicPlaylistFor(deviceId);
-    final hasAuthoritativeMusicList = state.hasAuthoritativeMusicPlaylist(deviceId);
-    final canSaveAndPlay =
-        canMusic && hasAuthoritativeMusicList && localMusicItems.isNotEmpty;
+    final mode = st?.runtimeMode;
 
     void act(void Function() fn, String toast) {
       try {
@@ -1267,96 +1265,110 @@ class _DeviceTransportRow extends StatelessWidget {
           onPressed: onTap,
         );
 
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
+    Widget section(String label, Widget child) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // §D 措辞真相：下发即回执「命令已发送，等待设备确认」，绝不在 ACK 前声称
-        // 已暂停/已恢复/已停止；真实播放态由设备回传的 wall 快照反映。
-        btn(Icons.pause, '暂停',
-            () => act(() => state.pause(deviceId: deviceId), sentAwaitingAck('暂停这一台'))),
-        btn(Icons.play_arrow, '恢复',
-            () => act(() => state.resume(deviceId: deviceId), sentAwaitingAck('恢复这一台'))),
-        btn(Icons.stop, '停止',
-            () => act(() => state.stop(deviceId: deviceId), sentAwaitingAck('停止这一台'))),
-        btn(Icons.power_settings_new, '待机', () => setMode(
-            RuntimeMode.standby, '待机命令已发送，等待设备确认', '设备已进入待机', '待机失败')),
-        btn(Icons.settings_backup_restore, '退出待机', () async {
-          ScaffoldMessenger.of(context)
-            ..clearSnackBars()
-            ..showSnackBar(const SnackBar(content: Text('恢复命令已发送，等待设备确认')));
-          try {
-            final result = await state.restoreDeviceRuntimeMode(deviceId);
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context)
-              ..clearSnackBars()
-              ..showSnackBar(SnackBar(content: Text(result.ok
-                  ? '设备已退出待机，恢复 ${result.mode == null ? '前一模式' : runtimeModeLabel(result.mode!)}'
-                  : '退出待机失败：${result.error.isEmpty ? '状态未确认' : result.error}')));
-          } catch (e) {
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context)
-              ..clearSnackBars()
-              ..showSnackBar(SnackBar(content: Text('退出待机失败：$e')));
-          }
-        }),
-        btn(Icons.skip_previous, '上一项',
-            () => act(() => state.prev(deviceId: deviceId), sentAwaitingAck('上一项'))),
-        btn(Icons.skip_next, '下一项',
-            () => act(() => state.next(deviceId: deviceId), sentAwaitingAck('下一项'))),
-        OutlinedButton.icon(
-          icon: const Icon(Icons.library_music, size: 18),
-          label: const Text('切换音乐终端'),
+        Text(label, style: Theme.of(context).textTheme.labelSmall),
+        const SizedBox(height: 4),
+        child,
+      ],
+    );
+
+    Future<void> exitStandby() async {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('恢复命令已发送，等待设备确认')));
+      try {
+        final result = await state.restoreDeviceRuntimeMode(deviceId);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text(result.ok
+              ? '设备已退出待机，恢复 ${result.mode == null ? '前一模式' : runtimeModeLabel(result.mode!)}'
+              : '退出待机失败：${result.error.isEmpty ? '状态未确认' : result.error}')));
+      } catch (e) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text('退出待机失败：$e')));
+      }
+    }
+
+    return Wrap(
+      spacing: 16,
+      runSpacing: 12,
+      crossAxisAlignment: WrapCrossAlignment.end,
+      children: [
+        section('播放', Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            // 下发只说明“等待确认”；真实状态由设备 wall 快照反映。
+            btn(Icons.skip_previous, '上一项',
+                () => act(() => state.prev(deviceId: deviceId), sentAwaitingAck('上一项'))),
+            btn(Icons.pause, '暂停',
+                () => act(() => state.pause(deviceId: deviceId), sentAwaitingAck('暂停这一台'))),
+            btn(Icons.play_arrow, '继续',
+                () => act(() => state.resume(deviceId: deviceId), sentAwaitingAck('继续这一台'))),
+            btn(Icons.skip_next, '下一项',
+                () => act(() => state.next(deviceId: deviceId), sentAwaitingAck('下一项'))),
+            btn(Icons.stop, '停止',
+                () => act(() => state.stop(deviceId: deviceId), sentAwaitingAck('停止这一台'))),
+          ],
+        )),
+        section('播放模式', SegmentedButton<RuntimeMode>(
+          emptySelectionAllowed: true,
+          showSelectedIcon: false,
+          segments: [
+            ButtonSegment(
+              value: RuntimeMode.visual,
+              icon: const Icon(Icons.ondemand_video),
+              label: const Text('图片/视频'),
+              enabled: canRuntime,
+            ),
+            ButtonSegment(
+              value: RuntimeMode.music,
+              icon: const Icon(Icons.library_music),
+              label: const Text('音乐终端'),
+              enabled: canMusic,
+            ),
+          ],
+          selected: mode == RuntimeMode.visual || mode == RuntimeMode.music
+              ? {mode!}
+              : const <RuntimeMode>{},
+          onSelectionChanged: (selected) {
+            if (selected.isEmpty) return;
+            final next = selected.single;
+            setMode(
+              next,
+              '${runtimeModeLabel(next)}命令已发送，等待设备确认',
+              '设备已切换到${runtimeModeLabel(next)}模式',
+              '切换${runtimeModeLabel(next)}失败',
+            );
+          },
+        )),
+        section('音乐列表', OutlinedButton.icon(
+          icon: const Icon(Icons.queue_music, size: 18),
+          label: const Text('编辑音乐列表'),
           onPressed: canMusic
-              ? () => setMode(RuntimeMode.music, '音乐模式命令已发送，等待设备确认',
-                  '设备已进入音乐终端模式', '切换音乐终端失败')
+              ? () => showMusicTerminalDialog(context, state, device)
               : null,
-        ),
-        FilledButton.tonalIcon(
-          icon: const Icon(Icons.music_note, size: 18),
-          label: const Text('保存并播放'),
-          onPressed: canSaveAndPlay
-              ? () async {
-                  ScaffoldMessenger.of(context)
-                    ..clearSnackBars()
-                    ..showSnackBar(const SnackBar(content: Text('正在保存音乐列表并切换播放…')));
-                  try {
-                    final saved = await state.sendDeviceMusicPlaylist(
-                        deviceId: deviceId,
-                        items: localMusicItems);
-                    if (!saved.ok) {
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context)
-                        ..clearSnackBars()
-                        ..showSnackBar(SnackBar(content: Text(
-                            '保存音乐列表失败：${saved.error.isEmpty ? '状态未确认' : saved.error}')));
-                      return;
-                    }
-                    final mode = await state.setDeviceRuntimeMode(deviceId, RuntimeMode.music);
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context)
-                      ..clearSnackBars()
-                      ..showSnackBar(SnackBar(content: Text(
-                          mode.ok && mode.mode == RuntimeMode.music
-                              ? '音乐列表已保存并开始播放'
-                              : '列表已保存，切换播放失败：${mode.error.isEmpty ? '状态未确认' : mode.error}')));
-                  } catch (e) {
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context)
-                      ..clearSnackBars()
-                      ..showSnackBar(SnackBar(content: Text('保存并播放失败：$e')));
-                  }
-                }
-              : null,
-        ),
-        OutlinedButton.icon(
-          icon: const Icon(Icons.ondemand_video, size: 18),
-          label: const Text('恢复图片/视频'),
-          onPressed: canRuntime
-              ? () => setMode(RuntimeMode.visual, '恢复图片/视频命令已发送，等待设备确认',
-                  '设备已恢复图片/视频模式', '恢复图片/视频失败')
-              : null,
-        ),
+        )),
+        section('电源', mode == RuntimeMode.standby
+            ? FilledButton.tonalIcon(
+                icon: const Icon(Icons.settings_backup_restore, size: 18),
+                label: const Text('退出待机'),
+                onPressed: exitStandby,
+              )
+            : OutlinedButton.icon(
+                icon: const Icon(Icons.power_settings_new, size: 18),
+                label: const Text('待机'),
+                onPressed: canRuntime
+                    ? () => setMode(RuntimeMode.standby,
+                        '待机命令已发送，等待设备确认', '设备已进入待机', '待机失败')
+                    : null,
+              )),
       ],
     );
   }
