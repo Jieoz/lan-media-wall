@@ -21,6 +21,7 @@ import 'broker_migration.dart';
 import 'cache_ops.dart';
 import 'media_progress.dart';
 import 'runtime_mode_request_tracker.dart';
+import 'transport_migration_window.dart';
 
 /// 持久化键。
 class _Keys {
@@ -237,6 +238,10 @@ class WallState extends ChangeNotifier {
   /// broker 模式下由 wall 快照的 online 推断）。与 _discovered/_wall 合并成 [wallDevices]。
   final Map<String, LinkPhase> _linkPhase = {};
   final Map<String, String> _linkError = {};
+
+  /// Devices whose transport is being rebuilt; Broker-reported `online` is not
+  /// trusted for them (see [TransportMigrationWindow]).
+  final TransportMigrationWindow _transportMigration = TransportMigrationWindow();
   final Set<String> _forgottenDevices = {};
 
   /// 根因 A 修复:占位 id(`host:port`,扫码无真实 device_id 时的兜底键) → 真实
@@ -383,8 +388,12 @@ class WallState extends ChangeNotifier {
       if (_forgottenDevices.contains(d.deviceId)) continue;
       seen.add(d.deviceId);
       // broker 模式无逐台直连回调：online 即视为已连接，否则回落到记录的相位。
+      // 例外（fail-closed）：该设备正在重建 transport 时，Broker 注册表的 online
+      // 会在其自身过期窗口内继续报 true，不能据此宣称可达。
+      final migrating = _transportMigration.isMigrating(d.deviceId);
+      final trustBrokerOnline = d.online && !migrating;
       final phase = _linkPhase[d.deviceId] ??
-          (d.online ? LinkPhase.connected : LinkPhase.discovered);
+          (trustBrokerOnline ? LinkPhase.connected : LinkPhase.discovered);
       AnnounceInfo? discovered;
       for (final a in _discovered) {
         if (_resolveId(a.deviceId) == d.deviceId) {
@@ -395,7 +404,11 @@ class WallState extends ChangeNotifier {
       out.add(WallDevice(
         deviceId: d.deviceId,
         deviceName: d.deviceName ?? d.deviceId,
-        phase: d.online ? LinkPhase.connected : phase,
+        // 迁移窗口内不让 Broker 的 online 覆盖本地观测到的相位（此前无条件覆盖，
+        // 会把正在重连的设备画成“已连接”，并抹掉直连回调记录的 connecting/failed）。
+        phase: migrating
+            ? (_linkPhase[d.deviceId] ?? LinkPhase.connecting)
+            : (d.online ? LinkPhase.connected : phase),
         status: d,
         ip: discovered?.ip ?? '',
         error: _linkError[d.deviceId],
@@ -1235,6 +1248,11 @@ class WallState extends ChangeNotifier {
       PeerLinkState.connected => LinkPhase.connected,
       PeerLinkState.failed => LinkPhase.failed,
     };
+    // A real link observation supersedes the migration window: from here the
+    // locally observed phase is authoritative again.
+    if (state != PeerLinkState.connecting) {
+      _transportMigration.close(deviceId);
+    }
     if (reason != null && reason.isNotEmpty) {
       _linkError[deviceId] = reason;
     } else {
@@ -1265,6 +1283,17 @@ class WallState extends ChangeNotifier {
 
   /// 把一个 id 解析到其归一后的真实 device_id（无别名则原样返回）。
   String _resolveId(String id) => _idAlias[id] ?? id;
+
+  /// 该设备 announce 里的 `broker_hint`（`host:port`），无则 null。仅作 Broker
+  /// 端点自动填充的最弱候选（见 [suggestBrokerEndpoint]）。
+  String? brokerHintFor(String deviceId) {
+    for (final a in _discovered) {
+      if (_resolveId(a.deviceId) != deviceId) continue;
+      final hint = a.brokerHint;
+      if (hint != null && hint.trim().isNotEmpty) return hint.trim();
+    }
+    return null;
+  }
 
   void _onDiscovered(List<AnnounceInfo> list) {
     _discovered
@@ -1793,17 +1822,34 @@ class WallState extends ChangeNotifier {
     return requestId;
   }
 
+  /// Fire-and-forget transport push for an explicitly targeted Broker endpoint.
+  ///
+  /// [transportMode] is REQUIRED and never inferred from an empty host: `auto`
+  /// and `p2p` both clear the endpoint but only `p2p` forbids Broker discovery,
+  /// so guessing from `brokerHost.isEmpty` silently produced `auto` and let the
+  /// Player re-discover the very Broker the operator asked to clear. Callers
+  /// that want to return a Player to P2P must use [restoreDevicesToP2p], which
+  /// is the single authoritative path (durable readback + direct-link wait).
   String configureTransport({
     required String deviceId,
     required String brokerHost,
+    required String transportMode,
     int? brokerPort,
     bool? useWss,
   }) {
+    if (transportMode != 'broker') {
+      throw ArgumentError(
+          'configureTransport 只用于显式 broker 端点；清空/回 P2P 必须走 restoreDevicesToP2p');
+    }
+    if (brokerHost.trim().isEmpty) {
+      throw ArgumentError('broker 模式必须带非空 broker_host');
+    }
     final requestId = 'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
+    _transportMigration.open(deviceId);
     _send('transport_configure', Commands.transportConfigure(
       deviceId: deviceId, brokerHost: brokerHost, brokerPort: brokerPort,
       useWss: useWss,
-      transportMode: brokerHost.trim().isEmpty ? 'auto' : 'broker',
+      transportMode: transportMode,
       requestId: requestId,
     ));
     return requestId;
@@ -1815,6 +1861,7 @@ class WallState extends ChangeNotifier {
         'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
     final completer = Completer<Map<String, dynamic>>();
     _pendingConfigResults[requestId] = completer;
+    _transportMigration.open(deviceId);
     try {
       _send('transport_configure', Commands.transportConfigure(
         deviceId: deviceId,
@@ -1858,8 +1905,12 @@ class WallState extends ChangeNotifier {
   /// alive, then move this controller to discovery/P2P. A Player sends its durable
   /// readback before rebuilding transport, so a successful result cannot be an
   /// optimistic UI-only acknowledgement.
+  /// [onProgress] receives per-device interim status while waiting for the direct
+  /// link, so the UI can show live progress instead of freezing for the whole
+  /// timeout.
   Future<Map<String, String>> restoreDevicesToP2p(
-      Iterable<String> deviceIds) async {
+      Iterable<String> deviceIds,
+      {void Function(Map<String, String> progress)? onProgress}) async {
     final ids = deviceIds.toSet();
     if (ids.isEmpty) throw ArgumentError('至少选择一台播放端');
     if (ids.length != 1) {
@@ -1881,16 +1932,31 @@ class WallState extends ChangeNotifier {
     if (cleared.isEmpty) return results;
 
     await updateSettings(connectionMode: ConnectionMode.autoP2p);
-    final directDeadline = DateTime.now().add(const Duration(seconds: 20));
-    while (DateTime.now().isBefore(directDeadline) &&
-        !cleared.every(_p2p.connectedIds.contains)) {
-      _discovery.discover();
+    // Poll every 250ms but re-arm discovery only once per second: the Player
+    // needs time to tear down its old link and start its local WS server, and
+    // spamming discover() every tick just added noise without connecting sooner.
+    // The loop exits the moment every cleared box is directly connected, so a
+    // fast reconnect no longer pays the full timeout.
+    const directTimeout = Duration(seconds: 20);
+    final directDeadline = DateTime.now().add(directTimeout);
+    var lastDiscover = DateTime.fromMillisecondsSinceEpoch(0);
+    while (!cleared.every(_p2p.connectedIds.contains)) {
+      final now = DateTime.now();
+      if (!now.isBefore(directDeadline)) break;
+      if (now.difference(lastDiscover) >= const Duration(seconds: 1)) {
+        lastDiscover = now;
+        _discovery.discover();
+      }
+      onProgress?.call(Map.unmodifiable({
+        for (final id in cleared)
+          id: _p2p.connectedIds.contains(id) ? 'P2P 已连接' : '等待 P2P 直连…',
+      }));
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     for (final id in cleared) {
       results[id] = _p2p.connectedIds.contains(id)
           ? 'P2P 已连接'
-          : '失败：播放端已清除 Broker，但 20 秒内未建立 P2P 直连';
+          : '失败：播放端已清除 Broker，但 ${directTimeout.inSeconds} 秒内未建立 P2P 直连';
     }
     return results;
   }
@@ -1902,6 +1968,7 @@ class WallState extends ChangeNotifier {
         'transport-${DateTime.now().millisecondsSinceEpoch}-${++_nextConfigRequest}';
     final completer = Completer<Map<String, dynamic>>();
     _pendingConfigResults[requestId] = completer;
+    _transportMigration.open(deviceId);
     try {
       _send('transport_configure', Commands.transportConfigure(
         deviceId: deviceId,
