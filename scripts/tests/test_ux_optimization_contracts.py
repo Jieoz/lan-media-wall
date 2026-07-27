@@ -424,9 +424,36 @@ PLAYER_KT = (
 )
 QUIET_POLICY = PLAYER_KT / "media" / "FailedBackendPolicy.kt"
 PLAYER_CONTROLLER = PLAYER_KT / "media" / "PlayerController.kt"
+MP_BACKEND = PLAYER_KT / "media" / "MediaPlayerVideoBackend.kt"
+REMOTE_LOAD_POLICY = PLAYER_KT / "media" / "RemoteLoadPolicy.kt"
 
 
-def test_broker_suggestion_excludes_the_target_device_itself() -> None:
+def test_remote_data_source_never_opens_on_main_thread() -> None:
+    """v1.19.6: MediaPlayer.setDataSource() does DNS+TCP inline. Opening a remote URI
+    on the main thread froze the whole video kernel when a music URL pointed at a
+    controller that had moved (field and-c937df0cdb: 10.10.8.161 vs live 10.10.8.45),
+    which surfaced as 音乐→图片 黑屏. Remote opens must stay off the main thread and
+    be time-boxed."""
+    backend = _read(MP_BACKEND)
+    # The remote branch must exist and must not call setDataSource inline.
+    assert "RemoteLoadPolicy.needsOffMainThreadOpen(uri)" in backend
+    assert "openRemoteThenPrepare(mp, uri, loop)" in backend
+    # The blocking open must run on its own thread, then hand back to main.
+    open_fn = backend.split("private fun openRemoteThenPrepare")[1].split("private fun finishLoad")[0]
+    assert "Thread(" in open_fn, "remote open must not run on the caller (main) thread"
+    assert "mp.setDataSource(" in open_fn
+    assert "mainHandler.post" in open_fn, "must hand back to main to prepare"
+    # A dead host must not hold playback: the open is time-boxed and settles once.
+    assert "REMOTE_OPEN_TIMEOUT_MS" in open_fn
+    assert "compareAndSet(false, true)" in open_fn, "timeout/completion must race safely"
+
+    policy = _read(REMOTE_LOAD_POLICY)
+    assert "REMOTE_OPEN_TIMEOUT_MS" in policy
+    # Local media must stay inline (no behavior change for the cached path).
+    assert 'u.startsWith("http://"' in policy
+
+
+def test_broker_suggestion_never_points_a_device_at_itself() -> None:
     """A P2P Player announces broker_hint=<its own ip>; suggesting it is a trap.
 
     Field evidence: `TX announce topology=p2p broker_hint=10.10.8.60:8770` on the

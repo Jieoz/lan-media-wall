@@ -1,7 +1,13 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
-> **v1.19.5：修复 v1.19.4 引入的自动填充回归 + 音乐切图片黑屏。** 现场（`and-c937df0cdb`
-> @ `10.10.8.60`）实测发现两处缺陷：
+> **v1.19.6：黑屏根因修正（Player 侧）。** 控制端本版无功能改动，仅随单一版本源升到
+> `1.19.6+1196`。v1.19.5 判定的"`pause()` 是 no-op 导致死 surface 遮挡"被现场日志否证：
+> 真因是 `MediaPlayer.setDataSource()` 对远程 URI 同步做 DNS+TCP 连接、把 **Player 的 app
+> 主线程**占死，导致整个视频内核静默（切 visual 无 `stopped`、再切 music 无 `loadAndPlay`）。
+> 详见 `android_apps/player/README.md` 与 `media/RemoteLoadPolicy.kt`。
+>
+> **v1.19.5：修复 v1.19.4 引入的自动填充回归（现场已验证）。** 现场（`and-c937df0cdb`
+> @ `10.10.8.60`）实测：
 >
 > 1. **切换 Broker 必然失败（v1.19.4 引入的回归）。** v1.19.4 的端点自动填充把
 >    `broker_hint` 作为最弱候选，但 **P2P 模式下的 Player 自己就是 WS Server**，它广播的
@@ -12,13 +18,10 @@
 >    修复：`suggestBrokerEndpoint` 新增 `deviceHost`，**所有**优先级档位都排除目标设备
 >    自身地址，不只是 announce 档。v1.19.4 的注释里写了“绝不能填控制端自己的地址”，却漏了
 >    对称的这一种。
-> 2. **音乐终端切回图片/视频黑屏。** `showImage` 无条件调 `videoBackend.pause()`，而
->    `pause()` 在 MediaPlayer 非 STARTED 时是 no-op。当音乐因媒体 URL 失效播放失败
->    （现场：`REMOTE_URL(http://10.10.8.161:40571/...)` → `mp_error what=1`，该控制端地址
->    已不存在），后端停在 ERROR 态，其死亡 surface 继续盖在图片层之上 → 黑屏。watchdog 也
->    救不回来：它走 `resumeLast()`，最终又落到同一个 `pause()`。
->    修复：新增纯函数 `backendQuietAction(errorCode)`，携带错误的后端一律 `stop()` 拆掉
->    实例而非 `pause()`。抽成纯函数是为了可单测（`showImage` 需要真实 Android View）。
+> 2. **音乐终端切回图片/视频黑屏（本版未修好，见 v1.19.6）。** 当时判定为 `showImage`
+>    无条件调 `videoBackend.pause()`、而 `pause()` 在非 STARTED 时是 no-op，故让携错后端改走
+>    `stop()`（新增纯函数 `backendQuietAction(errorCode)`）。该规则本身正确并保留，但 1195
+>    现场日志显示视频内核已完全静默，黑屏另有其因——真根因见 v1.19.6。
 
 > **v1.19.4：清空 Broker 真正回到 P2P，在线态不再虚报。** 现场发现三处缺陷，
 > 均已收敛到单一权威路径：

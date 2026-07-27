@@ -1,11 +1,10 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.19.5+1195: broker suggestion never points a device at itself; failed backend
-# is stopped (not paused) before showing an image, so 音乐→图片 is not a black screen
-# for the configured-Broker OTA path introduced in v1.19.2.
+# v1.19.6+1196: remote setDataSource moved off the main thread + time-boxed, so a
+# dead media host can no longer freeze the video kernel (音乐→图片 黑屏 root cause).
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.19.5+1195
+version: 1.19.6+1196
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

@@ -1240,7 +1240,13 @@ class PlayerService : Service() {
         }
         val readyFile = downloader.readyPath(item.itemId)
         readyFile?.let { downloader.touch(it) }
+        // Falling back to item.url is a last resort: after a reinstall wipes the media
+        // cache, that URL may still name a controller that has since moved (field:
+        // 10.10.8.161 → 10.10.8.45), and every such item then costs a failed remote
+        // open. The open is off the main thread and time-boxed now
+        // (see RemoteLoadPolicy), so a dead host degrades to "skip this item".
         val source = readyFile?.absolutePath ?: item.url
+        if (readyFile == null) logEvent("music_remote_fallback item=${item.itemId} url=${item.url}")
         musicCurrentItemId = item.itemId
         ctl.onVideoEnded = {
             if (generation == modeGeneration.get() && runtimeModeState.current == PlaybackMode.MUSIC) {

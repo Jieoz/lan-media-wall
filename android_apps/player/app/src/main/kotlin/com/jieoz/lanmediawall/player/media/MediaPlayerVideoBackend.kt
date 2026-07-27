@@ -210,12 +210,59 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
             if (completesPreparedSeek && startWhenPrepared) doStart()
         }
 
-        try {
-            mp.setDataSource(appContext, resolveUri(uri))
-        } catch (t: Throwable) {
-            failLoad("setDataSource", t)
-            return
+        // Opening a REMOTE data source does DNS + TCP connect synchronously on the
+        // calling thread. Everything here is marshalled onto the main thread, so a
+        // dead host would freeze the entire video kernel (see [RemoteLoadPolicy]).
+        // Local files open from disk and stay inline, preserving existing ordering.
+        if (RemoteLoadPolicy.needsOffMainThreadOpen(uri)) {
+            openRemoteThenPrepare(mp, uri, loop)
+        } else {
+            try {
+                mp.setDataSource(appContext, resolveUri(uri))
+            } catch (t: Throwable) {
+                failLoad("setDataSource", t)
+                return
+            }
+            finishLoad(mp, loop)
         }
+    }
+
+    /**
+     * Open a remote URI on an IO thread, then hand back to the main thread to bind
+     * the surface and prepare. A watchdog fails the load if the open outlives
+     * [RemoteLoadPolicy.REMOTE_OPEN_TIMEOUT_MS] so an unreachable host cannot hold
+     * playback hostage while the kernel grinds through TCP retransmits.
+     */
+    private fun openRemoteThenPrepare(mp: MediaPlayer, uri: String, loop: Boolean) {
+        val settled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val timeout = Runnable {
+            if (player === mp && settled.compareAndSet(false, true)) {
+                log("remote_open_timeout uri=${describeUri(uri)} after_ms=${RemoteLoadPolicy.REMOTE_OPEN_TIMEOUT_MS}")
+                releasePlayer()
+                failLoad("remote_open_timeout", java.io.IOException("remote open exceeded budget"))
+            }
+        }
+        mainHandler.postDelayed(timeout, RemoteLoadPolicy.REMOTE_OPEN_TIMEOUT_MS)
+
+        Thread({
+            var failure: Throwable? = null
+            try {
+                mp.setDataSource(appContext, resolveUri(uri))
+            } catch (t: Throwable) {
+                failure = t
+            }
+            mainHandler.post {
+                if (player !== mp) return@post // retired by a newer load / stop()
+                if (!settled.compareAndSet(false, true)) return@post // timeout already won
+                mainHandler.removeCallbacks(timeout)
+                val err = failure
+                if (err != null) failLoad("setDataSource", err) else finishLoad(mp, loop)
+            }
+        }, "lmw-remote-open").apply { isDaemon = true }.start()
+    }
+
+    /** Main-thread tail of a load: bind surface, apply volume, kick off prepare. */
+    private fun finishLoad(mp: MediaPlayer, loop: Boolean) {
         // bind the surface if we already have a live one; else holderCallback binds it.
         surfaceHolder?.let { if (surfaceValid) safeSetDisplay(mp, it) }
         applyVolume(mp)

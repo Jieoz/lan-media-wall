@@ -1,20 +1,34 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
-> **v1.19.5 — 两处现场缺陷修复（含 v1.19.4 引入的回归）：**
+> **v1.19.6 — 修正黑屏缺陷的根因（v1.19.5 修错了层）：**
 >
-> 1. **控制端：切换 Broker 必然失败。** v1.19.4 新增的端点自动填充把设备 announce 的
->    `broker_hint` 当作候选，但 **P2P 模式下的 Player 自己就是 WS Server**，其 `broker_hint`
->    正是自身地址（现场：`TX announce topology=p2p broker_hint=10.10.8.60:8770`）。弹窗因此
->    把设备自己的 IP 填成 Broker，连接不可能成功，Player 侧回滚
->    （`transport_configure_rollback failed_revision=15 restored=p2p`），操作员看到“切换
->    Broker 失败”，并连带无法测试还原 P2P。修复：`suggestBrokerEndpoint` 新增 `deviceHost`，
->    **所有**优先级档位均排除目标设备自身地址。
-> 2. **播放端：音乐切回图片/视频黑屏。** 音乐播放失败使 MediaPlayer 停在 ERROR 态，而
->    `showImage` 调的 `pause()` 在非 STARTED 时是 no-op，死亡 surface 继续遮挡图片层；
->    watchdog 走 `resumeLast()` 也落回同一路径。修复：新增 `backendQuietAction()`，
->    携带错误的后端一律 `stop()`。
+> **播放端：音乐切回图片/视频黑屏，真因是主线程被网络 IO 卡死。**
+> `MediaPlayer.setDataSource(ctx, uri)` 打开 http(s) 源会在**调用线程上同步做 DNS + TCP
+> 连接**，而后端所有方法都被 marshal 到 **app 主线程**。现场（`and-c937df0cdb`）音乐项
+> 指向的控制端地址已迁移（`10.10.8.161:40571`，现为 `10.10.8.45`），该地址挂到 TCP 超时
+> → 主线程占死 → 之后所有 `runOnMain{}` 全部堵在队列：v1.19.5 日志中切 visual 后
+> **无 `stopped`**、再切 music 后**无 `loadAndPlay`**，20+ 次 `watchdog_recover` 也无效
+> （watchdog 恢复动作同样要经主线程）。画面冻住即"黑屏"。
 >
-> 单一版本源为 `1.19.5+1195`。
+> 修复：远程 `setDataSource` 移到 IO 线程（`media/RemoteLoadPolicy.kt` +
+> `openRemoteThenPrepare`），完成后回主线程绑 surface / `prepareAsync`；本地文件保持内联。
+> 远程打开设 6s 预算，死地址快速失败 → 记入 `musicFailures` → 跳下一首；超时与完成回调
+> CAS 互斥只结算一次。
+>
+> v1.19.5 的 `backendQuietAction()`（携错后端 `stop()` 而非 no-op `pause()`）规则本身正确、
+> 予以保留，但现场日志证明它**不是**黑屏成因：内核已完全静默，pause/stop 的选择无从解释。
+>
+> 单一版本源为 `1.19.6+1196`。
+>
+> **v1.19.5 — 控制端：切换 Broker 必然失败（v1.19.4 引入的回归，现场已验证修复）。**
+> v1.19.4 新增的端点自动填充把设备 announce 的 `broker_hint` 当作候选，但 **P2P 模式下的
+> Player 自己就是 WS Server**，其 `broker_hint` 正是自身地址（现场：
+> `TX announce topology=p2p broker_hint=10.10.8.60:8770`）。弹窗因此把设备自己的 IP 填成
+> Broker，连接不可能成功，Player 侧回滚（`transport_configure_rollback failed_revision=15
+> restored=p2p`），操作员看到"切换 Broker 失败"，并连带无法测试还原 P2P。修复：
+> `suggestBrokerEndpoint` 新增 `deviceHost`，**所有**优先级档位均排除目标设备自身地址。
+> 现场 1195 日志确认：`TX announce topology=broker broker_hint=10.10.8.108:8770`（真 Broker），
+> `transport_configure_committed revision=19`，回滚不再出现。
 >
 > **v1.19.3 候选 — 播放控制重新编排：** 单台控制按“播放、播放模式、音乐列表、
 > 电源”分组；图片/视频与音乐终端合并为一个状态回读驱动的模式选择器，音乐弹窗只
