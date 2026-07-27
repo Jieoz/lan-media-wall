@@ -1,5 +1,17 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.5 — 音乐切回图片/视频不再黑屏：** 现场（`and-c937df0cdb`）音乐因媒体 URL
+> 失效播放失败（`REMOTE_URL(http://10.10.8.161:40571/...)` → `mp_error what=1`，该控制端
+> 地址已不存在），MediaPlayer 后端停在 ERROR 态。此时切回图片，`showImage` 调用的
+> `videoBackend.pause()` 在非 STARTED 状态下是 **no-op**，失败实例的 surface 继续盖在图片层
+> 之上 → 黑屏；watchdog 走 `resumeLast()` 也落回同一个 `pause()`，因此连续 20+ 次
+> `watchdog_recover` 都救不回来。
+>
+> 修复：新增纯函数 `backendQuietAction(errorCode)`（`media/FailedBackendPolicy.kt`）——
+> 携带错误的后端一律 `stop()` 拆掉实例，健康后端仍走 `pause()` 保留实例。抽成纯函数是为了
+> 可单测：`showImage` 需要真实 Android View，决策逻辑本身却正是缺陷所在。
+> 单一版本源为 `1.19.5+1195`。
+>
 > **v1.19.3 候选 — Broker OTA 现场资格目标：** Player 协议逻辑沿用 v1.19.2 的
 > 受限 `brokerLocal` 授权；指定设备先经已验证 P2P 路径进入 1.19.2，再以配置 Broker
 > 完成 `1.19.2 → 1.19.3`，才能证明该代码真实执行。不会让仍运行 1.19.1 的旧 Guard

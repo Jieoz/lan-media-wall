@@ -805,7 +805,9 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
   // (current controller link > device's persisted config > announce hint) and
   // label the source, so the operator can vet the value instead of retyping an
   // IP from memory. Never the controller's own host: that is usually NOT the
-  // Broker (field: Broker 10.10.8.108 vs Controller 10.10.8.45).
+  // Broker (field: Broker 10.10.8.108 vs Controller 10.10.8.45). Never the
+  // device's own host either: a P2P Player announces broker_hint=<its own ip>,
+  // and pointing a device at itself as Broker always fails to connect.
   final suggestion = suggestBrokerEndpoint(
     controllerHost: state.brokerHost,
     controllerPort: state.brokerPort,
@@ -816,6 +818,7 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     snapshotPort: snapshot?.brokerPort,
     snapshotSecure: snapshot?.useWss,
     announceHint: state.brokerHintFor(device.deviceId),
+    deviceHost: device.ip,
   );
   final brokerHostCtl = TextEditingController(text: suggestion?.host ?? '');
   final brokerPortCtl =

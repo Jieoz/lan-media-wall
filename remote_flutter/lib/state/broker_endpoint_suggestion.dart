@@ -42,6 +42,15 @@ class BrokerEndpointSuggestion {
 /// at all. Prefilling the controller's own IP would hand the operator an endpoint
 /// no Broker is listening on, and a wrong Broker address costs a lost device.
 ///
+/// Equally forbidden: the *target device's own* address. A Player in P2P mode
+/// runs its own local WS server and therefore announces `broker_hint=<its own
+/// ip>:8770` (field evidence: `TX announce topology=p2p
+/// broker_hint=10.10.8.60:8770` on 10.10.8.60). Prefilling that makes the device
+/// its own Broker, which can never connect — the Player rolls the config back
+/// (`transport_configure_rollback ... restored=p2p`) and the operator sees "切换
+/// Broker 失败" with no idea why. [deviceHost] is therefore excluded from every
+/// tier, not just the announce tier.
+///
 /// Priority, strongest evidence first:
 ///   1. [controllerHost] — the Broker this controller is actually connected to
 ///   2. [snapshotHost] — what the Player itself has persisted
@@ -57,9 +66,17 @@ BrokerEndpointSuggestion? suggestBrokerEndpoint({
   int? snapshotPort,
   bool? snapshotSecure,
   String? announceHint,
+  String? deviceHost,
   int defaultPort = 8770,
 }) {
-  bool usable(String? host) => host != null && host.trim().isNotEmpty;
+  final selfHost = deviceHost?.trim().toLowerCase();
+  bool isSelf(String? host) =>
+      selfHost != null &&
+      selfHost.isNotEmpty &&
+      host != null &&
+      host.trim().toLowerCase() == selfHost;
+  bool usable(String? host) =>
+      host != null && host.trim().isNotEmpty && !isSelf(host);
 
   if (controllerOnBroker && usable(controllerHost)) {
     return BrokerEndpointSuggestion(
@@ -80,7 +97,10 @@ BrokerEndpointSuggestion? suggestBrokerEndpoint({
   final hint = announceHint?.trim();
   if (hint != null && hint.isNotEmpty) {
     final parsed = _parseHostPort(hint, defaultPort);
-    if (parsed != null) {
+    // A P2P Player announces itself as the broker_hint; that endpoint is the
+    // device, not a Broker. Checked here too because the host comes out of the
+    // parser rather than through usable() above.
+    if (parsed != null && !isSelf(parsed.$1)) {
       return BrokerEndpointSuggestion(
         host: parsed.$1,
         port: parsed.$2,

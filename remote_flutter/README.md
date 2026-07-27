@@ -1,6 +1,26 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
-> **v1.19.4 候选：清空 Broker 真正回到 P2P，在线态不再虚报。** 现场发现三处缺陷，
+> **v1.19.5：修复 v1.19.4 引入的自动填充回归 + 音乐切图片黑屏。** 现场（`and-c937df0cdb`
+> @ `10.10.8.60`）实测发现两处缺陷：
+>
+> 1. **切换 Broker 必然失败（v1.19.4 引入的回归）。** v1.19.4 的端点自动填充把
+>    `broker_hint` 作为最弱候选，但 **P2P 模式下的 Player 自己就是 WS Server**，它广播的
+>    `broker_hint` 正是自身地址（现场证据：`TX announce topology=p2p
+>    broker_hint=10.10.8.60:8770`）。于是弹窗把设备自己的 IP 填成 Broker，连接永远不可能
+>    成功，Player 侧回滚（`transport_configure_rollback failed_revision=15 restored=p2p`），
+>    操作员看到的就是“切换 Broker 失败”，并因此无法继续测试还原 P2P。
+>    修复：`suggestBrokerEndpoint` 新增 `deviceHost`，**所有**优先级档位都排除目标设备
+>    自身地址，不只是 announce 档。v1.19.4 的注释里写了“绝不能填控制端自己的地址”，却漏了
+>    对称的这一种。
+> 2. **音乐终端切回图片/视频黑屏。** `showImage` 无条件调 `videoBackend.pause()`，而
+>    `pause()` 在 MediaPlayer 非 STARTED 时是 no-op。当音乐因媒体 URL 失效播放失败
+>    （现场：`REMOTE_URL(http://10.10.8.161:40571/...)` → `mp_error what=1`，该控制端地址
+>    已不存在），后端停在 ERROR 态，其死亡 surface 继续盖在图片层之上 → 黑屏。watchdog 也
+>    救不回来：它走 `resumeLast()`，最终又落到同一个 `pause()`。
+>    修复：新增纯函数 `backendQuietAction(errorCode)`，携带错误的后端一律 `stop()` 拆掉
+>    实例而非 `pause()`。抽成纯函数是为了可单测（`showImage` 需要真实 Android View）。
+
+> **v1.19.4：清空 Broker 真正回到 P2P，在线态不再虚报。** 现场发现三处缺陷，
 > 均已收敛到单一权威路径：
 >
 > 1. **清空 Broker 无效。** `configureTransport` 曾按“主机为空”推断出

@@ -95,4 +95,88 @@ void main() {
       expect(labels.any((l) => l.trim().isEmpty), isFalse);
     });
   });
+
+  group('never suggests the target device as its own Broker', () {
+    // Field regression (v1.19.4, and-c937df0cdb @ 10.10.8.60): a P2P Player runs
+    // its own WS server and announces `broker_hint=10.10.8.60:8770`. Prefilling
+    // that pointed the device at itself; it could never connect and the Player
+    // rolled back (`transport_configure_rollback restored=p2p`), which the
+    // operator saw as "切换 Broker 失败".
+    test('rejects an announce hint that is the device itself', () {
+      final s = suggestBrokerEndpoint(
+        controllerOnBroker: false,
+        announceHint: '10.10.8.60:8770',
+        deviceHost: '10.10.8.60',
+      );
+      expect(s, isNull, reason: 'self-address must not be offered as a Broker');
+    });
+
+    test('rejects a self announce hint even when the port differs', () {
+      final s = suggestBrokerEndpoint(
+        announceHint: '10.10.8.60:9999',
+        deviceHost: '10.10.8.60',
+      );
+      expect(s, isNull);
+    });
+
+    test('rejects a stale persisted endpoint pointing at the device itself', () {
+      final s = suggestBrokerEndpoint(
+        controllerOnBroker: false,
+        snapshotHost: '10.10.8.60',
+        snapshotPort: 8770,
+        deviceHost: '10.10.8.60',
+      );
+      expect(s, isNull);
+    });
+
+    test('rejects a controller link that resolves to the device itself', () {
+      // Degenerate but real if a device is ever also running the Broker: the
+      // suggestion is still useless as a *remote* endpoint for that device.
+      final s = suggestBrokerEndpoint(
+        controllerHost: '10.10.8.60',
+        controllerOnBroker: true,
+        deviceHost: '10.10.8.60',
+      );
+      expect(s, isNull);
+    });
+
+    test('still suggests a real Broker that is not the device', () {
+      final s = suggestBrokerEndpoint(
+        controllerHost: '10.10.8.108',
+        controllerPort: 8770,
+        controllerOnBroker: true,
+        deviceHost: '10.10.8.60',
+      );
+      expect(s!.host, '10.10.8.108');
+      expect(s.source, BrokerSuggestionSource.controllerLink);
+    });
+
+    test('falls through self tiers to the next usable candidate', () {
+      // Persisted config is stale-self, announce names the real Broker.
+      final s = suggestBrokerEndpoint(
+        controllerOnBroker: false,
+        snapshotHost: '10.10.8.60',
+        announceHint: '10.10.8.108:8770',
+        deviceHost: '10.10.8.60',
+      );
+      expect(s!.host, '10.10.8.108');
+      expect(s.source, BrokerSuggestionSource.announceHint);
+    });
+
+    test('self comparison ignores case and surrounding whitespace', () {
+      final s = suggestBrokerEndpoint(
+        announceHint: '  Player-9F:8770 ',
+        deviceHost: 'player-9f',
+      );
+      expect(s, isNull);
+    });
+
+    test('an unknown device host disables the self check without crashing', () {
+      final s = suggestBrokerEndpoint(
+        announceHint: '10.10.8.108:8770',
+        deviceHost: '',
+      );
+      expect(s!.host, '10.10.8.108');
+    });
+  });
 }
