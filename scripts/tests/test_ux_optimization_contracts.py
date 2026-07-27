@@ -411,3 +411,55 @@ def test_save_button_reachable_and_primary() -> None:
     # Save stays present and sits in the primary card (before advanced toggle).
     assert "btn_save" in layout
     assert layout.index("btn_save") < layout.index("btn_toggle_advanced")
+
+
+# --- v1.19.5 field regressions -------------------------------------------------
+# Both defects below were reported from live operation on and-c937df0cdb after
+# v1.19.4 shipped; these contracts pin the source-level shape of each fix.
+
+SUGGESTION = FL / "state" / "broker_endpoint_suggestion.dart"
+PLAYER_KT = (
+    ROOT / "android_apps" / "player" / "app" / "src" / "main" / "kotlin"
+    / "com" / "jieoz" / "lanmediawall" / "player"
+)
+QUIET_POLICY = PLAYER_KT / "media" / "FailedBackendPolicy.kt"
+PLAYER_CONTROLLER = PLAYER_KT / "media" / "PlayerController.kt"
+
+
+def test_broker_suggestion_excludes_the_target_device_itself() -> None:
+    """A P2P Player announces broker_hint=<its own ip>; suggesting it is a trap.
+
+    Field evidence: `TX announce topology=p2p broker_hint=10.10.8.60:8770` on the
+    device at 10.10.8.60. Prefilling that made the device its own Broker, the
+    connection could never succeed, and the Player rolled the transport back
+    (`transport_configure_rollback failed_revision=15 restored=p2p`).
+    """
+    src = _read(SUGGESTION)
+    assert "deviceHost" in src, "suggestion API must accept the device's own host"
+    # The self check must gate every tier, not only the announce hint.
+    assert "isSelf" in src
+    assert "!isSelf(" in src, "announce tier must be guarded explicitly"
+    assert "!isSelf(host)" in src or "&& !isSelf" in src
+
+    # And the call site must actually pass the device address, or the guard is dead code.
+    pane = _read(DEVWALL)
+    assert "deviceHost: device.ip" in pane
+
+
+def test_failed_video_backend_is_stopped_before_showing_an_image() -> None:
+    """pause() is a no-op outside STARTED, so a failed backend must be stopped.
+
+    Field evidence: music loaded from a stale controller URL
+    (http://10.10.8.161:40571/...), MediaPlayer latched `mp_error what=1`, and
+    switching 音乐 → 图片 left the dead surface covering the image (black screen).
+    The watchdog could not clear it because resumeLast() hits the same path.
+    """
+    policy = _read(QUIET_POLICY)
+    assert "BackendQuietAction" in policy
+    assert "STOP" in policy and "PAUSE" in policy
+
+    controller = _read(PLAYER_CONTROLLER)
+    assert "backendQuietAction(" in controller, "showImage must consult the policy"
+    # The unconditional pause() that caused the black screen must be gone from
+    # the image path: the decision now routes through the policy enum.
+    assert "BackendQuietAction.STOP -> videoBackend.stop()" in controller

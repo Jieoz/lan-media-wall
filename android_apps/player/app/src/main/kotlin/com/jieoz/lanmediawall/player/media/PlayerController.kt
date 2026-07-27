@@ -189,7 +189,13 @@ class PlayerController(
             onPlayerError?.invoke("image-decode-failed")
             return@runOnMain
         }
-        videoBackend.pause()
+        // A backend left in ERROR must be torn down, not paused: pause() is a
+        // no-op unless STARTED, so the dead instance would keep its surface on
+        // top of the image (black screen). See [backendQuietAction].
+        when (backendQuietAction(videoBackend.snapshot().error)) {
+            BackendQuietAction.STOP -> videoBackend.stop()
+            BackendQuietAction.PAUSE -> videoBackend.pause()
+        }
         iv.scaleType = ImageView.ScaleType.FIT_CENTER
         iv.setImageBitmap(bmp)
         iv.visibility = ImageView.VISIBLE

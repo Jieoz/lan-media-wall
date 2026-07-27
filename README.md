@@ -1,5 +1,21 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.19.5 — 两处现场缺陷修复（含 v1.19.4 引入的回归）：**
+>
+> 1. **控制端：切换 Broker 必然失败。** v1.19.4 新增的端点自动填充把设备 announce 的
+>    `broker_hint` 当作候选，但 **P2P 模式下的 Player 自己就是 WS Server**，其 `broker_hint`
+>    正是自身地址（现场：`TX announce topology=p2p broker_hint=10.10.8.60:8770`）。弹窗因此
+>    把设备自己的 IP 填成 Broker，连接不可能成功，Player 侧回滚
+>    （`transport_configure_rollback failed_revision=15 restored=p2p`），操作员看到“切换
+>    Broker 失败”，并连带无法测试还原 P2P。修复：`suggestBrokerEndpoint` 新增 `deviceHost`，
+>    **所有**优先级档位均排除目标设备自身地址。
+> 2. **播放端：音乐切回图片/视频黑屏。** 音乐播放失败使 MediaPlayer 停在 ERROR 态，而
+>    `showImage` 调的 `pause()` 在非 STARTED 时是 no-op，死亡 surface 继续遮挡图片层；
+>    watchdog 走 `resumeLast()` 也落回同一路径。修复：新增 `backendQuietAction()`，
+>    携带错误的后端一律 `stop()`。
+>
+> 单一版本源为 `1.19.5+1195`。
+>
 > **v1.19.3 候选 — 播放控制重新编排：** 单台控制按“播放、播放模式、音乐列表、
 > 电源”分组；图片/视频与音乐终端合并为一个状态回读驱动的模式选择器，音乐弹窗只
 > 编辑并保存列表，不再把“切换、保存并播放、恢复图片/视频”两边各复制一套。
