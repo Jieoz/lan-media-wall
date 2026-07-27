@@ -234,6 +234,114 @@ def test_single_device_dialog_tracks_confirmed_live_mode_snapshot() -> None:
     assert reducer.index("admission != RuntimeModeReplyAdmission.accept") < reducer.index("_wall = WallSnapshot")
 
 
+def test_clearing_broker_uses_p2p_mode_not_auto() -> None:
+    """Field bug: the single-device panel's "清空 broker" had no effect.
+
+    configureTransport inferred the mode from an empty host and produced
+    ``auto``, which clears the endpoint but leaves Broker discovery enabled, so
+    the Player re-attached to the very Broker it was told to drop. The mode must
+    now be explicit, and ``broker`` is the only value this fire-and-forget path
+    accepts; returning to P2P must go through restoreDevicesToP2p.
+    """
+    state = _read(WALL_STATE)
+    fn = state[
+        state.index("String configureTransport("):
+        state.index("Future<void> _clearTransportAndWait(")
+    ]
+    assert "required String transportMode" in fn
+    # The buggy inference must be gone for good.
+    assert "brokerHost.trim().isEmpty ? 'auto' : 'broker'" not in state
+    assert "transportMode != 'broker'" in fn
+    assert "restoreDevicesToP2p" in fn
+
+    dialog = _read(DEVWALL)
+    # The clear branch routes to the authoritative path, never configureTransport.
+    assert "state.restoreDevicesToP2p([device.deviceId])" in dialog
+    assert "pushTransport && !clearBrokerOut" in dialog
+    assert "transportMode: 'broker'" in dialog
+
+
+def test_broker_online_not_trusted_during_transport_migration() -> None:
+    """Field bug: a Player showed "已连接" right after a Broker change.
+
+    The wall derived the phase from the Broker registry's ``online`` flag and
+    unconditionally overrode the locally observed LinkPhase. During a transport
+    rebuild the Broker still reports online for its own expiry window, so the
+    card went green for an unreachable box.
+    """
+    state = _read(WALL_STATE)
+    assert "TransportMigrationWindow" in state
+    assert "_transportMigration.isMigrating(d.deviceId)" in state
+    assert "trustBrokerOnline = d.online && !migrating" in state
+    # The unconditional override is gone.
+    assert "phase: d.online ? LinkPhase.connected : phase," not in state
+    # Every dispatch site opens the window; a live link observation closes it.
+    assert state.count("_transportMigration.open(") >= 3
+    assert "_transportMigration.close(deviceId)" in state
+
+
+def test_p2p_restore_exits_early_and_reports_progress() -> None:
+    """Field complaint: returning to P2P blocked the controller for ~20s.
+
+    The wait loop must exit as soon as the cleared box is directly connected and
+    surface interim progress instead of freezing for the whole timeout.
+    """
+    state = _read(WALL_STATE)
+    fn = state[
+        state.index("Future<Map<String, String>> restoreDevicesToP2p("):
+        state.index("Future<void> _configureTransportAndWait(")
+    ]
+    assert "onProgress" in fn
+    assert "while (!cleared.every(_p2p.connectedIds.contains))" in fn
+    assert "if (!now.isBefore(directDeadline)) break;" in fn
+
+
+def test_broker_host_autofill_is_sourced_and_never_controller_own_host() -> None:
+    """UX request: prefill the Broker host for single-device configuration.
+
+    The controller's own address is NOT a valid default (Broker and Controller
+    are different machines in the field), so the suggestion is resolved from real
+    endpoints by priority and labelled with its origin.
+    """
+    suggestion = _read(FL / "state" / "broker_endpoint_suggestion.dart")
+    assert "enum BrokerSuggestionSource" in suggestion
+    for member in ("controllerLink", "deviceSnapshot", "announceHint"):
+        assert member in suggestion
+    assert "controllerOnBroker" in suggestion
+
+    dialog = _read(DEVWALL)
+    assert "suggestBrokerEndpoint(" in dialog
+    assert "controllerOnBroker:" in dialog
+    # Prefilled value must be attributed in the UI, not silently injected.
+    assert "helperText: suggestion?.source.label" in dialog
+
+
+def test_transport_migration_window_has_closing_signal_for_broker_path() -> None:
+    """The migration window must not strand a healthy device at "连接中".
+
+    Opening the window is not enough: the p2p path closes it via the peer-link
+    callback, but the broker path has no such callback. Without a snapshot-driven
+    close, a device that finished migrating to a Broker would stay fail-closed for
+    the full 45s expiry. A rejected result must also reopen immediately, since a
+    Player that refused the change never migrated at all.
+    """
+    src = _read(WALL_STATE)
+    assert "_transportMigration.close(device.deviceId)" in src, (
+        "broker path lost its snapshot-driven close: a migrated device would stay "
+        "stuck at connecting until the window expires"
+    )
+    assert "if (!ok) {\n      _transportMigration.close(deviceId);" in src, (
+        "a rejected transport change must close the window immediately"
+    )
+    # The close must live in the snapshot reducer, not in the wallDevices getter:
+    # mutating state from a getter can run during build and is a Flutter foot-gun.
+    getter_start = src.index("List<WallDevice> get wallDevices")
+    getter_end = src.index("PairUri buildPairUri(", getter_start)
+    assert "_transportMigration.close" not in src[getter_start:getter_end], (
+        "wallDevices getter must stay pure; close the window in the reducer instead"
+    )
+
+
 def test_android_discovery_thread_contains_advisory_packet_failures() -> None:
     discovery = _read(
         ANDROID / "kotlin/com/jieoz/lanmediawall/player/net/Discovery.kt"

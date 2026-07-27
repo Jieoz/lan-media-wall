@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../protocol/auth_mode.dart';
 import '../protocol/messages.dart';
+import '../state/broker_endpoint_suggestion.dart';
 import '../state/wall_state.dart';
 import 'cache_management.dart';
 import 'device_wall_filter.dart';
@@ -795,13 +796,30 @@ Future<void> _confirmDeleteGroup(
 Future<void> _configureDeviceDialog(BuildContext context, WallState state,
     WallDevice device, List<WallGroup> groups) async {
   final nameCtl = TextEditingController(text: device.deviceName);
-  final brokerHostCtl = TextEditingController();
-  final brokerPortCtl = TextEditingController(text: '8770');
   final pskCtl = TextEditingController();
   final st = device.status;
   var groupId = st?.groupId ?? '';
   final revision = st?.configSnapshot?.revision;
   final snapshot = st?.configSnapshot;
+  // Prefill the Broker form from the strongest real endpoint we know about
+  // (current controller link > device's persisted config > announce hint) and
+  // label the source, so the operator can vet the value instead of retyping an
+  // IP from memory. Never the controller's own host: that is usually NOT the
+  // Broker (field: Broker 10.10.8.108 vs Controller 10.10.8.45).
+  final suggestion = suggestBrokerEndpoint(
+    controllerHost: state.brokerHost,
+    controllerPort: state.brokerPort,
+    controllerSecure: state.brokerSecure,
+    controllerOnBroker:
+        !state.isP2p && state.brokerHost.trim().isNotEmpty,
+    snapshotHost: snapshot?.brokerHost,
+    snapshotPort: snapshot?.brokerPort,
+    snapshotSecure: snapshot?.useWss,
+    announceHint: state.brokerHintFor(device.deviceId),
+  );
+  final brokerHostCtl = TextEditingController(text: suggestion?.host ?? '');
+  final brokerPortCtl =
+      TextEditingController(text: '${suggestion?.port ?? 8770}');
   final snapshotValues = <String, dynamic>{
     if (snapshot?.deviceName != null) 'device_name': snapshot!.deviceName,
     if (snapshot?.groupId != null) 'group_id': snapshot!.groupId,
@@ -810,7 +828,7 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
   };
   var volume = ((snapshotValues['volume'] as num?)?.toDouble() ?? (st?.volume ?? 80).toDouble());
   var muted = snapshotValues['muted'] == true;
-  var useWss = false;
+  var useWss = suggestion?.secure ?? false;
   var pushTransport = false;
   var clearBroker = false;
   final canPushPsk = state.authMode != AuthMode.open;
@@ -934,9 +952,10 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
                   if (!clearBroker) ...[
                     TextField(
                       controller: brokerHostCtl,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Broker 主机',
                         hintText: '如 192.168.1.10',
+                        helperText: suggestion?.source.label,
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -1188,12 +1207,13 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
       muted: muted,
       baseRevision: revision,
     );
-    if (pushTransport) {
+    if (pushTransport && !clearBrokerOut) {
       state.configureTransport(
         deviceId: device.deviceId,
-        brokerHost: clearBrokerOut ? '' : brokerHost!,
-        brokerPort: clearBrokerOut ? null : brokerPort,
-        useWss: clearBrokerOut ? null : useWssOut,
+        brokerHost: brokerHost!,
+        transportMode: 'broker',
+        brokerPort: brokerPort,
+        useWss: useWssOut,
       );
     }
     if (pskOut != null) state.rotateDeviceKey(deviceId: device.deviceId, psk: pskOut);
@@ -1201,6 +1221,26 @@ Future<void> _configureDeviceDialog(BuildContext context, WallState state,
       ScaffoldMessenger.of(context)
         ..clearSnackBars()
         ..showSnackBar(SnackBar(content: Text('配置已投递，等待播放端确认 ($configRequest)')));
+    }
+    // Clearing the Broker goes through the SAME authoritative path as the bulk
+    // "还原 P2P" action: transport_mode=p2p (not auto) plus durable readback and a
+    // direct-link wait. The old shortcut sent mode=auto, which cleared the
+    // endpoint but left Broker discovery enabled, so the Player simply
+    // re-discovered the Broker it was told to drop — "清空无效".
+    if (pushTransport && clearBrokerOut) {
+      final messenger = context.mounted ? ScaffoldMessenger.of(context) : null;
+      messenger
+        ?..clearSnackBars()
+        ..showSnackBar(const SnackBar(
+            content: Text('正在清空 Broker 并等待 P2P 直连…'),
+            duration: Duration(seconds: 25)));
+      final outcome = await state.restoreDevicesToP2p([device.deviceId]);
+      final detail = outcome[device.deviceId] ?? '无回执';
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text('清空 Broker：$detail')));
+      }
     }
   } catch (e) {
     if (context.mounted) {
