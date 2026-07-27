@@ -1,16 +1,29 @@
 # LAN Media Wall — Android Player (被控端)
 
-> **v1.19.5 — 音乐切回图片/视频不再黑屏：** 现场（`and-c937df0cdb`）音乐因媒体 URL
-> 失效播放失败（`REMOTE_URL(http://10.10.8.161:40571/...)` → `mp_error what=1`，该控制端
-> 地址已不存在），MediaPlayer 后端停在 ERROR 态。此时切回图片，`showImage` 调用的
-> `videoBackend.pause()` 在非 STARTED 状态下是 **no-op**，失败实例的 surface 继续盖在图片层
-> 之上 → 黑屏；watchdog 走 `resumeLast()` 也落回同一个 `pause()`，因此连续 20+ 次
-> `watchdog_recover` 都救不回来。
+> **v1.19.6 — 音乐切回图片/视频黑屏的真实根因（主线程被网络 IO 卡死）：**
+> `MediaPlayer.setDataSource(ctx, uri)` 打开 http(s) 源时会**在调用线程上同步完成
+> DNS + TCP 连接**；而本后端所有方法都被 marshal 到 **app 主线程**。现场
+> （`and-c937df0cdb`）音乐项指向的控制端地址已迁移（日志 `10.10.8.161:40571`，实际现为
+> `10.10.8.45`），该地址不拒连而是一路挂到 TCP 超时 → **主线程被占死**。
 >
-> 修复：新增纯函数 `backendQuietAction(errorCode)`（`media/FailedBackendPolicy.kt`）——
-> 携带错误的后端一律 `stop()` 拆掉实例，健康后端仍走 `pause()` 保留实例。抽成纯函数是为了
-> 可单测：`showImage` 需要真实 Android View，决策逻辑本身却正是缺陷所在。
-> 单一版本源为 `1.19.5+1195`。
+> 之后所有 `runOnMain{}` 操作全部堵在 Handler 队列里：v1.19.5 现场日志中
+> `runtime_mode mode=visual` 之后**没有 `stopped`**、下一次 `runtime_mode mode=music`
+> 之后**没有 `loadAndPlay`**，20+ 次 `watchdog_recover` 同样无效（watchdog 的恢复动作也要
+> 经主线程）。画面就此冻住，即现场报告的"音乐切回图片黑屏"。`prepareAsync()` 本意就是不让
+> 网络阻塞主线程，漏掉的是**打开数据源本身也是网络操作**。
+>
+> 修复（`media/RemoteLoadPolicy.kt` + `MediaPlayerVideoBackend.openRemoteThenPrepare`）：
+> 远程 URI 的 `setDataSource` 移到 IO 线程执行，完成后再回主线程绑 surface / `prepareAsync`；
+> 本地文件仍走内联路径（不触网、不会卡，保持既有时序）。同时对远程打开设 6s 预算
+> （`REMOTE_OPEN_TIMEOUT_MS`），死地址快速判失败 → `onError` → 记入 `musicFailures` → 跳下一首，
+> 不再让整条音乐清单被逐个拖死。超时与完成回调用 CAS 互斥，只允许一方结算。
+>
+> 另修：`playNextMusic` 缓存未命中才回落远程 URL，此时记 `music_remote_fallback` 便于定位
+> （重装清空媒体缓存后，旧 URL 里的控制端地址可能已失效）。
+>
+> 说明：v1.19.5 引入的 `backendQuietAction()`（携错后端 `stop()` 而非 no-op 的 `pause()`）本身
+> 规则正确，予以保留；但现场日志证明它**不是**黑屏的成因——内核已完全静默，任何
+> pause/stop 选择都解释不了。单一版本源为 `1.19.6+1196`。
 >
 > **v1.19.3 候选 — Broker OTA 现场资格目标：** Player 协议逻辑沿用 v1.19.2 的
 > 受限 `brokerLocal` 授权；指定设备先经已验证 P2P 路径进入 1.19.2，再以配置 Broker

@@ -18,15 +18,16 @@ enum class BackendQuietAction {
 /**
  * Decide how to quiet [errorCode] before showing an image.
  *
- * Field defect (v1.19.4, device and-c937df0cdb): music was loaded from a stale
- * controller URL (`http://10.10.8.161:40571/...`, a controller that no longer
- * exists), MediaPlayer reported `mp_error what=1`, and the backend latched ERROR.
- * Switching 音乐 → 图片 then called `pause()`, which is a documented no-op unless
- * the player is STARTED — so the failed instance kept its surface on top and the
- * operator saw a black screen. The watchdog could not clear it either: it calls
- * `resumeLast()`, which lands back on the same `pause()`.
+ * `pause()` is a documented no-op unless the player is STARTED, so quieting a
+ * failed instance with `pause()` leaves it holding the surface above the image
+ * layer. A backend carrying an error is therefore torn down instead.
  *
- * A backend carrying an error must therefore be stopped, not paused.
+ * SCOPE — this was introduced in v1.19.5 as the suspected cause of the field black
+ * screen (device and-c937df0cdb). The v1.19.5 field log disproved that: the kernel
+ * had gone entirely silent (no `stopped`, no subsequent `loadAndPlay`), which no
+ * pause/stop choice can explain. The real cause was a main-thread stall in
+ * `setDataSource` — see [RemoteLoadPolicy]. This rule is still correct on its own
+ * terms and is kept, but it is not what fixed the black screen.
  */
 fun backendQuietAction(errorCode: String?): BackendQuietAction =
     if (errorCode.isNullOrBlank()) BackendQuietAction.PAUSE else BackendQuietAction.STOP
