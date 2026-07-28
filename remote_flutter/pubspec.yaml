@@ -1,10 +1,10 @@
 name: remote_flutter
 description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，看设备墙，下发播放控制。
 publish_to: "none"
-# v1.19.6+1196: remote setDataSource moved off the main thread + time-boxed, so a
-# dead media host can no longer freeze the video kernel (音乐→图片 黑屏 root cause).
+# v1.19.7+1197: 音乐 transport (next/prev + 可关闭随机, §6.3c-1) 与音频播放性能
+# 修复 (setWakeMode、下一首预取、音频态缩略图退避、mpv 音频缓冲)。
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.19.6+1196
+version: 1.19.7+1197
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

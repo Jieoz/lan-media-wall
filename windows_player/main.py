@@ -29,8 +29,10 @@ import auth as auth_mod
 import topology as topology_mod
 import pairing as pairing_mod
 import playlist_ops as playlist_ops
-from playback_modes import MusicPlaylist, PlaybackMode, PlaybackModeState, ShuffleBag
+from playback_modes import (MusicPlaylist, MusicQueue, PlaybackMode,
+                            PlaybackModeState)
 from loop_mode import LoopMode, resolve_loop_mode
+import loop_boundary_sync
 from clock import ClockSync, now_ms
 from downloader import Downloader
 from versioning import APP_VERSION
@@ -79,6 +81,12 @@ VALID_STATES = {"playing", "paused", "idle", "buffering", "downloading"}
 # §6.3: default per-image dwell when a playlist item omits duration_ms (kept in
 # sync with the Android player's DEFAULT_IMAGE_DWELL_MS).
 DEFAULT_IMAGE_DWELL_MS = 5000
+
+# §6.3c eof poll cadence. Video parks on its last frame, so half a second of
+# latency is invisible; between two audio tracks the same wait is heard as a
+# gap, and the advance itself is cheap (mpv stays alive across loadfile).
+VISUAL_EOF_POLL_S = 0.5
+MUSIC_EOF_POLL_S = 0.1
 
 
 class Player:
@@ -130,8 +138,12 @@ class Player:
         self.mode_generation = 0
         self.thumb_session = f"{os.getpid()}-{time.monotonic_ns()}"
         self.music_playlist: Optional[Dict[str, Any]] = self.state.music_playlist
-        self.music_shuffle = ShuffleBag[str]()
-        self.music_current_item_id: Optional[str] = None
+        self.music_queue = MusicQueue()
+        # §6.3c restore the ordering the controller last chose; without this a
+        # restart would silently fall back to shuffle.
+        if self.music_playlist is not None:
+            self.music_queue.set_shuffle(
+                bool(self.music_playlist.get("shuffle", True)))
         self.music_failures: set[str] = set()
         self.music_play_count = 0
         self.music_started_monotonic = 0.0
@@ -152,6 +164,16 @@ class Player:
         # §6.3 carousel: pending "hold this image for duration_ms, then advance"
         # timer. Cancelled by any new prepare/play_at/advance/stop.
         self._dwell_task: Optional[asyncio.Task] = None
+        # §8.5 boundary_only loop resync (mirrors the Android fleet). mpv keeps
+        # its own seamless loop; we sample once per master-clock lap and correct
+        # only sustained drift, so a weak box never gets a seek storm. Any
+        # command that invalidates the timeline cancels this.
+        self._loop_sync_task: Optional[asyncio.Task] = None
+        self._loop_sync: Optional[Dict[str, Any]] = None
+        self._loop_boundary_count = 0
+        self._loop_correction_count = 0
+        self._loop_last_drift_ms: Optional[int] = None
+        self._loop_last_expected_ms: Optional[int] = None
         self._cache_dirty = asyncio.Event()
         # §19: transport rebuild serializes against overlapping configure_device.
         self._transport_rebuild_lock = asyncio.Lock()
@@ -410,7 +432,11 @@ class Player:
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
                              "runtime_modes_v1", "music_shuffle_v1",
-                             "music_playlist_snapshot_v1"],
+                             "music_playlist_snapshot_v1", "music_transport_v1",
+                             # §8.5 [v1.19.7] this screen now holds its loop
+                             # phase against the shared master clock, so it can
+                             # be mixed into an Android synced group.
+                             "loop_boundary_sync_v1"],
             "group_id": self.group_id,
         })
 
@@ -465,8 +491,10 @@ class Player:
             "music_playlist_revision": (self.music_playlist or {}).get("revision"),
             "music_playlist_size": len((self.music_playlist or {}).get("items", [])),
             "active_music_playlist": self.music_playlist,
-            "music_current_item_id": self.music_current_item_id,
-            "music_shuffle_cycle": self.music_shuffle.cycle,
+            "music_current_item_id": self.music_queue.current,
+            "music_shuffle": self.music_queue.shuffle,
+            "music_shuffle_cycle": self.music_queue.cycle,
+            "music_history_depth": self.music_queue.history_depth,
             "music_play_count": self.music_play_count,
             "current": current,
             "playlist_id": self.playlist.get("playlist_id") if self.playlist else None,
@@ -486,7 +514,23 @@ class Player:
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
                              "runtime_modes_v1", "music_shuffle_v1",
-                             "music_playlist_snapshot_v1"],
+                             "music_playlist_snapshot_v1", "music_transport_v1",
+                             "loop_boundary_sync_v1"],
+            # §8.5 mirror of the Android loop_sync telemetry so one controller
+            # view works for both fleets (absent when no loop epoch is armed).
+            **({"loop_sync": {
+                "session_id": self._loop_sync["session_id"],
+                "item_id": self._loop_sync["item_id"],
+                "play_at": self._loop_sync["play_at"],
+                "boundary_count": self._loop_boundary_count,
+                "correction_count": self._loop_correction_count,
+                "tolerance_ms": loop_boundary_sync.LOOP_BOUNDARY_TOLERANCE_MS,
+                "mode": "boundary_only",
+                **({"drift_ms": self._loop_last_drift_ms}
+                   if self._loop_last_drift_ms is not None else {}),
+                **({"expected_position_ms": self._loop_last_expected_ms}
+                   if self._loop_last_expected_ms is not None else {}),
+            }} if self._loop_sync else {}),
             # §19 remote config: advertise what the safe patch can touch + the
             # current authoritative snapshot (revision for optimistic concurrency,
             # redacted values — never the psk). Old controllers ignore both.
@@ -800,6 +844,7 @@ class Player:
             "playlist_id": parsed.playlist_id,
             "revision": parsed.revision,
             "items": parsed.items,
+            "shuffle": parsed.shuffle,
         }
         current = self.music_playlist
         if current is not None:
@@ -812,16 +857,21 @@ class Player:
                 await self._send_music_playlist_result(request_id, False,
                                                        "revision_conflict")
                 return
+        # §6.3c the ordering flag rides along with the list, but a shuffle-only
+        # change must NOT interrupt the track that is playing — re-ordering what
+        # comes next is no reason to restart what you are hearing now.
+        content_changed = (current or {}).get("items") != parsed.items
         self.music_playlist = normalized
         self.state.set_music_playlist(normalized)
-        self.music_shuffle.reset()
-        self.music_failures.clear()
-        self.music_current_item_id = None
-        self.downloader.prefetch(parsed.items)
-        if self.runtime_mode.current is PlaybackMode.MUSIC:
-            self.mode_generation += 1
-            await self._mpv("stop")
-            await self._play_next_music(self.mode_generation)
+        self.music_queue.set_shuffle(parsed.shuffle)
+        if content_changed:
+            self.music_queue.reset()  # keeps the shuffle setting
+            self.music_failures.clear()
+            self.downloader.prefetch(parsed.items)
+            if self.runtime_mode.current is PlaybackMode.MUSIC:
+                self.mode_generation += 1
+                await self._mpv("stop")
+                await self._play_next_music(self.mode_generation)
         await self._send_music_playlist_result(request_id, True)
 
     async def _send_runtime_mode_result(self, request_id: str, ok: bool,
@@ -867,7 +917,9 @@ class Player:
         self._cancel_session_tasks()
         await self._mpv("stop")
         self.play_state = "idle"
-        self.music_current_item_id = None
+        # Keep history/laps across a mode bounce; only the "now playing" pointer
+        # clears, so a later prev still has somewhere to go.
+        self.music_queue.adopt(None)
         self.runtime_mode.set_mode(mode)
         self.state.set_runtime_mode(
             self.runtime_mode.current.value,
@@ -880,7 +932,14 @@ class Player:
         else:
             self._apply_idle_screen()
 
-    async def _play_next_music(self, generation: int) -> None:
+    async def _play_next_music(self, generation: int, delta: int = 1) -> None:
+        """§6.3c advance the music terminal by one track.
+
+        ``delta`` is the user's direction: ``+1`` = next, ``-1`` = prev (a real
+        back-button walking ``MusicQueue``'s bounded history). Ordering —
+        shuffled laps vs the controller's list order — belongs to ``MusicQueue``
+        alone, so this stays a single code path either way.
+        """
         if generation != self.mode_generation or \
                 self.runtime_mode.current is not PlaybackMode.MUSIC:
             return
@@ -889,9 +948,11 @@ class Player:
                  if item.get("item_id")}
         candidates = [item_id for item_id in by_id
                       if item_id not in self.music_failures]
-        item_id = self.music_shuffle.next(candidates)
+        if delta < 0:
+            item_id = self.music_queue.prev(candidates)
+        else:
+            item_id = self.music_queue.next(candidates)
         if item_id is None:
-            self.music_current_item_id = None
             self.play_state = "idle" if not items else "error"
             error = "music_playlist_empty" if not items else "music_all_unavailable"
             if not self._errors or self._errors[-1] != error:
@@ -901,9 +962,8 @@ class Player:
         path = self.downloader.ready_path(item_id) or item.get("url")
         if not path:
             self.music_failures.add(item_id)
-            await self._play_next_music(generation)
+            await self._play_next_music(generation, delta)
             return
-        self.music_current_item_id = item_id
         self.music_play_count += 1
         self.music_started_monotonic = time.monotonic()
         await self._mpv("loadfile", str(path), "replace")
@@ -1118,6 +1178,111 @@ class Player:
         await self._mpv("set_pause", False)
         self.play_state = "playing"
         log.info("play_at fired: now=%d offset=%d", now_ms(), self.clock.offset_ms)
+        # §8.5 a seamless single-video loop free-runs on the local clock; sample
+        # each shared lap boundary so this screen stays with the Android boxes.
+        if self.playlist and resolve_loop_mode(self.playlist) is LoopMode.ONE:
+            self._arm_loop_boundary_sync(
+                session_id=str((self.playlist or {}).get("push_id") or ""),
+                item_id=str(item.get("item_id") or ""),
+                play_at_master_ms=int(play_at),
+                base_seek_ms=int(seek_ms),
+                duration_hint_ms=int(item.get("duration_ms") or 0),
+            )
+
+    # --- §8.5 boundary_only loop resync -------------------------------
+    # 1:1 with the Android fleet (see loop_boundary_sync.py). Without this a
+    # Windows screen in a synced group starts aligned and then free-runs: its
+    # clock is not the broker's, so a long loop visibly separates from the
+    # Android boxes even though every box thinks it is fine.
+
+    def _arm_loop_boundary_sync(self, *, session_id: str, item_id: str,
+                                play_at_master_ms: int, base_seek_ms: int,
+                                duration_hint_ms: int) -> None:
+        self._cancel_loop_boundary_sync("replace")
+        self._loop_sync = {
+            "session_id": session_id,
+            "item_id": item_id,
+            "play_at": int(play_at_master_ms),
+            "base_seek_ms": int(base_seek_ms),
+        }
+        self._loop_boundary_count = 0
+        self._loop_correction_count = 0
+        self._loop_last_drift_ms = None
+        self._loop_last_expected_ms = None
+        epoch = self._loop_sync
+        self._loop_sync_task = asyncio.create_task(
+            self._loop_boundary_loop(epoch, int(duration_hint_ms)))
+
+    def _cancel_loop_boundary_sync(self, reason: str) -> None:
+        previous = self._loop_sync
+        self._loop_sync = None
+        task = self._loop_sync_task
+        self._loop_sync_task = None
+        if task and not task.done():
+            task.cancel()
+        if previous:
+            log.info("loop_boundary_sync_cancel session=%s reason=%s",
+                     previous.get("session_id"), reason)
+
+    async def _loop_boundary_loop(self, epoch: Dict[str, Any],
+                                  duration_hint_ms: int) -> None:
+        """Sleep to each shared master-clock lap boundary and sample once."""
+        try:
+            duration_ms = duration_hint_ms if duration_hint_ms > 0 else 0
+            # mpv may not know the duration until the file is loaded.
+            while self._loop_sync is epoch and duration_ms <= 0:
+                snap = await self._mpv("snapshot") or {}
+                duration_ms = int(snap.get("duration_ms") or 0)
+                if duration_ms <= 0:
+                    await asyncio.sleep(0.25)
+            while self._loop_sync is epoch and duration_ms > 0:
+                boundary_master = loop_boundary_sync.next_boundary_master_ms(
+                    play_at_master_ms=epoch["play_at"],
+                    base_seek_ms=epoch["base_seek_ms"],
+                    duration_ms=duration_ms,
+                    master_now_ms=self.clock.master_now(),
+                )
+                if boundary_master is None:
+                    return
+                await self._await_local(self.clock.to_local(boundary_master))
+                # Let the decoder publish its new loop phase before sampling.
+                await asyncio.sleep(
+                    loop_boundary_sync.LOOP_BOUNDARY_SAMPLE_SETTLE_MS / 1000.0)
+                if self._loop_sync is not epoch:
+                    return
+                if (self.play_state != "playing"
+                        or self.runtime_mode.current is not PlaybackMode.VISUAL):
+                    continue
+                snap = await self._mpv("snapshot") or {}
+                if int(snap.get("duration_ms") or 0) > 0:
+                    duration_ms = int(snap["duration_ms"])
+                if snap.get("pause") or snap.get("position_ms") is None:
+                    continue
+                decision = loop_boundary_sync.decide(
+                    play_at_master_ms=epoch["play_at"],
+                    base_seek_ms=epoch["base_seek_ms"],
+                    master_now_ms=self.clock.master_now(),
+                    duration_ms=duration_ms,
+                    actual_position_ms=int(snap["position_ms"]),
+                )
+                self._loop_boundary_count += 1
+                self._loop_last_drift_ms = decision.drift_ms
+                self._loop_last_expected_ms = decision.expected_position_ms
+                if decision.seek_to_ms is not None:
+                    await self._mpv("seek_abs_ms", decision.seek_to_ms)
+                    self._loop_correction_count += 1
+                log.info(
+                    "loop_boundary_sync session=%s item=%s boundary=%d "
+                    "duration_ms=%d actual_ms=%s expected_ms=%d drift_ms=%d "
+                    "corrected=%s",
+                    epoch["session_id"], epoch["item_id"],
+                    self._loop_boundary_count, duration_ms,
+                    snap.get("position_ms"), decision.expected_position_ms,
+                    decision.drift_ms, decision.seek_to_ms is not None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never let resync kill playback
+            log.warning("loop_boundary_sync aborted: %s", exc)
 
     async def _await_local(self, local_target: int) -> None:
         """Busy-wait the final stretch for sub-100ms accuracy; coarse-sleep
@@ -1142,6 +1307,10 @@ class Player:
             self._resume_task.cancel()
         await self._mpv("set_pause", True)
         self.play_state = "paused"
+        # §8.5 pausing breaks the play_at→content projection (paused wall time is
+        # not content time), so the epoch is void. Resume does NOT re-arm: only a
+        # fresh play_at establishes a new shared timeline. Same as Android.
+        self._cancel_loop_boundary_sync("pause")
 
     async def _h_resume(self, payload, env) -> None:
         if not self._targets_me(payload):
@@ -1168,6 +1337,9 @@ class Player:
             if task is not None and task is not current and not task.done():
                 task.cancel()
         self._cancel_dwell()
+        # §8.5 the resync epoch belongs to the timeline we are tearing down;
+        # leaving it armed would seek the NEXT item to the old item's phase.
+        self._cancel_loop_boundary_sync("session_tasks_cancelled")
 
     async def _h_stop(self, payload, env) -> None:
         if not self._targets_me(payload):
@@ -1197,7 +1369,9 @@ class Player:
                   explicit prev/next still navigates with wrap.
         """
         if self.runtime_mode.current is PlaybackMode.MUSIC:
-            await self._play_next_music(self.mode_generation)
+            # §6.3c honour the user's direction: prev walks the music history
+            # instead of just picking the next track (pre-v1.19.7 behaviour).
+            await self._play_next_music(self.mode_generation, delta)
             return
         if self.runtime_mode.current is not PlaybackMode.VISUAL or not self.playlist:
             return
@@ -1280,7 +1454,13 @@ class Player:
         driven solely by the dwell timer."""
         seen_eof = False
         while True:
-            await asyncio.sleep(0.5)
+            # §6.3c a finished VIDEO holding its last frame for <=500ms is
+            # invisible; the same delay between two tracks is audible silence.
+            # Poll tighter while the music terminal is the active mode.
+            await asyncio.sleep(
+                MUSIC_EOF_POLL_S
+                if self.runtime_mode.current is PlaybackMode.MUSIC
+                else VISUAL_EOF_POLL_S)
             if self.play_state != "playing" or self.mpv is None:
                 seen_eof = False
                 continue
@@ -1291,9 +1471,10 @@ class Player:
             snap = await self._mpv("snapshot") or {}
             if self.runtime_mode.current is PlaybackMode.MUSIC and \
                     self._music_snapshot_failed(snap):
-                if self.music_current_item_id:
-                    self.music_failures.add(self.music_current_item_id)
-                    error = f"music_load_failed:{self.music_current_item_id}"
+                failed_id = self.music_queue.current
+                if failed_id:
+                    self.music_failures.add(failed_id)
+                    error = f"music_load_failed:{failed_id}"
                     if not self._errors or self._errors[-1] != error:
                         self._errors.append(error)
                 seen_eof = False
@@ -1711,7 +1892,7 @@ class Player:
             return None
         if self.runtime_mode.current is PlaybackMode.MUSIC:
             for item in (self.music_playlist or {}).get("items", []):
-                if item.get("item_id") == self.music_current_item_id:
+                if item.get("item_id") == self.music_queue.current:
                     return item
             return None
         if not self.playlist:

@@ -98,4 +98,54 @@ void main() {
     expect(confirmed.runtimeMode, RuntimeMode.standby);
     expect(confirmed.previousActiveMode, RuntimeMode.visual);
   });
+
+  // §6.3c-1 播放顺序开关随列表下发，缺省 true = 老行为。
+  test('music playlist carries the ordering flag and defaults to shuffle', () {
+    const audio = MediaItem(
+        itemId: 'a', type: 'audio', name: 'A', url: 'http://x/a.mp3');
+    final byDefault = Commands.musicPlaylist(
+      requestId: 'r1', deviceId: 'dev', playlistId: 'music-dev',
+      revision: 1, items: const [audio],
+    );
+    expect(byDefault['shuffle'], isTrue,
+        reason: 'omitting the flag must not change old player behaviour');
+
+    final sequential = Commands.musicPlaylist(
+      requestId: 'r2', deviceId: 'dev', playlistId: 'music-dev',
+      revision: 2, items: const [audio], shuffle: false,
+    );
+    expect(sequential['shuffle'], isFalse);
+  });
+
+  test('status reports ordering and history so the controller can echo it', () {
+    final status = DeviceStatus.fromMap({
+      'device_id': 'dev-1',
+      'online': true,
+      'group_id': 'default',
+      'runtime_mode': 'music',
+      'music_shuffle': false,
+      'music_history_depth': 5,
+      'capabilities': [
+        'runtime_modes_v1', 'music_shuffle_v1', 'music_transport_v1',
+      ],
+    });
+    expect(status.musicShuffle, isFalse);
+    expect(status.musicHistoryDepth, 5);
+    expect(status.supportsMusicTransport, isTrue);
+  });
+
+  test('an old player without the transport capability is detectable', () {
+    // Old players silently dropped next/prev in music mode; the controller must
+    // be able to tell so it disables the buttons instead of sending into a void.
+    final old = DeviceStatus.fromMap({
+      'device_id': 'dev-2',
+      'online': true,
+      'group_id': 'default',
+      'runtime_mode': 'music',
+      'capabilities': ['runtime_modes_v1', 'music_shuffle_v1'],
+    });
+    expect(old.supportsMusicTransport, isFalse);
+    // Absent field must read as the legacy default (random), not false.
+    expect(old.musicShuffle, isTrue);
+  });
 }

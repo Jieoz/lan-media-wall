@@ -1,5 +1,21 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **v1.19.7：音乐 transport 入口与整组待机（控制端本版有功能改动）。**
+> 1. **音乐终端弹窗新增「随机播放」开关**，初值从设备 `status.music_shuffle` 播种——打开
+>    弹窗并保存而不动开关，不会把设备的顺序设置悄悄翻回随机。开关随列表一起保存，走
+>    `sendDeviceMusicPlaylist` 这唯一写入口（不新增命令，见协议 §6.3c-1）。
+> 2. **设备抽屉「音乐列表」区新增上一首/下一首。** 放在设备抽屉而不是编排栏的整组播放
+>    控制里：音乐列表本身是单设备概念（broker 强制 `music_playlist` 单设备目标），整组
+>    按钮混入单台目标容易误操作。按钮仅在设备广告 `music_transport_v1` 且当前处于音乐
+>    模式时可点——旧播放端会静默吞掉命令，所以直接禁用而不是发出去没反应。
+> 3. **编排栏新增「整组待机 / 退出待机」。** 能力早已存在（`setDevicesRuntimeMode` /
+>    `restoreDevicesRuntimeMode`），此前只缺入口。实现提取为共享
+>    `runtime_mode_batch_dialog.dart`，**并删除 `device_wall_pane` 中 88 行的重复实现**，
+>    两处调用同一份代码：一个功能只保留一条权威路径。
+> 4. `DeviceStatus` 增补 `musicShuffle` / `musicHistoryDepth` 与
+>    `supportsMusicTransport`，缺省值向后兼容（缺字段读作随机=旧行为）。
+> 单一版本源为 `1.19.7+1197`。
+>
 > **v1.19.6：黑屏根因修正（Player 侧）。** 控制端本版无功能改动，仅随单一版本源升到
 > `1.19.6+1196`。v1.19.5 判定的"`pause()` 是 no-op 导致死 surface 遮挡"被现场日志否证：
 > 真因是 `MediaPlayer.setDataSource()` 对远程 URI 同步做 DNS+TCP 连接、把 **Player 的 app

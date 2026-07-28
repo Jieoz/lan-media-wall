@@ -25,10 +25,23 @@ object ThumbnailPolicy {
         return Size(width, height)
     }
 
-    /** Keep previews on KitKat, but avoid a TextureView readback every five seconds
-     * while the legacy video pipeline is presenting a full-HD stream. */
-    fun intervalMs(androidSdk: Int, playingVideo: Boolean): Long =
-        if (androidSdk <= 19 && playingVideo) LEGACY_VIDEO_INTERVAL_MS else NORMAL_INTERVAL_MS
+    /**
+     * Keep previews on KitKat, but avoid a TextureView readback every five seconds
+     * while the legacy video pipeline is presenting a full-HD stream.
+     *
+     * §6.3c [playingAudio]: audio has no frame to grab. The music terminal used to
+     * take the fast 5s interval and wake only to fall out of [canCapture]/[decide]
+     * — on a weak box that is a pointless periodic wake next to the audio thread.
+     */
+    fun intervalMs(
+        androidSdk: Int,
+        playingVideo: Boolean,
+        playingAudio: Boolean = false,
+    ): Long = when {
+        playingAudio -> LEGACY_VIDEO_INTERVAL_MS
+        androidSdk <= 19 && playingVideo -> LEGACY_VIDEO_INTERVAL_MS
+        else -> NORMAL_INTERVAL_MS
+    }
 
     fun canCapture(expectedItemId: String?, currentItemId: String?): Boolean =
         expectedItemId != null && expectedItemId == currentItemId

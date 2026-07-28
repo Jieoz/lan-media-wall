@@ -58,6 +58,14 @@ def mpv_launch_args(ipc_path: str, *, idle_image: Optional[str] = None,
         "--no-input-default-bindings",
         "--input-vo-keyboard=no",
         "--really-quiet",
+        # §6.3c audio continuity. The music terminal advances track-to-track via
+        # loadfile replace; mpv's default demuxer readahead is tuned for video and
+        # leaves little audio in flight, so a slow LAN read or a busy disk was
+        # audible as a brief stall. A small explicit audio buffer + readahead
+        # covers those hiccups without adding startup latency worth noticing.
+        "--cache=yes",
+        "--demuxer-readahead-secs=5",
+        "--audio-buffer=0.3",
     ]
     # §9/§11: hardware decoding. Normalise falsy/`no` → explicit off so the flag
     # is always present and deterministic across watchdog restarts.

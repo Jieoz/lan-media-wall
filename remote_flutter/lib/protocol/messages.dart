@@ -130,11 +130,15 @@ class MusicPlaylistSnapshot {
   final String playlistId;
   final int revision;
   final List<MediaItem> items;
+  /// §6.3c ordering travels with the list, so an editor reopened on this
+  /// snapshot shows the player's real setting rather than defaulting.
+  final bool shuffle;
 
   const MusicPlaylistSnapshot({
     required this.playlistId,
     required this.revision,
     required this.items,
+    this.shuffle = true,
   });
 
   static MusicPlaylistSnapshot? fromMap(Map<String, dynamic>? m) {
@@ -148,6 +152,7 @@ class MusicPlaylistSnapshot {
       playlistId: _asStr(m['playlist_id']),
       revision: _asInt(m['revision']),
       items: items,
+      shuffle: _asBool(m['shuffle'], true),
     );
   }
 }
@@ -395,7 +400,13 @@ class DeviceStatus {
   final int musicPlaylistSize;
   final MusicPlaylistSnapshot? activeMusicPlaylist;
   final String? musicCurrentItemId;
+  /// §6.3c the player's live ordering setting. Absent (older players) reads as
+  /// true, matching their built-in shuffle-only behaviour.
+  final bool musicShuffle;
   final int musicShuffleCycle;
+
+  /// §6.3c-1 how deep the player's `prev` history currently is (bounded at 32).
+  final int musicHistoryDepth;
   final int musicPlayCount;
   final List<String> musicFailedItemIds;
   final int? standbySinceMs;
@@ -451,7 +462,9 @@ class DeviceStatus {
     this.musicPlaylistSize = 0,
     this.activeMusicPlaylist,
     this.musicCurrentItemId,
+    this.musicShuffle = true,
     this.musicShuffleCycle = 0,
+    this.musicHistoryDepth = 0,
     this.musicPlayCount = 0,
     this.musicFailedItemIds = const [],
     this.standbySinceMs,
@@ -488,6 +501,11 @@ class DeviceStatus {
   bool get supportsRuntimeModes => capabilities.contains('runtime_modes_v1');
   bool get supportsMusicShuffle => capabilities.contains('music_shuffle_v1');
 
+  /// §6.3c prev/next reach the music queue and the ordering is selectable.
+  /// Old players silently dropped transport commands in music mode, so the
+  /// controller must not offer the buttons unless this is advertised.
+  bool get supportsMusicTransport => capabilities.contains('music_transport_v1');
+
   static DeviceStatus fromMap(Map<String, dynamic> m) {
     final cacheRaw = (m['cache'] as Map?) ?? {};
     return DeviceStatus(
@@ -506,7 +524,9 @@ class DeviceStatus {
       activeMusicPlaylist: MusicPlaylistSnapshot.fromMap(
           (m['active_music_playlist'] as Map?)?.cast<String, dynamic>()),
       musicCurrentItemId: m['music_current_item_id'] as String?,
+      musicShuffle: _asBool(m['music_shuffle'], true),
       musicShuffleCycle: _asInt(m['music_shuffle_cycle']),
+      musicHistoryDepth: _asInt(m['music_history_depth']),
       musicPlayCount: _asInt(m['music_play_count']),
       musicFailedItemIds: ((m['music_failed_item_ids'] as List?) ?? const [])
           .map((e) => e.toString()).toList(),
@@ -576,7 +596,9 @@ class DeviceStatus {
         musicPlaylistSize: musicPlaylistSize,
         activeMusicPlaylist: activeMusicPlaylist,
         musicCurrentItemId: musicCurrentItemId,
+        musicShuffle: musicShuffle,
         musicShuffleCycle: musicShuffleCycle,
+        musicHistoryDepth: musicHistoryDepth,
         musicPlayCount: musicPlayCount,
         musicFailedItemIds: musicFailedItemIds,
         standbySinceMs: standbySinceMs,
@@ -828,6 +850,7 @@ class Commands {
     required String playlistId,
     required int revision,
     required List<MediaItem> items,
+    bool shuffle = true,
   }) {
     if (deviceId.isEmpty || playlistId.isEmpty || revision < 0 ||
         items.any((item) => !item.isAudio)) {
@@ -838,6 +861,9 @@ class Commands {
       'device_id': deviceId,
       'playlist_id': playlistId,
       'revision': revision,
+      // §6.3c ordering travels with the list it orders — one authority, so a
+      // shuffle toggle can never disagree with the list the player holds.
+      'shuffle': shuffle,
       'items': items.map((item) => item.toMap()).toList(),
     };
   }

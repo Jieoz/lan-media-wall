@@ -1,5 +1,30 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.7 — 音乐 transport 与音频播放性能（本端为主要改动方）：**
+> 1. **`advance()` 首行 `if (runtimeModeState.current != PlaybackMode.VISUAL) return` 是
+>    音乐上/下首完全无效的根因**——命令进来直接被吞，连 ack 都是空动作，所以控制端点了
+>    没有任何反应也没有错误。现改为音乐模式走 `musicQueue`，方向感知。
+> 2. **`prev` 用有界历史栈（32 首）** 回到真正播过的上一首，而不是再随机抽一首。历史为空
+>    时顺序模式取列表上一首、随机模式保持当前曲目。
+> 3. **随机播放可关**：`music_playlist.shuffle`（缺省 `true` = 旧行为）随列表持久化，重启
+>    从持久化列表恢复，不静默回退随机；仅切开关不打断当前曲目。
+> 4. **音频卡顿三根因（本端）：**
+>    - **音乐复用视频后端 `MediaPlayerVideoBackend`**：`loadAndPlay` 每首歌
+>      `releasePlayer()` + `new MediaPlayer()` + `prepareAsync()`，逐曲拆建解码器（本端注释
+>      自述 200–400ms）。视频换片有冻结帧盖住所以看不出，音频换轨就是可听的静音空档。
+>      现增**下一首预取**：播当前曲时把下一首的字节烤热，避免下载正好落在重建播放器的时刻。
+>      随机模式下 `peekNext` **故意返回 null**（随机的下一首必须从 shuffle bag 取出才知道，
+>      猜一个就会烤错文件），改为预热整个候选集。
+>    - **`MediaPlayer.setWakeMode` 从未设置**：Service 自己持的 `PARTIAL_WAKE_LOCK` 只保
+>      我们的协程活着，**不保 framework 的解码线程与 AudioTrack 喂数据线程**。盒子空闲降频
+>      或进 doze 时正在播放的音频就会零星卡顿——无规律、"偶尔"，这最可能就是现场听到的现象。
+>      现加 `mp.setWakeMode(PARTIAL_WAKE_LOCK)`（`WAKE_LOCK` 权限本已在 manifest 中）。
+>    - **缩略图循环在音频态每 5s 空转**：音频没有帧可抓，唤醒后只走到 `canCapture` 就什么
+>      都不做，在低配盒子上是紧挨音频线程的周期性无用唤醒。音频态退避到 15s。
+> 5. **status 侧 capability 漏报 `music_transport_v1` 已修**（hello 里有、status 里没有）。
+>    P2P 无 player hello、broker 墙快照也从 status 重建，否则那些设备上新按钮恒为灰。
+> 单一版本源为 `1.19.7+1197`（继承自 `remote_flutter/pubspec.yaml`）。
+>
 > **v1.19.6 — 音乐切回图片/视频黑屏的真实根因（主线程被网络 IO 卡死）：**
 > `MediaPlayer.setDataSource(ctx, uri)` 打开 http(s) 源时会**在调用线程上同步完成
 > DNS + TCP 连接**；而本后端所有方法都被 marshal 到 **app 主线程**。现场
