@@ -540,7 +540,11 @@ class PlayerService : Service() {
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
                 "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
                 "runtime_modes_v1", "music_shuffle_v1", "music_playlist_snapshot_v1",
-                "music_transport_v1")))
+                "music_transport_v1",
+                // §8.5 status has always advertised this; hello did not. A
+                // controller that reads capabilities from hello would think this
+                // box cannot hold loop phase and exclude it from a synced group.
+                "loop_boundary_sync_v1")))
             put("group_id", settings.groupId)
         }
         link?.send("hello", payload)

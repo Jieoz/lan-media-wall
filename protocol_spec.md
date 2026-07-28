@@ -694,8 +694,29 @@ v1.4 引入显式分组管理命令(controller→broker),broker 侧落到注册�
 {"config_capabilities":{"safe_fields":["device_name","group_id","volume","muted"],"transport_fields":["transport_mode","broker_host","broker_port","use_wss"],"transport_configure":true,"rotate_device_key":true,"config_version":2},"config_snapshot":{"revision":7,"values":{"device_name":"二号厅右屏","group_id":"hall-2","volume":70,"muted":false,"psk_configured":true},"transport":{"transport_mode":"broker","broker_host":"192.168.1.10","broker_port":8770,"use_wss":false,"auto_discovery":false},"pending":{},"requires_restart":false}}
 ```
 
-支持循环边界同步的 Player 在 `hello.capabilities` 增加 `loop_boundary_sync_v1`；仅广告
-能力且 `status.loop_sync` 可回读的设备才能计入新同步链路验收。
+支持循环边界同步的 Player 在 `hello.capabilities` 与 `status.capabilities` **两处**
+增加 `loop_boundary_sync_v1`；仅广告能力且 `status.loop_sync` 可回读的设备才能计入
+新同步链路验收。
+
+> **[v1.19.7] 两端已对齐。** 此前仅 Android 实现，Windows 端最高只广告
+> `music_playlist_snapshot_v1`：混入 Windows 屏时该台**起播对齐后即自由漂移**，且
+> 双方都认为自己同步正常。现 Windows 端 (`windows_player/loop_boundary_sync.py`)
+> 为 Android `sync/ContentClock.kt` + `sync/LoopBoundarySync.kt` 的 1:1 移植，
+> 常量 (容差 80ms / 采样静置 40ms / 迟起阈值 40ms) 与判定向量由两端测试共同锁定
+> (`tests/test_loop_boundary_sync.py::test_android_kotlin_vectors_reproduce_exactly`
+> 直接复用 Kotlin 测试的数字)。同时修正 Android `hello` 漏报该能力的缺陷——
+> 只读 hello 的控制端会误判 Android 盒子不具备保持循环相位的能力。
+
+语义 (`mode: "boundary_only"`)：**不是逐帧锁相**。播放端保留解码器自身的无缝循环，
+仅在每个由主时钟推导的循环边界后静置 40ms 采样一次；相位误差按**环形最短路径**
+计算 (贴近 EOS 的一台与已回绕的墙面相差 20ms，而非一整轮)，仅当 `|drift| > 80ms`
+才 seek 到主时钟投影位置。因此单条长视频播到中途出现的漂移，要等到下一个循环边界
+才纠正；容差内的抖动一律不动，避免每轮循环都为校正付出一次可见跳帧。
+
+失效即弃：`pause`、`stop`、`playlist` 替换/清空、任何新的 `prepare`/`play_at` 都会
+**作废当前 epoch**（暂停后的墙钟时间不再等于内容时间，`resume` 不重新武装，只有新的
+`play_at` 才建立新的共享时间轴）。未武装时 `status` 不带 `loop_sync` 字段，避免控制端
+显示上一轮的陈旧 drift。
 
 快照不得包含 PSK、device key、broker key 或任何可复用凭据。控制端仅对 `safe_fields` 中声明的字段显示普通编辑器。
 

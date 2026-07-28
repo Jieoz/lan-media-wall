@@ -242,6 +242,7 @@ The controller orchestration pane can load and edit the active playlist reported
 | 能力 | 说明 |
 |---|---|
 | 同步播放 | WS 时钟 offset 握手(不依赖系统 NTP)+ 三段握手(prepare→ready→play_at)，目标 ±50–100ms |
+| **同步门槛(能做到什么/做不到什么)** | 分两层,别指望"逐帧锁相":**① 起播对齐**——三段握手,两端(Android/Windows)都有,目标 ±50–100ms;**② 循环边界重同步** `loop_boundary_sync_v1`——单视频循环时,每轮循环边界后静置 40ms 采样一次相位,误差按**环形最短路径**算(贴 EOS 的一台与已回绕的墙面差 20ms,不是差一整轮),**仅当 drift 绝对值 > 80ms 才 seek**。**[v1.19.7 起两端都有]**;此前仅 Android,混入 Windows 屏时该台起播后自由漂移且双方都以为自己正常。**明确做不到**:长视频播到中途的漂移要等下一个循环边界才纠;容差内抖动不纠(每轮都校正=每轮一次可见跳帧);`pause`/`stop`/换 playlist 会作废同步 epoch,`resume` 不重新武装,只有新的 `play_at` 才建立新共享时间轴 |
 | 同步 / 各播各的 | 统一 group 模型:同组同步同一 playlist，不同组各播各的。`sync` 标志切换 |
 | 单文件 / 轮播(v1.6) | playlist[] 统一模型，长度 1 = 单文件，>1 = 轮播。图片按 `duration_ms` 到时**自动进位**(缺省 5000ms),视频**播完自动进位**,末项 loop 回绕;Android/Windows 两端行为一致 |
 | NAS 预分发 | 媒体存 NAS(WebDAV/HTTP GET)，被控端断点续传缓存 + sha256 校验，本地秒开 |

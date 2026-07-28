@@ -32,6 +32,7 @@ import playlist_ops as playlist_ops
 from playback_modes import (MusicPlaylist, MusicQueue, PlaybackMode,
                             PlaybackModeState)
 from loop_mode import LoopMode, resolve_loop_mode
+import loop_boundary_sync
 from clock import ClockSync, now_ms
 from downloader import Downloader
 from versioning import APP_VERSION
@@ -163,6 +164,16 @@ class Player:
         # §6.3 carousel: pending "hold this image for duration_ms, then advance"
         # timer. Cancelled by any new prepare/play_at/advance/stop.
         self._dwell_task: Optional[asyncio.Task] = None
+        # §8.5 boundary_only loop resync (mirrors the Android fleet). mpv keeps
+        # its own seamless loop; we sample once per master-clock lap and correct
+        # only sustained drift, so a weak box never gets a seek storm. Any
+        # command that invalidates the timeline cancels this.
+        self._loop_sync_task: Optional[asyncio.Task] = None
+        self._loop_sync: Optional[Dict[str, Any]] = None
+        self._loop_boundary_count = 0
+        self._loop_correction_count = 0
+        self._loop_last_drift_ms: Optional[int] = None
+        self._loop_last_expected_ms: Optional[int] = None
         self._cache_dirty = asyncio.Event()
         # §19: transport rebuild serializes against overlapping configure_device.
         self._transport_rebuild_lock = asyncio.Lock()
@@ -421,7 +432,11 @@ class Player:
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
                              "runtime_modes_v1", "music_shuffle_v1",
-                             "music_playlist_snapshot_v1", "music_transport_v1"],
+                             "music_playlist_snapshot_v1", "music_transport_v1",
+                             # §8.5 [v1.19.7] this screen now holds its loop
+                             # phase against the shared master clock, so it can
+                             # be mixed into an Android synced group.
+                             "loop_boundary_sync_v1"],
             "group_id": self.group_id,
         })
 
@@ -499,7 +514,23 @@ class Player:
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
                              "runtime_modes_v1", "music_shuffle_v1",
-                             "music_playlist_snapshot_v1", "music_transport_v1"],
+                             "music_playlist_snapshot_v1", "music_transport_v1",
+                             "loop_boundary_sync_v1"],
+            # §8.5 mirror of the Android loop_sync telemetry so one controller
+            # view works for both fleets (absent when no loop epoch is armed).
+            **({"loop_sync": {
+                "session_id": self._loop_sync["session_id"],
+                "item_id": self._loop_sync["item_id"],
+                "play_at": self._loop_sync["play_at"],
+                "boundary_count": self._loop_boundary_count,
+                "correction_count": self._loop_correction_count,
+                "tolerance_ms": loop_boundary_sync.LOOP_BOUNDARY_TOLERANCE_MS,
+                "mode": "boundary_only",
+                **({"drift_ms": self._loop_last_drift_ms}
+                   if self._loop_last_drift_ms is not None else {}),
+                **({"expected_position_ms": self._loop_last_expected_ms}
+                   if self._loop_last_expected_ms is not None else {}),
+            }} if self._loop_sync else {}),
             # §19 remote config: advertise what the safe patch can touch + the
             # current authoritative snapshot (revision for optimistic concurrency,
             # redacted values — never the psk). Old controllers ignore both.
@@ -1147,6 +1178,111 @@ class Player:
         await self._mpv("set_pause", False)
         self.play_state = "playing"
         log.info("play_at fired: now=%d offset=%d", now_ms(), self.clock.offset_ms)
+        # §8.5 a seamless single-video loop free-runs on the local clock; sample
+        # each shared lap boundary so this screen stays with the Android boxes.
+        if self.playlist and resolve_loop_mode(self.playlist) is LoopMode.ONE:
+            self._arm_loop_boundary_sync(
+                session_id=str((self.playlist or {}).get("push_id") or ""),
+                item_id=str(item.get("item_id") or ""),
+                play_at_master_ms=int(play_at),
+                base_seek_ms=int(seek_ms),
+                duration_hint_ms=int(item.get("duration_ms") or 0),
+            )
+
+    # --- §8.5 boundary_only loop resync -------------------------------
+    # 1:1 with the Android fleet (see loop_boundary_sync.py). Without this a
+    # Windows screen in a synced group starts aligned and then free-runs: its
+    # clock is not the broker's, so a long loop visibly separates from the
+    # Android boxes even though every box thinks it is fine.
+
+    def _arm_loop_boundary_sync(self, *, session_id: str, item_id: str,
+                                play_at_master_ms: int, base_seek_ms: int,
+                                duration_hint_ms: int) -> None:
+        self._cancel_loop_boundary_sync("replace")
+        self._loop_sync = {
+            "session_id": session_id,
+            "item_id": item_id,
+            "play_at": int(play_at_master_ms),
+            "base_seek_ms": int(base_seek_ms),
+        }
+        self._loop_boundary_count = 0
+        self._loop_correction_count = 0
+        self._loop_last_drift_ms = None
+        self._loop_last_expected_ms = None
+        epoch = self._loop_sync
+        self._loop_sync_task = asyncio.create_task(
+            self._loop_boundary_loop(epoch, int(duration_hint_ms)))
+
+    def _cancel_loop_boundary_sync(self, reason: str) -> None:
+        previous = self._loop_sync
+        self._loop_sync = None
+        task = self._loop_sync_task
+        self._loop_sync_task = None
+        if task and not task.done():
+            task.cancel()
+        if previous:
+            log.info("loop_boundary_sync_cancel session=%s reason=%s",
+                     previous.get("session_id"), reason)
+
+    async def _loop_boundary_loop(self, epoch: Dict[str, Any],
+                                  duration_hint_ms: int) -> None:
+        """Sleep to each shared master-clock lap boundary and sample once."""
+        try:
+            duration_ms = duration_hint_ms if duration_hint_ms > 0 else 0
+            # mpv may not know the duration until the file is loaded.
+            while self._loop_sync is epoch and duration_ms <= 0:
+                snap = await self._mpv("snapshot") or {}
+                duration_ms = int(snap.get("duration_ms") or 0)
+                if duration_ms <= 0:
+                    await asyncio.sleep(0.25)
+            while self._loop_sync is epoch and duration_ms > 0:
+                boundary_master = loop_boundary_sync.next_boundary_master_ms(
+                    play_at_master_ms=epoch["play_at"],
+                    base_seek_ms=epoch["base_seek_ms"],
+                    duration_ms=duration_ms,
+                    master_now_ms=self.clock.master_now(),
+                )
+                if boundary_master is None:
+                    return
+                await self._await_local(self.clock.to_local(boundary_master))
+                # Let the decoder publish its new loop phase before sampling.
+                await asyncio.sleep(
+                    loop_boundary_sync.LOOP_BOUNDARY_SAMPLE_SETTLE_MS / 1000.0)
+                if self._loop_sync is not epoch:
+                    return
+                if (self.play_state != "playing"
+                        or self.runtime_mode.current is not PlaybackMode.VISUAL):
+                    continue
+                snap = await self._mpv("snapshot") or {}
+                if int(snap.get("duration_ms") or 0) > 0:
+                    duration_ms = int(snap["duration_ms"])
+                if snap.get("pause") or snap.get("position_ms") is None:
+                    continue
+                decision = loop_boundary_sync.decide(
+                    play_at_master_ms=epoch["play_at"],
+                    base_seek_ms=epoch["base_seek_ms"],
+                    master_now_ms=self.clock.master_now(),
+                    duration_ms=duration_ms,
+                    actual_position_ms=int(snap["position_ms"]),
+                )
+                self._loop_boundary_count += 1
+                self._loop_last_drift_ms = decision.drift_ms
+                self._loop_last_expected_ms = decision.expected_position_ms
+                if decision.seek_to_ms is not None:
+                    await self._mpv("seek_abs_ms", decision.seek_to_ms)
+                    self._loop_correction_count += 1
+                log.info(
+                    "loop_boundary_sync session=%s item=%s boundary=%d "
+                    "duration_ms=%d actual_ms=%s expected_ms=%d drift_ms=%d "
+                    "corrected=%s",
+                    epoch["session_id"], epoch["item_id"],
+                    self._loop_boundary_count, duration_ms,
+                    snap.get("position_ms"), decision.expected_position_ms,
+                    decision.drift_ms, decision.seek_to_ms is not None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never let resync kill playback
+            log.warning("loop_boundary_sync aborted: %s", exc)
 
     async def _await_local(self, local_target: int) -> None:
         """Busy-wait the final stretch for sub-100ms accuracy; coarse-sleep
@@ -1171,6 +1307,10 @@ class Player:
             self._resume_task.cancel()
         await self._mpv("set_pause", True)
         self.play_state = "paused"
+        # §8.5 pausing breaks the play_at→content projection (paused wall time is
+        # not content time), so the epoch is void. Resume does NOT re-arm: only a
+        # fresh play_at establishes a new shared timeline. Same as Android.
+        self._cancel_loop_boundary_sync("pause")
 
     async def _h_resume(self, payload, env) -> None:
         if not self._targets_me(payload):
@@ -1197,6 +1337,9 @@ class Player:
             if task is not None and task is not current and not task.done():
                 task.cancel()
         self._cancel_dwell()
+        # §8.5 the resync epoch belongs to the timeline we are tearing down;
+        # leaving it armed would seek the NEXT item to the old item's phase.
+        self._cancel_loop_boundary_sync("session_tasks_cancelled")
 
     async def _h_stop(self, payload, env) -> None:
         if not self._targets_me(payload):
