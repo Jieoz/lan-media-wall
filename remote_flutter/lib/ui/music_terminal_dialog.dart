@@ -12,6 +12,10 @@ Future<void> showMusicTerminalDialog(
   final items = List<MediaItem>.of(state.musicPlaylistFor(device.deviceId));
   final authoritative = state.hasAuthoritativeMusicPlaylist(device.deviceId);
   final reportedSize = device.status?.musicPlaylistSize ?? 0;
+  // §6.3c seed from the device's live setting so opening the dialog and saving
+  // without touching the switch cannot flip ordering behind the user's back.
+  var shuffle = device.status?.musicShuffle ?? true;
+  final supportsTransport = device.status?.supportsMusicTransport ?? false;
   var busy = false;
   var status = !authoritative && reportedSize > 0
       ? '该播放端报告 $reportedSize 首，但未提供完整清单；已禁止空列表覆盖，请先升级播放端'
@@ -24,7 +28,7 @@ Future<void> showMusicTerminalDialog(
     });
     try {
       final result = await state.sendDeviceMusicPlaylist(
-          deviceId: device.deviceId, items: items);
+          deviceId: device.deviceId, items: items, shuffle: shuffle);
       if (!result.ok) {
         setLocal(() => status = result.error == 'timeout'
             ? '设备确认超时，不能视为保存成功'
@@ -97,6 +101,26 @@ Future<void> showMusicTerminalDialog(
                   icon: const Icon(Icons.audio_file),
                   label: const Text('添加音乐文件'),
                 ),
+                const SizedBox(height: 8),
+                // §6.3c ordering is part of the list, so it saves with the list —
+                // no separate command, one authoritative writer.
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: shuffle,
+                  onChanged: busy ? null : (v) => setLocal(() => shuffle = v),
+                  title: const Text('随机播放'),
+                  subtitle: Text(shuffle
+                      ? '每首播完随机抽下一首，一轮内不重复'
+                      : '按上面的列表顺序播放，播完回到第一首'),
+                ),
+                if (!supportsTransport)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      '该播放端版本较旧，不支持关闭随机与上/下一首；保存后仍按随机播放。',
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                  ),
                 const SizedBox(height: 8),
                 if (items.isEmpty)
                   const Padding(

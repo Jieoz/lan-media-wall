@@ -1601,6 +1601,7 @@ class WallState extends ChangeNotifier {
     required List<MediaItem> items,
     String? playlistId,
     int? revision,
+    bool? shuffle,
   }) {
     final device = deviceById(deviceId);
     if (device == null || !device.online) {
@@ -1614,6 +1615,9 @@ class WallState extends ChangeNotifier {
       device.musicPlaylistRevision,
       _musicPlaylistResults[deviceId]?.revision,
     );
+    // §6.3c ordering rides with the list. Default to the device's live setting
+    // so an edit that does not mention shuffle cannot silently flip it back.
+    final nextShuffle = shuffle ?? device.musicShuffle;
     final completer = Completer<MusicPlaylistResult>();
     _pendingMusicPlaylist[requestId] = completer;
     _pendingMusicItems[requestId] = List.of(items);
@@ -1624,6 +1628,7 @@ class WallState extends ChangeNotifier {
         playlistId: playlistId ?? 'music-$deviceId',
         revision: nextRevision,
         items: items,
+        shuffle: nextShuffle,
       ), deviceId: deviceId);
     } catch (e) {
       _pendingMusicPlaylist.remove(requestId);
@@ -1761,6 +1766,34 @@ class WallState extends ChangeNotifier {
   void prev({String? groupId, String? deviceId}) => _send(
       'prev', Commands.prev(groupId: groupId, deviceId: deviceId),
       groupId: groupId, deviceId: deviceId);
+
+  /// §6.3c toggle the music terminal's playback ordering.
+  ///
+  /// Deliberately routed through [sendDeviceMusicPlaylist] rather than a new
+  /// command: the ordering flag is part of the music playlist, so there is one
+  /// authoritative writer and revision guard for both. Requires the device's
+  /// current authoritative list — a toggle must never invent list content.
+  Future<MusicPlaylistResult> setDeviceMusicShuffle(
+      String deviceId, bool shuffle) {
+    final device = deviceById(deviceId);
+    if (device == null || !device.online) {
+      return Future.error(StateError('设备离线'));
+    }
+    if (!device.supportsMusicTransport) {
+      return Future.error(
+          UnsupportedError('设备不支持随机播放开关，请先升级 Player'));
+    }
+    final snapshot = device.activeMusicPlaylist;
+    if (snapshot == null || snapshot.items.isEmpty) {
+      return Future.error(StateError('设备尚无音乐列表，请先投放音乐'));
+    }
+    return sendDeviceMusicPlaylist(
+      deviceId: deviceId,
+      items: snapshot.items,
+      playlistId: snapshot.playlistId.isEmpty ? null : snapshot.playlistId,
+      shuffle: shuffle,
+    );
+  }
 
   /// restart(§9.4)：只重启被控端播放 App(保住 Wi-Fi,不整机重启)。单台或整组。
   void restart({String? groupId, String? deviceId}) => _send(

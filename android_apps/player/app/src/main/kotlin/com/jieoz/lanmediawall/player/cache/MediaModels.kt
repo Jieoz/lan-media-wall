@@ -97,6 +97,11 @@ data class MusicPlaylist(
     val revision: Long,
     val items: List<MediaItem>,
     val raw: Json,
+    /**
+     * §6.3c playback ordering travels with the list it orders. Absent (old
+     * controllers) means shuffle — the pre-v1.19.7 behaviour.
+     */
+    val shuffle: Boolean = true,
 ) {
     companion object {
         fun fromJson(node: Json): MusicPlaylist? {
@@ -107,7 +112,8 @@ data class MusicPlaylist(
             val rawItems = node["items"].asArrayOrNull() ?: return null
             val items = rawItems.mapNotNull { MediaItem.fromJson(it) }
             if (items.size != rawItems.size || items.any { it.type != "audio" }) return null
-            return MusicPlaylist(playlistId, revision, items, node)
+            val shuffle = node["shuffle"].asBoolOrNull() ?: true
+            return MusicPlaylist(playlistId, revision, items, node, shuffle)
         }
     }
 }

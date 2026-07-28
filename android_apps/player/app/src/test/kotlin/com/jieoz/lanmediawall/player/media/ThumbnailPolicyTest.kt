@@ -33,6 +33,18 @@ class ThumbnailPolicyTest {
         assertEquals(5_000L, ThumbnailPolicy.intervalMs(androidSdk = 19, playingVideo = false))
     }
 
+    @Test fun `audio playback idles the thumbnail loop instead of waking to do nothing`() {
+        // §6.3c music has no frame to grab; a 5s wake next to the audio thread on a
+        // weak box buys nothing. Audio wins regardless of SDK level.
+        assertEquals(15_000L, ThumbnailPolicy.intervalMs(
+            androidSdk = 19, playingVideo = false, playingAudio = true))
+        assertEquals(15_000L, ThumbnailPolicy.intervalMs(
+            androidSdk = 30, playingVideo = false, playingAudio = true))
+        // Not playing audio → unchanged behaviour.
+        assertEquals(5_000L, ThumbnailPolicy.intervalMs(
+            androidSdk = 30, playingVideo = false, playingAudio = false))
+    }
+
     @Test fun `capture is skipped when playback crosses an item boundary`() {
         assertTrue(ThumbnailPolicy.canCapture("item-a", "item-a"))
         assertEquals(false, ThumbnailPolicy.canCapture("item-a", "item-b"))

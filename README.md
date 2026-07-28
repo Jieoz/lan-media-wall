@@ -1,5 +1,34 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.19.7 — 音乐 transport 与音频播放性能：**
+> 1. **音乐模式 next/prev 此前根本不通，且两端语义不一致。** Android `advance()` 首行
+>    `if (runtimeModeState.current != PlaybackMode.VISUAL) return` 把命令静默吞掉（连 ack
+>    都是空动作）；Windows 有 MUSIC 分支但忽略方向（`prev` 等于 `next`）。协议 §9.3 从未
+>    定义音乐模式下的 transport 语义，这是缺契约导致的双端漂移。现两端统一为
+>    `MusicQueue`：`next` 随机抽签或顺序取下一首，`prev` 走**有界播放历史栈（32 首）**
+>    回到真正播过的上一首——不是"再随机抽一首"（随机没有 well-defined 的"上一首"，重抽
+>    会让按钮显得是坏的）。
+> 2. **随机播放可关（§6.3c-1）。** `music_playlist` 新增可选 `shuffle`，**缺省 `true` 即旧
+>    行为**，老控制端不带该字段语义不变。顺序开关是列表状态的一部分、随列表下发并持久化，
+>    不设独立 `set_music_shuffle` 命令：同一状态只有一个权威写入口和一条 revision 护栏。
+>    仅切开关不打断当前曲目，只改"下一首"的选法。
+> 3. **音频偶发卡顿是真的，三个根因：** (a) 音乐复用**视频后端**，`loadAndPlay` 每首歌
+>    `releasePlayer()` + `new MediaPlayer()` + `prepare()`，逐曲拆建解码器（自述 200–400ms）；
+>    视频换片有冻结帧盖住，音频换轨就是实打实的静音空档 → 加**下一首预取**。(b) **`setWakeMode`
+>    从未设置**：Service 自己的 `PARTIAL_WAKE_LOCK` 只保协程活着，**不保 framework 的解码/
+>    AudioTrack 喂数据线程**，盒子降频或进 doze 时正在播的音频就零星卡顿（无规律，正是
+>    "偶尔"）→ 已加。(c) 缩略图循环在音频态每 5s 空转唤醒（无帧可抓）→ 退到 15s。
+> 4. **Windows 侧较轻但同向：** mpv 启动参数无任何音频缓冲设定（默认 readahead 按视频调），
+>    加 `--cache=yes --demuxer-readahead-secs=5 --audio-buffer=0.3`；`eof_watch_loop` 固定
+>    0.5s 轮询，视频停末帧看不出、音频之间就是最多半秒静音 → 音乐模式收到 0.1s（失败检测
+>    器按墙钟判定，加快轮询不误判）。
+> 5. **能力位 `music_transport_v1`**：`music_shuffle_v1` 语义已被本版扩展，必须用新位区分，
+>    控制端对未广告的设备禁用入口而非发出命令后无反应。修掉 Android **status** 侧漏报该能力
+>    的缺陷（hello 里有）——P2P 无 hello、broker 墙快照从 status 重建，否则那些设备按钮恒灰。
+> 6. **编排栏补整组待机/退出待机**，接入共享 `runtime_mode_batch_dialog.dart`，并**删除
+>    `device_wall_pane` 中 88 行重复实现**：一个功能只保留一条权威路径。
+> 单一版本源为 `1.19.7+1197`。
+>
 > **v1.19.6 — 修正黑屏缺陷的根因（v1.19.5 修错了层）：**
 >
 > **播放端：音乐切回图片/视频黑屏，真因是主线程被网络 IO 卡死。**

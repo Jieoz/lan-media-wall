@@ -11,6 +11,7 @@ import '../state/playlist_draft.dart';
 import '../state/wall_state.dart';
 import 'dwell_picker.dart';
 import 'push_workflow.dart';
+import 'runtime_mode_batch_dialog.dart';
 
 /// 播放编排栏(设计合同 §4.1 右栏) —— 主工作区。
 ///
@@ -772,6 +773,16 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
                 ? null
                 : () => _runCommand(
                     () => state.next(groupId: g), '已下发整组下一项'),
+          ),
+          // §6.3b 待机不是 fire-and-forget 的整组广播:它逐台下发并等 Player
+          // 回确认(离线/旧版本/超时要分别列出),所以走共享对话框而不是 _ctlBtn。
+          _ctlBtn(
+            Icons.power_settings_new,
+            '待机/恢复',
+            g == null
+                ? null
+                : () => showRuntimeModeBatchDialog(context, state,
+                    lockGroupId: g),
           ),
         ],
       ),

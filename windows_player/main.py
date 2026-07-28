@@ -29,7 +29,8 @@ import auth as auth_mod
 import topology as topology_mod
 import pairing as pairing_mod
 import playlist_ops as playlist_ops
-from playback_modes import MusicPlaylist, PlaybackMode, PlaybackModeState, ShuffleBag
+from playback_modes import (MusicPlaylist, MusicQueue, PlaybackMode,
+                            PlaybackModeState)
 from loop_mode import LoopMode, resolve_loop_mode
 from clock import ClockSync, now_ms
 from downloader import Downloader
@@ -79,6 +80,12 @@ VALID_STATES = {"playing", "paused", "idle", "buffering", "downloading"}
 # §6.3: default per-image dwell when a playlist item omits duration_ms (kept in
 # sync with the Android player's DEFAULT_IMAGE_DWELL_MS).
 DEFAULT_IMAGE_DWELL_MS = 5000
+
+# §6.3c eof poll cadence. Video parks on its last frame, so half a second of
+# latency is invisible; between two audio tracks the same wait is heard as a
+# gap, and the advance itself is cheap (mpv stays alive across loadfile).
+VISUAL_EOF_POLL_S = 0.5
+MUSIC_EOF_POLL_S = 0.1
 
 
 class Player:
@@ -130,8 +137,12 @@ class Player:
         self.mode_generation = 0
         self.thumb_session = f"{os.getpid()}-{time.monotonic_ns()}"
         self.music_playlist: Optional[Dict[str, Any]] = self.state.music_playlist
-        self.music_shuffle = ShuffleBag[str]()
-        self.music_current_item_id: Optional[str] = None
+        self.music_queue = MusicQueue()
+        # §6.3c restore the ordering the controller last chose; without this a
+        # restart would silently fall back to shuffle.
+        if self.music_playlist is not None:
+            self.music_queue.set_shuffle(
+                bool(self.music_playlist.get("shuffle", True)))
         self.music_failures: set[str] = set()
         self.music_play_count = 0
         self.music_started_monotonic = 0.0
@@ -410,7 +421,7 @@ class Player:
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
                              "runtime_modes_v1", "music_shuffle_v1",
-                             "music_playlist_snapshot_v1"],
+                             "music_playlist_snapshot_v1", "music_transport_v1"],
             "group_id": self.group_id,
         })
 
@@ -465,8 +476,10 @@ class Player:
             "music_playlist_revision": (self.music_playlist or {}).get("revision"),
             "music_playlist_size": len((self.music_playlist or {}).get("items", [])),
             "active_music_playlist": self.music_playlist,
-            "music_current_item_id": self.music_current_item_id,
-            "music_shuffle_cycle": self.music_shuffle.cycle,
+            "music_current_item_id": self.music_queue.current,
+            "music_shuffle": self.music_queue.shuffle,
+            "music_shuffle_cycle": self.music_queue.cycle,
+            "music_history_depth": self.music_queue.history_depth,
             "music_play_count": self.music_play_count,
             "current": current,
             "playlist_id": self.playlist.get("playlist_id") if self.playlist else None,
@@ -486,7 +499,7 @@ class Player:
             "capabilities": ["video", "image", "audio", "thumbnail",
                              "cache_cleanup_v1", "cache_inventory_v1",
                              "runtime_modes_v1", "music_shuffle_v1",
-                             "music_playlist_snapshot_v1"],
+                             "music_playlist_snapshot_v1", "music_transport_v1"],
             # §19 remote config: advertise what the safe patch can touch + the
             # current authoritative snapshot (revision for optimistic concurrency,
             # redacted values — never the psk). Old controllers ignore both.
@@ -800,6 +813,7 @@ class Player:
             "playlist_id": parsed.playlist_id,
             "revision": parsed.revision,
             "items": parsed.items,
+            "shuffle": parsed.shuffle,
         }
         current = self.music_playlist
         if current is not None:
@@ -812,16 +826,21 @@ class Player:
                 await self._send_music_playlist_result(request_id, False,
                                                        "revision_conflict")
                 return
+        # §6.3c the ordering flag rides along with the list, but a shuffle-only
+        # change must NOT interrupt the track that is playing — re-ordering what
+        # comes next is no reason to restart what you are hearing now.
+        content_changed = (current or {}).get("items") != parsed.items
         self.music_playlist = normalized
         self.state.set_music_playlist(normalized)
-        self.music_shuffle.reset()
-        self.music_failures.clear()
-        self.music_current_item_id = None
-        self.downloader.prefetch(parsed.items)
-        if self.runtime_mode.current is PlaybackMode.MUSIC:
-            self.mode_generation += 1
-            await self._mpv("stop")
-            await self._play_next_music(self.mode_generation)
+        self.music_queue.set_shuffle(parsed.shuffle)
+        if content_changed:
+            self.music_queue.reset()  # keeps the shuffle setting
+            self.music_failures.clear()
+            self.downloader.prefetch(parsed.items)
+            if self.runtime_mode.current is PlaybackMode.MUSIC:
+                self.mode_generation += 1
+                await self._mpv("stop")
+                await self._play_next_music(self.mode_generation)
         await self._send_music_playlist_result(request_id, True)
 
     async def _send_runtime_mode_result(self, request_id: str, ok: bool,
@@ -867,7 +886,9 @@ class Player:
         self._cancel_session_tasks()
         await self._mpv("stop")
         self.play_state = "idle"
-        self.music_current_item_id = None
+        # Keep history/laps across a mode bounce; only the "now playing" pointer
+        # clears, so a later prev still has somewhere to go.
+        self.music_queue.adopt(None)
         self.runtime_mode.set_mode(mode)
         self.state.set_runtime_mode(
             self.runtime_mode.current.value,
@@ -880,7 +901,14 @@ class Player:
         else:
             self._apply_idle_screen()
 
-    async def _play_next_music(self, generation: int) -> None:
+    async def _play_next_music(self, generation: int, delta: int = 1) -> None:
+        """§6.3c advance the music terminal by one track.
+
+        ``delta`` is the user's direction: ``+1`` = next, ``-1`` = prev (a real
+        back-button walking ``MusicQueue``'s bounded history). Ordering —
+        shuffled laps vs the controller's list order — belongs to ``MusicQueue``
+        alone, so this stays a single code path either way.
+        """
         if generation != self.mode_generation or \
                 self.runtime_mode.current is not PlaybackMode.MUSIC:
             return
@@ -889,9 +917,11 @@ class Player:
                  if item.get("item_id")}
         candidates = [item_id for item_id in by_id
                       if item_id not in self.music_failures]
-        item_id = self.music_shuffle.next(candidates)
+        if delta < 0:
+            item_id = self.music_queue.prev(candidates)
+        else:
+            item_id = self.music_queue.next(candidates)
         if item_id is None:
-            self.music_current_item_id = None
             self.play_state = "idle" if not items else "error"
             error = "music_playlist_empty" if not items else "music_all_unavailable"
             if not self._errors or self._errors[-1] != error:
@@ -901,9 +931,8 @@ class Player:
         path = self.downloader.ready_path(item_id) or item.get("url")
         if not path:
             self.music_failures.add(item_id)
-            await self._play_next_music(generation)
+            await self._play_next_music(generation, delta)
             return
-        self.music_current_item_id = item_id
         self.music_play_count += 1
         self.music_started_monotonic = time.monotonic()
         await self._mpv("loadfile", str(path), "replace")
@@ -1197,7 +1226,9 @@ class Player:
                   explicit prev/next still navigates with wrap.
         """
         if self.runtime_mode.current is PlaybackMode.MUSIC:
-            await self._play_next_music(self.mode_generation)
+            # §6.3c honour the user's direction: prev walks the music history
+            # instead of just picking the next track (pre-v1.19.7 behaviour).
+            await self._play_next_music(self.mode_generation, delta)
             return
         if self.runtime_mode.current is not PlaybackMode.VISUAL or not self.playlist:
             return
@@ -1280,7 +1311,13 @@ class Player:
         driven solely by the dwell timer."""
         seen_eof = False
         while True:
-            await asyncio.sleep(0.5)
+            # §6.3c a finished VIDEO holding its last frame for <=500ms is
+            # invisible; the same delay between two tracks is audible silence.
+            # Poll tighter while the music terminal is the active mode.
+            await asyncio.sleep(
+                MUSIC_EOF_POLL_S
+                if self.runtime_mode.current is PlaybackMode.MUSIC
+                else VISUAL_EOF_POLL_S)
             if self.play_state != "playing" or self.mpv is None:
                 seen_eof = False
                 continue
@@ -1291,9 +1328,10 @@ class Player:
             snap = await self._mpv("snapshot") or {}
             if self.runtime_mode.current is PlaybackMode.MUSIC and \
                     self._music_snapshot_failed(snap):
-                if self.music_current_item_id:
-                    self.music_failures.add(self.music_current_item_id)
-                    error = f"music_load_failed:{self.music_current_item_id}"
+                failed_id = self.music_queue.current
+                if failed_id:
+                    self.music_failures.add(failed_id)
+                    error = f"music_load_failed:{failed_id}"
                     if not self._errors or self._errors[-1] != error:
                         self._errors.append(error)
                 seen_eof = False
@@ -1711,7 +1749,7 @@ class Player:
             return None
         if self.runtime_mode.current is PlaybackMode.MUSIC:
             for item in (self.music_playlist or {}).get("items", []):
-                if item.get("item_id") == self.music_current_item_id:
+                if item.get("item_id") == self.music_queue.current:
                     return item
             return None
         if not self.playlist:

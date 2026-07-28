@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -267,6 +268,11 @@ class MediaPlayerVideoBackend(context: Context) : VideoBackend {
         surfaceHolder?.let { if (surfaceValid) safeSetDisplay(mp, it) }
         applyVolume(mp)
         try {
+            // Audio playback survives screen-off/doze only while something holds the
+            // CPU. The service PARTIAL_WAKE_LOCK covers our own coroutines, not the
+            // framework's decode+AudioTrack feed, so an audio-only item could stutter
+            // when the box idled. setWakeMode makes the MediaPlayer hold its own.
+            mp.setWakeMode(appContext, PowerManager.PARTIAL_WAKE_LOCK)
             mp.setLooping(loop)
             mp.prepareAsync() // async: never block the main thread on network/decoder open
         } catch (t: Throwable) {

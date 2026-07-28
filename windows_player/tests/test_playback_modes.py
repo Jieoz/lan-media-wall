@@ -99,7 +99,7 @@ def test_player_music_standby_restore_round_trip(tmp_path):
     }, {"msg_id": "m-mode"}))
     assert p.runtime_mode.current is PlaybackMode.MUSIC
     assert p.state.runtime_mode == "music"
-    assert p.music_current_item_id in {"a", "b"}
+    assert p.music_queue.current in {"a", "b"}
     assert any(call[0] == "loadfile" for call in p.mpv_calls)
     assert p.ws.sent[-1][0] == "runtime_mode_result"
 
@@ -154,7 +154,7 @@ def test_player_all_bad_music_stops_without_requeue(tmp_path):
     p.music_failures = {"a", "b"}
     run(p._play_next_music(p.mode_generation))
     assert p.play_state == "error"
-    assert p.music_current_item_id is None
+    assert p.music_queue.current is None
     assert not any(call[0] == "loadfile" for call in p.mpv_calls)
 
 

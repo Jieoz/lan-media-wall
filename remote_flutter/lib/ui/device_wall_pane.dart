@@ -15,6 +15,7 @@ import 'device_wall_layout.dart';
 import 'invite_screen.dart';
 import 'music_terminal_dialog.dart';
 import 'push_workflow.dart';
+import 'runtime_mode_batch_dialog.dart';
 
 String runtimeModeLabel(RuntimeMode mode) => switch (mode) {
       RuntimeMode.visual => '图片/视频',
@@ -149,101 +150,13 @@ class _ActionsBar extends StatelessWidget {
           OutlinedButton.icon(
             icon: const Icon(Icons.power_settings_new),
             label: Text(compact ? '待机/恢复' : '分组 / 全部待机与恢复'),
-            onPressed: () => _runtimeModeBatchDialog(context, state),
+            onPressed: () => showRuntimeModeBatchDialog(context, state),
           ),
         ],
       ),
     );
     });
   }
-}
-
-Future<void> _runtimeModeBatchDialog(
-    BuildContext context, WallState state) async {
-  var target = 'all';
-  var busy = false;
-  var output = '';
-  await showDialog<void>(
-    context: context,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setLocal) => AlertDialog(
-        title: const Text('分组 / 全部待机与恢复'),
-        content: SizedBox(
-          width: 460,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              DropdownButtonFormField<String>(
-                value: target,
-                decoration: const InputDecoration(labelText: '目标范围'),
-                items: [
-                  const DropdownMenuItem(value: 'all', child: Text('全部设备')),
-                  for (final group in state.groups)
-                    DropdownMenuItem(
-                      value: 'group:${group.groupId}',
-                      child: Text('分组：${group.name.isEmpty ? group.groupId : group.name}'),
-                    ),
-                ],
-                onChanged: busy ? null : (value) =>
-                    setLocal(() => target = value ?? 'all'),
-              ),
-              const SizedBox(height: 8),
-              const Text('逐台发送并等待 Player 结果；离线、旧版本、超时和拒绝会分别列出。'),
-              if (output.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 240),
-                  child: SingleChildScrollView(child: SelectableText(output)),
-                ),
-              ],
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: busy ? null : () => Navigator.pop(ctx),
-              child: const Text('关闭')),
-          OutlinedButton(
-            onPressed: busy ? null : () async {
-              final ids = target == 'all'
-                  ? state.devices.map((d) => d.deviceId)
-                  : state.membersOf(target.substring('group:'.length))
-                      .map((d) => d.deviceId);
-              setLocal(() { busy = true; output = '等待逐台确认…'; });
-              final results = await state.restoreDevicesRuntimeMode(ids);
-              setLocal(() {
-                busy = false;
-                output = results.entries.map((entry) {
-                  final r = entry.value;
-                  return '${entry.key}: ${r.ok ? '已恢复 ${r.mode?.name ?? ''}' : '失败 ${r.error}'}';
-                }).join('\n');
-              });
-            },
-            child: const Text('恢复前态'),
-          ),
-          FilledButton(
-            onPressed: busy ? null : () async {
-              final ids = target == 'all'
-                  ? state.devices.map((d) => d.deviceId)
-                  : state.membersOf(target.substring('group:'.length))
-                      .map((d) => d.deviceId);
-              setLocal(() { busy = true; output = '等待逐台确认…'; });
-              final results = await state.setDevicesRuntimeMode(
-                  ids, RuntimeMode.standby);
-              setLocal(() {
-                busy = false;
-                output = results.entries.map((entry) {
-                  final r = entry.value;
-                  return '${entry.key}: ${r.ok && r.mode == RuntimeMode.standby ? '已进入待机' : '失败 ${r.error}'}';
-                }).join('\n');
-              });
-            },
-            child: const Text('进入待机'),
-          ),
-        ],
-      ),
-    ),
-  );
 }
 
 /// §23 远程自更新:选 APK → 暴露为被控端可 GET 的 URL(得 sha256) → 填目标
@@ -1268,6 +1181,10 @@ class _DeviceTransportRow extends StatelessWidget {
     final st = device.status;
     final canRuntime = st?.supportsRuntimeModes == true;
     final canMusic = st?.supportsMusicShuffle == true;
+    // §6.3c 只有声明 music_transport_v1 的播放端才真的会响应音乐模式下的
+    // prev/next;旧版本会静默吞掉命令,所以按钮直接禁用而不是发出去没反应。
+    final canMusicTransport = st?.supportsMusicTransport == true &&
+        st?.runtimeMode == RuntimeMode.music;
     final mode = st?.runtimeMode;
 
     void act(void Function() fn, String toast) {
@@ -1396,12 +1313,37 @@ class _DeviceTransportRow extends StatelessWidget {
             );
           },
         )),
-        section('音乐列表', OutlinedButton.icon(
-          icon: const Icon(Icons.queue_music, size: 18),
-          label: const Text('编辑音乐列表'),
-          onPressed: canMusic
-              ? () => showMusicTerminalDialog(context, state, device)
-              : null,
+        section('音乐列表', Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            OutlinedButton.icon(
+              icon: const Icon(Icons.queue_music, size: 18),
+              label: const Text('编辑音乐列表'),
+              onPressed: canMusic
+                  ? () => showMusicTerminalDialog(context, state, device)
+                  : null,
+            ),
+            const SizedBox(height: 8),
+            // §6.3c 上/下一首是单设备概念(音乐列表本身就是单设备的),所以入口在
+            // 设备抽屉而不是编排栏的整组播放控制里,避免整组按钮混入单台目标。
+            Row(children: [
+              Expanded(child: OutlinedButton.icon(
+                icon: const Icon(Icons.skip_previous, size: 18),
+                label: const Text('上一首'),
+                onPressed: canMusicTransport
+                    ? () => state.prev(deviceId: device.deviceId)
+                    : null,
+              )),
+              const SizedBox(width: 8),
+              Expanded(child: OutlinedButton.icon(
+                icon: const Icon(Icons.skip_next, size: 18),
+                label: const Text('下一首'),
+                onPressed: canMusicTransport
+                    ? () => state.next(deviceId: device.deviceId)
+                    : null,
+              )),
+            ]),
+          ],
         )),
         section('电源', mode == RuntimeMode.standby
             ? FilledButton.tonalIcon(

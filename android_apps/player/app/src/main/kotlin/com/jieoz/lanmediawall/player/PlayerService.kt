@@ -100,10 +100,9 @@ class PlayerService : Service() {
     @Volatile private var index = 0
     @Volatile private var runtimeModeState = PlaybackModeState()
     @Volatile private var musicPlaylist: MusicPlaylist? = null
-    @Volatile private var musicCurrentItemId: String? = null
     @Volatile private var musicPlayCount = 0L
     @Volatile private var musicFailures = emptySet<String>()
-    private val musicShuffle = ShuffleBag<String>()
+    private val musicQueue = MusicQueue()
     private val modeGeneration = AtomicLong(0L)
     @Volatile private var audioMaster = true
     @Volatile private var controllerPresent = false
@@ -196,6 +195,10 @@ class PlayerService : Service() {
             PlaybackMode.parse(settings.previousActiveMode) ?: PlaybackMode.VISUAL,
         )
         musicPlaylist = mediaStore.loadMusicPlaylist()
+        // §6.3c the shuffle setting is persisted with the list it orders, so a
+        // restart must restore the ordering the controller last chose. Without
+        // this the queue would silently fall back to shuffle after every reboot.
+        musicPlaylist?.let { musicQueue.setShuffle(it.shuffle) }
         downloader = Downloader(
             mediaStore.mediaCacheDir,
             onChange = { /* status loop reads */ },
@@ -536,7 +539,8 @@ class PlayerService : Service() {
             // them, so a controller never sends and silently times out.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
                 "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
-                "runtime_modes_v1", "music_shuffle_v1", "music_playlist_snapshot_v1")))
+                "runtime_modes_v1", "music_shuffle_v1", "music_playlist_snapshot_v1",
+                "music_transport_v1")))
             put("group_id", settings.groupId)
         }
         link?.send("hello", payload)
@@ -622,8 +626,10 @@ class PlayerService : Service() {
             musicPlaylist?.let { put("music_playlist_revision", it.revision) }
             put("music_playlist_size", musicPlaylist?.items?.size ?: 0)
             put("active_music_playlist", musicPlaylist?.raw ?: Json.Null)
-            put("music_current_item_id", musicCurrentItemId)
-            put("music_shuffle_cycle", musicShuffle.cycle)
+            put("music_current_item_id", musicQueue.current)
+            put("music_shuffle", musicQueue.shuffle)
+            put("music_shuffle_cycle", musicQueue.cycle)
+            put("music_history_depth", musicQueue.historyDepth)
             put("music_play_count", musicPlayCount)
             put("music_failed_item_ids", jsonStrArr(musicFailures.sorted()))
             settings.standbySinceMs.takeIf { it > 0L }?.let { put("standby_since_ms", it) }
@@ -651,7 +657,8 @@ class PlayerService : Service() {
             // broker wall snapshots are rebuilt from status.
             put("capabilities", jsonStrArr(listOf("video", "image", "audio",
                 "thumbnail", "cache_cleanup_v1", "cache_inventory_v1",
-                "loop_boundary_sync_v1", "runtime_modes_v1", "music_shuffle_v1", "music_playlist_snapshot_v1")))
+                "loop_boundary_sync_v1", "runtime_modes_v1", "music_shuffle_v1",
+                "music_playlist_snapshot_v1", "music_transport_v1")))
             activeLoopSync?.let { epoch ->
                 put("loop_sync", jsonObj {
                     put("session_id", epoch.sessionId)
@@ -1125,18 +1132,27 @@ class PlayerService : Service() {
             sendMusicPlaylistResult(requestId, false, "revision_conflict", current.revision)
             return
         }
-        if (current != incoming) {
+        // §6.3c: the ordering flag rides along with the list, but a shuffle-only
+        // change must NOT interrupt the track that is playing — re-ordering what
+        // comes next is not a reason to restart what you are hearing now. Only a
+        // real content change replaces the queue and restarts.
+        val contentChanged = current?.items != incoming.items
+        if (contentChanged || current?.shuffle != incoming.shuffle) {
             musicPlaylist = incoming
             mediaStore.storeMusicPlaylist(incoming)
-            musicShuffle.reset()
-            musicFailures = emptySet()
-            musicCurrentItemId = null
+            if (musicQueue.setShuffle(incoming.shuffle)) {
+                logEvent("music_shuffle set=${incoming.shuffle} revision=${incoming.revision}")
+            }
             updateCacheProtection(playlist)
-            if (incoming.items.isNotEmpty()) downloader.prefetch(incoming.items)
-            if (runtimeModeState.current == PlaybackMode.MUSIC) {
-                val generation = cancelMediaOwners("music_playlist_replace")
-                MainActivity.instance?.showIdle()
-                scope.launch { playNextMusic(generation) }
+            if (contentChanged) {
+                musicQueue.reset()  // keeps the shuffle setting, drops position/history
+                musicFailures = emptySet()
+                if (incoming.items.isNotEmpty()) downloader.prefetch(incoming.items)
+                if (runtimeModeState.current == PlaybackMode.MUSIC) {
+                    val generation = cancelMediaOwners("music_playlist_replace")
+                    MainActivity.instance?.showIdle()
+                    scope.launch { playNextMusic(generation) }
+                }
             }
         }
         sendMusicPlaylistResult(requestId, true, "", incoming.revision)
@@ -1220,20 +1236,32 @@ class PlayerService : Service() {
         cancelLoopBoundarySync(reason)
         controllerRef?.onVideoEnded = null
         controllerRef?.stop()
-        musicCurrentItemId = null
+        // The queue keeps its history/lap state across a mode bounce; only the
+        // "now playing" pointer clears, so a later prev still has somewhere to go.
+        musicQueue.adopt(null)
         playState = "idle"
         return generation
     }
 
-    private suspend fun playNextMusic(generation: Long) {
+    /**
+     * §6.3c advance the music terminal by one track.
+     *
+     * [delta] is the user's direction: `+1` = next, `-1` = prev (a real
+     * back-button, walking [MusicQueue]'s bounded history). Ordering — shuffled
+     * laps vs the controller's list order — belongs to [MusicQueue] alone, so
+     * there is exactly one code path here regardless of the shuffle setting.
+     */
+    private suspend fun playNextMusic(generation: Long, delta: Int = +1) {
         if (generation != modeGeneration.get() || runtimeModeState.current != PlaybackMode.MUSIC) return
         val pl = musicPlaylist
         val candidates = pl?.items?.filterNot { it.itemId in musicFailures } ?: emptyList()
-        val itemId = musicShuffle.next(candidates.map { it.itemId })
+        val candidateIds = candidates.map { it.itemId }
+        val itemId = if (delta < 0) musicQueue.prev(candidateIds)
+                     else musicQueue.next(candidateIds)
         val item = candidates.firstOrNull { it.itemId == itemId }
         val ctl = controllerRef
         if (item == null || ctl == null) {
-            musicCurrentItemId = null
+            musicQueue.adopt(null)
             playState = if (pl != null && pl.items.isNotEmpty() && candidates.isEmpty()) "error" else "idle"
             MainActivity.instance?.showIdle()
             return
@@ -1247,7 +1275,6 @@ class PlayerService : Service() {
         // (see RemoteLoadPolicy), so a dead host degrades to "skip this item".
         val source = readyFile?.absolutePath ?: item.url
         if (readyFile == null) logEvent("music_remote_fallback item=${item.itemId} url=${item.url}")
-        musicCurrentItemId = item.itemId
         ctl.onVideoEnded = {
             if (generation == modeGeneration.get() && runtimeModeState.current == PlaybackMode.MUSIC) {
                 scope.launch { playNextMusic(generation) }
@@ -1259,7 +1286,20 @@ class PlayerService : Service() {
         musicPlayCount += 1L
         playState = "playing"
         MainActivity.instance?.showIdle()
-        logEvent("music_play item=${item.itemId} revision=${pl?.revision} cycle=${musicShuffle.cycle} count=$musicPlayCount generation=$generation")
+        // §6.3c warm the NEXT track's bytes while this one plays. The track change
+        // itself tears down and rebuilds the player (one decoder on these boxes),
+        // so any download at that moment is heard as a gap. In shuffle mode the
+        // pick isn't predictable, so warm the candidate set instead — music
+        // playlists are small and prefetch is idempotent + LRU-bounded.
+        scope.launch(Dispatchers.IO) {
+            val ahead = musicQueue.peekNext(candidateIds)
+            val warm = if (ahead != null) candidates.filter { it.itemId == ahead } else candidates
+            if (warm.isNotEmpty()) downloader.prefetch(warm)
+        }
+        logEvent("music_play item=${item.itemId} revision=${pl?.revision} " +
+            "shuffle=${musicQueue.shuffle} cycle=${musicQueue.cycle} " +
+            "history=${musicQueue.historyDepth} delta=$delta " +
+            "count=$musicPlayCount generation=$generation")
     }
 
     private fun clearActivePlaylist(playlistId: String) {
@@ -1642,6 +1682,15 @@ class PlayerService : Service() {
 
     private fun hAdvance(payload: Json.Obj, delta: Int) {
         if (!targetsMe(payload)) return
+        // §6.3c prev/next is mode-scoped: the music terminal owns its own queue,
+        // so a transport command must reach whichever queue is actually playing.
+        // Before v1.19.7 this fell through to the VISUAL-only path and was
+        // silently dropped in music mode.
+        if (runtimeModeState.current == PlaybackMode.MUSIC) {
+            val generation = modeGeneration.get()
+            scope.launch { playNextMusic(generation, delta) }
+            return
+        }
         advance(delta, explicit = true)  // §6.3 explicit prev/next navigates even in ONE
     }
 
@@ -2298,6 +2347,7 @@ class PlayerService : Service() {
             delay(ThumbnailPolicy.intervalMs(
                 androidSdk = Build.VERSION.SDK_INT,
                 playingVideo = playState == "playing" && item?.type == "video",
+                playingAudio = playState == "playing" && item?.type == "audio",
             ))
             if (!ThumbnailPolicy.canCapture(expectedItemId, currentItem()?.itemId)) continue
             // The loop is now a FALLBACK/refresh path: the primary capture is
@@ -2404,7 +2454,7 @@ class PlayerService : Service() {
     private fun currentItem(): MediaItem? {
         return when (runtimeModeState.current) {
             PlaybackMode.STANDBY -> null
-            PlaybackMode.MUSIC -> musicPlaylist?.items?.firstOrNull { it.itemId == musicCurrentItemId }
+            PlaybackMode.MUSIC -> musicPlaylist?.items?.firstOrNull { it.itemId == musicQueue.current }
             PlaybackMode.VISUAL -> playlist?.items?.getOrNull(index)
         }
     }
@@ -2540,7 +2590,7 @@ class PlayerService : Service() {
         wiredController = ctl
         ctl.logSink = { msg -> logEvent("video_backend=${ctl.backend.id} $msg") }
         ctl.onPlayerError = { code ->
-            val failedMusicId = musicCurrentItemId
+            val failedMusicId = musicQueue.current
             logEvent("player_error code=$code prevState=$playState item=${currentItem()?.itemId ?: "none"}")
             pushError("player:$code")
             playState = "error"
