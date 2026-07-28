@@ -1181,11 +1181,19 @@ class _DeviceTransportRow extends StatelessWidget {
     final st = device.status;
     final canRuntime = st?.supportsRuntimeModes == true;
     final canMusic = st?.supportsMusicShuffle == true;
-    // §6.3c 只有声明 music_transport_v1 的播放端才真的会响应音乐模式下的
-    // prev/next;旧版本会静默吞掉命令,所以按钮直接禁用而不是发出去没反应。
-    final canMusicTransport = st?.supportsMusicTransport == true &&
-        st?.runtimeMode == RuntimeMode.music;
     final mode = st?.runtimeMode;
+    // §6.3c 上一项/下一项**只有一对按钮**,音乐模式与图片/视频模式共用 —— 两边下发的
+    // 就是同一条 prev/next 命令,再加一对「上一首/下一首」只是同一个动作的第二个入口。
+    // 唯一的差别是可用性:音乐模式下要求播放端声明 music_transport_v1,否则旧版本会
+    // 静默吞掉命令(v1.19.7 前 advance() 在音乐模式有 VISUAL 早退),此时禁用按钮而不是
+    // 发出去没反应。
+    final canSkip = mode == RuntimeMode.music
+        ? st?.supportsMusicTransport == true
+        : true;
+    // 音乐模式下按钮被禁用的原因要能看见,否则用户只看到一个灰按钮。
+    final skipHint = mode == RuntimeMode.music && !canSkip
+        ? '该播放端版本较旧，音乐模式不支持上/下一首'
+        : null;
 
     void act(void Function() fn, String toast) {
       try {
@@ -1223,12 +1231,18 @@ class _DeviceTransportRow extends StatelessWidget {
       }
     }
 
-    Widget btn(IconData icon, String label, void Function() onTap) =>
-        OutlinedButton.icon(
-          icon: Icon(icon, size: 18),
-          label: Text(label),
-          onPressed: onTap,
-        );
+    Widget btn(IconData icon, String label, void Function() onTap,
+        {bool enabled = true, String? disabledHint}) {
+      final button = OutlinedButton.icon(
+        icon: Icon(icon, size: 18),
+        label: Text(label),
+        onPressed: enabled ? onTap : null,
+      );
+      // 禁用时把原因挂成 tooltip,避免只留一个没有解释的灰按钮。
+      return disabledHint == null || enabled
+          ? button
+          : Tooltip(message: disabledHint, child: button);
+    }
 
     Widget section(String label, Widget child) => Column(
       mainAxisSize: MainAxisSize.min,
@@ -1271,13 +1285,15 @@ class _DeviceTransportRow extends StatelessWidget {
           children: [
             // 下发只说明“等待确认”；真实状态由设备 wall 快照反映。
             btn(Icons.skip_previous, '上一项',
-                () => act(() => state.prev(deviceId: deviceId), sentAwaitingAck('上一项'))),
+                () => act(() => state.prev(deviceId: deviceId), sentAwaitingAck('上一项')),
+                enabled: canSkip, disabledHint: skipHint),
             btn(Icons.pause, '暂停',
                 () => act(() => state.pause(deviceId: deviceId), sentAwaitingAck('暂停这一台'))),
             btn(Icons.play_arrow, '继续',
                 () => act(() => state.resume(deviceId: deviceId), sentAwaitingAck('继续这一台'))),
             btn(Icons.skip_next, '下一项',
-                () => act(() => state.next(deviceId: deviceId), sentAwaitingAck('下一项'))),
+                () => act(() => state.next(deviceId: deviceId), sentAwaitingAck('下一项')),
+                enabled: canSkip, disabledHint: skipHint),
             btn(Icons.stop, '停止',
                 () => act(() => state.stop(deviceId: deviceId), sentAwaitingAck('停止这一台'))),
           ],
@@ -1323,26 +1339,6 @@ class _DeviceTransportRow extends StatelessWidget {
                   ? () => showMusicTerminalDialog(context, state, device)
                   : null,
             ),
-            const SizedBox(height: 8),
-            // §6.3c 上/下一首是单设备概念(音乐列表本身就是单设备的),所以入口在
-            // 设备抽屉而不是编排栏的整组播放控制里,避免整组按钮混入单台目标。
-            Row(children: [
-              Expanded(child: OutlinedButton.icon(
-                icon: const Icon(Icons.skip_previous, size: 18),
-                label: const Text('上一首'),
-                onPressed: canMusicTransport
-                    ? () => state.prev(deviceId: device.deviceId)
-                    : null,
-              )),
-              const SizedBox(width: 8),
-              Expanded(child: OutlinedButton.icon(
-                icon: const Icon(Icons.skip_next, size: 18),
-                label: const Text('下一首'),
-                onPressed: canMusicTransport
-                    ? () => state.next(deviceId: device.deviceId)
-                    : null,
-              )),
-            ]),
           ],
         )),
         section('电源', mode == RuntimeMode.standby

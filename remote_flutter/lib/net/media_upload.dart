@@ -116,6 +116,219 @@ class MediaUpload {
   }
 }
 
+/// 控制端支持的音频扩展名(小写,不含点)。选文件与扫文件夹共用这一份,避免两处漂移。
+const List<String> kAudioExtensions = [
+  'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'opus',
+];
+
+/// 递归扫一个目录,按**文件名自然排序**返回其中的音频文件。
+///
+/// 为什么要自己排序:`Directory.list` 的返回顺序由文件系统决定,不保证有序。音乐列表
+/// 的顺序就是播放顺序,所以这里按路径排序,让「01 xxx.mp3、02 xxx.mp3」得到预期结果。
+///
+/// [maxFiles] 是保护上限:选到一个巨大目录时截断而不是把整个树读进内存。
+Future<List<({String path, String name})>> scanAudioFolder(
+  Directory dir, {
+  List<String> extensions = kAudioExtensions,
+  int maxFiles = 2000,
+}) async {
+  final allowed = extensions.map((e) => e.toLowerCase()).toSet();
+  final found = <({String path, String name})>[];
+  await for (final entity in dir.list(recursive: true, followLinks: false)) {
+    if (entity is! File) continue;
+    final path = entity.path;
+    final dot = path.lastIndexOf('.');
+    if (dot < 0 || dot == path.length - 1) continue;
+    if (!allowed.contains(path.substring(dot + 1).toLowerCase())) continue;
+    final sep = path.lastIndexOf(Platform.pathSeparator);
+    found.add((path: path, name: sep < 0 ? path : path.substring(sep + 1)));
+    if (found.length >= maxFiles) break;
+  }
+  found.sort((a, b) => a.path.compareTo(b.path));
+  return found;
+}
+
+/// 批量上传的并发路数。4 是折中:上传瓶颈是 IO 等待,少数几路就能把等待重叠掉;
+/// 而 sha256 摘要与 UI 同在一个 isolate,路数再高会抢事件循环,在低配机器上反而更慢。
+const int kMediaUploadConcurrency = 4;
+
+/// 一批上传里**单个文件**的结局。批量上传的语义是「逐个成败独立」:任何一首失败
+/// 都不得取消其它首,也不得丢弃已成功的结果(旧的串行 for + 单个 try/catch 会在
+/// 第一次失败处中断整批,让用户重新挑剩下的文件)。
+class BatchOutcome<T> {
+  const BatchOutcome.success(this.index, this.value)
+      : error = null,
+        stackTrace = null;
+
+  const BatchOutcome.failure(this.index, this.error, this.stackTrace)
+      : value = null;
+
+  /// 在原始输入序列中的下标 —— 结果**按此下标归位**,与完成先后无关。
+  final int index;
+  final T? value;
+  final Object? error;
+  final StackTrace? stackTrace;
+
+  bool get ok => error == null;
+}
+
+/// 以**受限并发**跑 [count] 个任务,返回与输入等长、按输入下标归位的结果。
+///
+/// 为什么需要「按下标归位」:上传顺序就是播放列表顺序(§6.3c)。并发让完成顺序变得
+/// 不确定,若按完成先后追加,用户挑的曲序会被网速打乱 —— 所以结果必须回填到原位。
+///
+/// 为什么受限并发而不是 `Future.wait` 全开:目标环境包含很低配的机器,且 sha256 摘要
+/// 在同一个 isolate 上跑;一次开三十路会把事件循环和 broker 同时打满,反而更慢。
+/// Dart 是单线程事件循环,上传瓶颈是 IO 等待,少数几路并发就能把等待重叠掉,
+/// 真开 isolate 只会多一次跨线程搬字节。
+///
+/// `_cursor++` 无需加锁:单线程事件循环里读-加-写之间没有 await,不存在竞态。
+Future<List<BatchOutcome<T>>> runBoundedBatch<T>({
+  required int count,
+  required int maxConcurrent,
+  required Future<T> Function(int index) task,
+}) async {
+  if (count < 0) {
+    throw ArgumentError.value(count, 'count', 'must not be negative');
+  }
+  if (maxConcurrent <= 0) {
+    throw ArgumentError.value(maxConcurrent, 'maxConcurrent', 'must be positive');
+  }
+  if (count == 0) return const [];
+
+  final results = List<BatchOutcome<T>?>.filled(count, null);
+  var cursor = 0;
+
+  Future<void> worker() async {
+    while (true) {
+      final index = cursor++;
+      if (index >= count) return;
+      try {
+        results[index] = BatchOutcome.success(index, await task(index));
+      } catch (e, st) {
+        // 吞掉单个失败,让其余任务继续 —— 失败信息随结果返回,不静默丢弃。
+        results[index] = BatchOutcome.failure(index, e, st);
+      }
+    }
+  }
+
+  final lanes = count < maxConcurrent ? count : maxConcurrent;
+  await Future.wait([for (var i = 0; i < lanes; i++) worker()]);
+  return results.cast<BatchOutcome<T>>();
+}
+
+/// 多文件上传的聚合进度。各文件并发上报字节数,这里合成「已完成首数 + 总字节百分比」。
+///
+/// 总字节数只有在某文件的首次 `onProgress` 回调后才可知(摘要阶段才拿到大小),
+/// 因此百分比以**当前已知总量**为分母;未知分母时只报首数,不假造百分比。
+class BatchProgress {
+  BatchProgress(this.total);
+
+  final int total;
+  final Map<int, int> _sent = {};
+  final Map<int, int> _size = {};
+  int _done = 0;
+
+  int get doneCount => _done;
+
+  void report(int index, int sent, int size) {
+    _sent[index] = sent;
+    if (size > 0) _size[index] = size;
+  }
+
+  void complete(int index) {
+    _done++;
+    final size = _size[index];
+    if (size != null) _sent[index] = size;
+  }
+
+  int get sentBytes => _sent.values.fold(0, (a, b) => a + b);
+  int get knownBytes => _size.values.fold(0, (a, b) => a + b);
+
+  /// 0..100;总量未知时返回 null(不猜)。
+  int? get percent {
+    final known = knownBytes;
+    if (known <= 0) return null;
+    final pct = sentBytes * 100 ~/ known;
+    return pct > 100 ? 100 : pct;
+  }
+}
+
+/// 一批文件上传的结果:成功项**按用户挑选顺序**排列,失败项只记文件名。
+class BatchUploadResult {
+  const BatchUploadResult(this.items, this.failedNames);
+
+  final List<MediaItem> items;
+  final List<String> failedNames;
+
+  int get okCount => items.length;
+  bool get allOk => failedNames.isEmpty;
+
+  /// 统一的收尾文案 —— 三处调用点(音乐终端 / 编排栏 / 推送流程)共用一句话,
+  /// 避免各处自己拼措辞后语义漂移。
+  String describe({String okSuffix = ''}) {
+    if (allOk) return '已上传 $okCount 个文件$okSuffix';
+    final shown = failedNames.take(3).join('、');
+    final more = failedNames.length > 3 ? ' 等 ${failedNames.length} 个' : '';
+    return '已上传 $okCount 个，失败 $shown$more；成功的已加入列表';
+  }
+}
+
+/// 一次上传**一批**文件:受限并发 + 保序 + 单个失败不影响其余。
+///
+/// 这是控制端唯一的批量上传实现。三个调用点(音乐终端、编排栏、推送流程)此前各写
+/// 一遍串行 `for` + 单个 try/catch,行为完全一致却重复三份,且都有「首个失败中断整批」
+/// 的同一个缺陷 —— 收敛到这里,修一次就三处都对。
+///
+/// [upload] 由调用方提供(它持有 WallState 与 type/durationMs 等上下文);
+/// [onStatus] 每次进度变化时收到一句可直接显示的中文状态。
+Future<BatchUploadResult> uploadFilesInBatch({
+  required List<({String path, String name})> files,
+  required Future<MediaItem> Function(
+    ({String path, String name}) file,
+    void Function(int sent, int total) onProgress,
+  ) upload,
+  void Function(String status)? onStatus,
+  int maxConcurrent = kMediaUploadConcurrency,
+}) async {
+  if (files.isEmpty) return const BatchUploadResult([], []);
+  final progress = BatchProgress(files.length);
+
+  void emit() {
+    if (onStatus == null) return;
+    final pct = progress.percent;
+    onStatus(pct == null
+        ? '上传 ${progress.doneCount}/${files.length}…'
+        : '上传 ${progress.doneCount}/${files.length} · $pct%');
+  }
+
+  emit();
+  final outcomes = await runBoundedBatch<MediaItem>(
+    count: files.length,
+    maxConcurrent: maxConcurrent,
+    task: (i) async {
+      final item = await upload(files[i], (sent, total) {
+        progress.report(i, sent, total);
+        emit();
+      });
+      progress.complete(i);
+      emit();
+      return item;
+    },
+  );
+
+  final items = <MediaItem>[];
+  final failed = <String>[];
+  for (final o in outcomes) {
+    if (o.ok) {
+      items.add(o.value!);
+    } else {
+      failed.add(files[o.index].name);
+    }
+  }
+  return BatchUploadResult(items, failed);
+}
+
 /// 捕获单个 [Digest] 的极简 Sink —— 免依赖 package:convert 的 AccumulatorSink。
 class _DigestCatcher implements Sink<Digest> {
   Digest? value;

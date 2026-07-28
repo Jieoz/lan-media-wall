@@ -3,8 +3,11 @@ description: LAN Media Wall — Flutter 遥控端 (controller)。连 broker，�
 publish_to: "none"
 # v1.19.7+1197: 音乐 transport (next/prev + 可关闭随机, §6.3c-1) 与音频播放性能
 # 修复 (setWakeMode、下一首预取、音频态缩略图退避、mpv 音频缓冲)。
+# v1.19.8+1198: 控制端批量上传修复 —— Android 多选失效 (FileType.custom → audio)、
+# 新增整文件夹上传、并发上传 (保序 + 单个失败不中断)、删除与「上一项/下一项」重复的
+# 「上一首/下一首」按钮。
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.19.7+1197
+version: 1.19.8+1198
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

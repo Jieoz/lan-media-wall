@@ -1,5 +1,25 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.19.8 — 批量上传修复与重复入口清理（仅控制端）：**
+> 1. **Android 上音乐只能一个一个加，是控制端 bug，不是设备限制。** 根因在选择器参数：
+>    `FileType.custom` + `allowedExtensions` 在 Android 上走 `*/*` intent 再按扩展名过滤，
+>    该路径下 `allowMultiple: true` 常常失效；桌面端两种写法都能多选，所以此前没暴露。改用
+>    `FileType.audio` 直接声明 audio MIME，扩展名过滤移到结果侧自己做。
+> 2. **新增「添加整个文件夹」**：递归扫子目录、只收音频扩展名、按路径排序（列表顺序就是
+>    播放顺序，而 `Directory.list` 的顺序由文件系统决定），2000 文件上限。
+> 3. **上传改为受限并发 4 路，保序且单个失败不中断整批。** 旧实现串行 `for` + 单个
+>    `try/catch`，一首失败即中断整批。三个调用点（音乐终端、编排栏、推送流程）各自写过一遍
+>    同样的串行循环、带同一缺陷，现收敛到 `uploadFilesInBatch` 一处。未用 isolate：上传瓶颈
+>    是 IO 等待，且 sha256 与 UI 同 isolate，路数过高会抢事件循环（目标环境含低配设备）。
+> 4. **删除与「上一项/下一项」重复的「上一首/下一首」按钮**——两者下发一字不差的同一条
+>    命令。可用性判断（音乐模式需 `music_transport_v1`）合并到原有按钮，禁用时用 tooltip
+>    说明原因。
+> **未经真机验证的部分**：`FileType.audio` 的多选行为与文件夹选择器都是平台侧行为，单测
+> 覆盖不到，须在真实 Android 控制端上确认。
+
+<details>
+<summary>v1.19.7 — 音乐 transport 与音频播放性能</summary>
+
 > **v1.19.7 — 音乐 transport 与音频播放性能：**
 > 1. **音乐模式 next/prev 此前根本不通，且两端语义不一致。** Android `advance()` 首行
 >    `if (runtimeModeState.current != PlaybackMode.VISUAL) return` 把命令静默吞掉（连 ack
@@ -28,7 +48,9 @@
 > 6. **编排栏补整组待机/退出待机**，接入共享 `runtime_mode_batch_dialog.dart`，并**删除
 >    `device_wall_pane` 中 88 行重复实现**：一个功能只保留一条权威路径。
 > 单一版本源为 `1.19.7+1197`。
->
+
+</details>
+
 > **v1.19.6 — 修正黑屏缺陷的根因（v1.19.5 修错了层）：**
 >
 > **播放端：音乐切回图片/视频黑屏，真因是主线程被网络 IO 卡死。**
