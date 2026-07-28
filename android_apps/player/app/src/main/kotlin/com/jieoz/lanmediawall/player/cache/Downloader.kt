@@ -6,6 +6,7 @@ import okhttp3.Call
 import android.util.Log
 import java.io.File
 import java.security.MessageDigest
+import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -126,6 +127,15 @@ class Downloader(
         maxConcurrent = MAX_CONCURRENT_DOWNLOADS,
         maxQueued = MAX_QUEUED_DOWNLOADS,
     )
+
+    /** §6.2 池子塞不下时的待办清单(纯数据,不持有闭包)——见 [submitOrBacklog]。 */
+    private class BacklogItem(
+        val item: MediaItem,
+        val token: Long,
+        val priority: DownloadPriority,
+    )
+    private val backlog = ArrayDeque<BacklogItem>()
+
     @Volatile private var stopped = false
 
     private val client = OkHttpClient.Builder()
@@ -511,12 +521,77 @@ class Downloader(
             entries[itemId] = CacheEntry(itemId).apply { path = target }
             inFlight[itemId] = token
         }
+        submitOrBacklog(item, itemId, token, priority)
+    }
+
+    /**
+     * §6.2 大列表红线:池子满**不等于**这首歌失败。
+     *
+     * 此前这里是 `if (result == REJECTED) cancelToken(..., "queue-full")` —— 池子的
+     * `maxQueued` 只是为了给"被持有的 lambda"设上界(防内存),却被当成了业务上限:推 200
+     * 首时前 64 个入队、其余 138 首**当场判错且永不重试**,现场日志里就是 138 个
+     * `error:queue-full`。列表只要超过 maxQueued 就必然大面积失败。
+     *
+     * 正确分层:池子继续只持有少量待跑 lambda;**待办清单由 Downloader 以纯数据持有**
+     * (backlog 只存 item+priority,不存闭包),每有 worker 空出就补喂。于是"能同时下几个"
+     * 与"一共能排多少首"解耦 —— 并发仍是 MAX_CONCURRENT_DOWNLOADS(有意压低盒子的网络与
+     * 闪存压力,不是缺陷),但列表长度不再是失败原因。
+     *
+     * backlog 仍有上限 [MAX_BACKLOG_ITEMS],超出才报 queue-full —— 那是真正的"多到不该
+     * 收"，而不是 64 首这种日常规模。
+     */
+    private fun submitOrBacklog(
+        item: MediaItem,
+        itemId: String,
+        token: Long,
+        priority: DownloadPriority,
+    ) {
         val result = pool.submit(
             itemId,
             priority,
             onCancelled = { cancelToken(itemId, token, "stopped") },
-        ) { worker(item, token) }
-        if (result == SubmitResult.REJECTED) cancelToken(itemId, token, if (stopped) "stopped" else "queue-full")
+        ) { runWorkerThenPump(item, token) }
+        if (result != SubmitResult.REJECTED) return
+        if (stopped) { cancelToken(itemId, token, "stopped"); return }
+        val accepted = synchronized(this) {
+            if (backlog.size >= MAX_BACKLOG_ITEMS) false
+            else { backlog.addLast(BacklogItem(item, token, priority)); true }
+        }
+        if (accepted) {
+            // 仍是待办,不是错误:状态保持 pending,状态字符串里就不会出现 error。
+            setIfCurrent(itemId, token, state = "pending")
+            // 与 worker 结束的补喂存在竞态(可能刚好都空了),这里主动踢一次。
+            pumpBacklog()
+        } else {
+            cancelToken(itemId, token, "queue-full")
+        }
+    }
+
+    /** 跑完一个就补喂一个,让 backlog 持续流动而不是停在那里。 */
+    private fun runWorkerThenPump(item: MediaItem, token: Long) {
+        try { worker(item, token) } finally { pumpBacklog() }
+    }
+
+    /** 把 backlog 里的待办尽量塞进池子;塞不进就原样留着,下次再来。 */
+    private fun pumpBacklog() {
+        while (true) {
+            if (stopped) return
+            val next = synchronized(this) {
+                if (backlog.isEmpty()) null else backlog.removeFirst()
+            } ?: return
+            // 期间被取消/换代(新 playlist 覆盖)的条目直接丢弃,不要复活旧下载。
+            if (inFlight[next.item.itemId] != next.token) continue
+            val result = pool.submit(
+                next.item.itemId,
+                next.priority,
+                onCancelled = { cancelToken(next.item.itemId, next.token, "stopped") },
+            ) { runWorkerThenPump(next.item, next.token) }
+            if (result == SubmitResult.REJECTED) {
+                // 池子又满了:放回队首,保持原有顺序,等下一个 worker 空出来。
+                synchronized(this) { backlog.addFirst(next) }
+                return
+            }
+        }
     }
 
     private fun cancelToken(itemId: String, token: Long, reason: String) {
@@ -699,6 +774,9 @@ class Downloader(
     fun stopAndAwait(timeoutMs: Long): Boolean {
         val calls = synchronized(this) {
             stopped = true
+            // backlog 里的待办从未进过池子,pool.shutdownNow() 看不到它们;不清掉就会
+            // 永久停在 pending。下面的 leftovers 循环按 inFlight 收口成 stopped。
+            backlog.clear()
             activeCalls.values.toList()
         }
         calls.forEach { try { it.cancel() } catch (_: Exception) {} }
@@ -714,8 +792,13 @@ class Downloader(
         private const val TAG = "lmw.Downloader"
         /** Keep per-player network/disk pressure bounded during large playlists. */
         private const val MAX_CONCURRENT_DOWNLOADS = 2
-        /** Bound retained lambdas/items; excess work fails visibly as queue-full. */
+        /** Bound retained lambdas/items; overflow spills to [backlog], never fails. */
         private const val MAX_QUEUED_DOWNLOADS = 64
+        /**
+         * §6.2 待办清单上限。这是"多到不该收"的真实护栏,不是日常列表规模的上限 ——
+         * 每项只是一个 item 引用,4096 首的内存代价可忽略,而 200 首这种规模远在其下。
+         */
+        private const val MAX_BACKLOG_ITEMS = 4096
         /** Bound service teardown without relying on high-API lifecycle primitives. */
         private const val STOP_AWAIT_MS = 5_000L
         /** §6 写前探针大小:够小以免自身造成过度写,够大以真触达闪存写路径。4 MiB。 */

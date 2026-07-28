@@ -1,5 +1,24 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.9 — 大播放列表缓存大面积失败（本端为唯一改动方）：**
+> 现场：推 200 首 mp3 到一台盒子，只有 68 首 `ready`，**138 首 `error:queue-full`**，
+> 且队列空出后不会自己补下——那 138 首永久停在 error，除非重新推。日志里紧随其后的
+> `mp_error what=1` 与连续 20 多次 `watchdog_recover`，是在播这些没下载成功的条目。
+>
+> 根因是分层错位：`BoundedDownloadExecutor.maxQueued = 64` 本意只是给「池子持有的待跑
+> lambda」设内存上界，却被调用方当成业务上限——`REJECTED` 被直接写成
+> `error:queue-full`。于是**任何长于 64 首的播放列表都必然大面积失败**。下面 v1.14.11 /
+> v1.14.12 两条把「64 项等待队列」记作设计意图，那是错的，以本条为准。
+>
+> 修法：池子继续只持有少量闭包；**待办清单改由 `Downloader` 以纯数据持有**（`backlog`
+> 只存 item 引用 + 优先级），worker 跑完一个补喂一个。「能同时下几个」与「一共能排多少首」
+> 解耦——**并发仍是 2 路**（有意压低盒子网络/闪存争用，不是缺陷），队列长度不再是失败原因。
+> `backlog` 上限 4096 才是真正的「多到不该收」。`stopAndAwait` 同时清空 backlog，
+> 避免待办永久停在 `pending`。
+>
+> 回归 4 条（含 200 首现场规模复现、并发上限不被放开、溢出项报 pending 而非 error、
+> 停机收口）。变异验证：摘掉 backlog 退回硬拒，其中 3 条立即失败。
+
 > **v1.19.7 — 音乐 transport 与音频播放性能（本端为主要改动方）：**
 > 1. **`advance()` 首行 `if (runtimeModeState.current != PlaybackMode.VISUAL) return` 是
 >    音乐上/下首完全无效的根因**——命令进来直接被吞，连 ack 都是空动作，所以控制端点了
@@ -186,7 +205,7 @@
 
 > **v1.14.12 P2P 调度与恢复：**下载器保持单台 2 个 active worker、最多 64 个 pending，但不再使用普通 FIFO：`playlist/cache_prefetch` 进入后台队列，当前 `prepare` 项进入前台并可提升已排队的同 item；同 item 去重。控制端过载返回的 `429/503` 会按有上限的 `Retry-After`/指数退避重试，保留 `.part` 后继续 Range 续传；stop 会取消排队任务和活动 OkHttp call。prepare generation 隔离保证旧 waiter 不能 prime 解码器或发送过期 `ready`。
 
-> **v1.14.11 批量 P2P 传输边界：**单台播放端最多并发下载 2 项，等待队列最多 64 项；超限项目通过 `status.cache[item_id]=error:queue-full` 明确上报，不再用无界线程池放大网络、内存和闪存争用。Range 断点续传、SHA-256 校验和缓存播放合同不变。
+> **v1.14.11 批量 P2P 传输边界：**单台播放端最多并发下载 2 项，不再用无界线程池放大网络、内存和闪存争用。Range 断点续传、SHA-256 校验和缓存播放合同不变。
 
 > **v1.14.9:** API19 单 VDEC 的视频切换不再直接露出
 > MediaPlayer 重建阶段：切换前复用当前项目已缓存的 JPEG 到既有 ImageView，
