@@ -52,11 +52,19 @@ class AppUpdater(
      * [pkg]. Blocking — call off the main thread. Never partially installs: a
      * hash mismatch deletes the file and returns [Result.Failed] before any su.
      */
+    /**
+     * @param targetVersionCode 期望装上的 versionCode。仅在 daemon 没回复(UNKNOWN)时用到:
+     *   那种情况下安装结果未知,靠 [installedVersionCode] 去问 PackageManager 真实装了
+     *   什么,而不是猜。传 null 表示调用方无法核对(则 UNKNOWN 只能如实报未知)。
+     * @param installedVersionCode 读取平台当前记录的 versionCode。由调用方注入,便于测试。
+     */
     fun downloadVerifyInstall(
         packageName: String,
         url: String,
         expectedSha256: String,
         log: (String) -> Unit = {},
+        targetVersionCode: Int? = null,
+        installedVersionCode: (() -> Int?)? = null,
     ): Result {
         val daemonReady = reconcileDaemon(log)
         if (daemonReady is Result.Failed) return daemonReady
@@ -143,6 +151,12 @@ class AppUpdater(
                     stage(log, "pm_install", "fail detail=${installed.detail}")
                     Result.Failed(installed.detail)
                 }
+                RootDaemonProtocol.InstallState.UNKNOWN -> resolveUnknownInstall(
+                    detail = installed.detail,
+                    targetVersionCode = targetVersionCode,
+                    installedVersionCode = installedVersionCode,
+                    log = log,
+                )
             }
         } catch (e: Exception) {
             Log.e(TAG, "update failed: ${e.javaClass.simpleName}")
@@ -150,6 +164,62 @@ class AppUpdater(
             log("update_exception ${e.javaClass.simpleName}: ${e.message ?: ""}")
             return Result.Failed(e.javaClass.simpleName)
         }
+    }
+
+    /** 轮询预算:daemon 没回复后,最多再花这么久等 PackageManager 记录到目标版本。 */
+    internal var verifyBudgetMs: Long = 30_000L
+    internal var verifyIntervalMs: Long = 1_000L
+    internal var sleeper: (Long) -> Unit = { Thread.sleep(it) }
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+
+    /**
+     * daemon 没回复时,判定这次安装到底成没成。
+     *
+     * 三条出口,都不猜:
+     * - 无核对手段 → 保守判失败(不假装成功)
+     * - 平台已记录目标版本 → **late success**,安装其实成功了,不需要重启
+     * - 平台仍是旧版本(等到预算用尽)→ 判失败,并把核对到的真实版本写进原因
+     */
+    internal fun resolveUnknownInstall(
+        detail: String,
+        targetVersionCode: Int?,
+        installedVersionCode: (() -> Int?)?,
+        log: (String) -> Unit,
+    ): Result {
+        if (targetVersionCode == null || installedVersionCode == null) {
+            stage(log, "pm_install", "unknown detail=$detail verify=unavailable")
+            return Result.Failed(detail)
+        }
+        val seen = awaitInstalledVersion(targetVersionCode, installedVersionCode, log)
+        return if (seen == targetVersionCode) {
+            stage(log, "pm_install", "late_success verified_version=$seen detail=$detail")
+            log("update_app late_success verified_version=$seen")
+            Result.Installing
+        } else {
+            stage(log, "pm_install", "unknown detail=$detail verified_version=${seen ?: "null"} target=$targetVersionCode")
+            Result.Failed("$detail verified_version=${seen ?: "null"}")
+        }
+    }
+
+    /**
+     * 在预算内等 PackageManager 记录到 [target]。返回最后一次读到的值(可能仍是旧版本)。
+     * 命中即返回,不白等。
+     */
+    private fun awaitInstalledVersion(
+        target: Int,
+        read: () -> Int?,
+        log: (String) -> Unit,
+    ): Int? {
+        val deadline = clock() + verifyBudgetMs
+        var last = read()
+        var polls = 1
+        while (last != target && clock() < deadline) {
+            sleeper(verifyIntervalMs)
+            last = read()
+            polls++
+        }
+        log("update_verify_installed polls=$polls seen=${last ?: "null"} target=$target")
+        return last
     }
 
     fun reconcileDaemon(log: (String) -> Unit = {}): Result? {
@@ -228,6 +298,9 @@ class AppUpdater(
             reason.startsWith("daemon-not-ready:") -> "daemon_probe"
             reason.startsWith("http-") || reason == "no-body" -> "download"
             reason == "sha256-mismatch" -> "sha256"
+            // 没拿到回复也是卡在 pm_install 这一步 —— 必须排在 daemon-not-ready 之后、
+            // 但不能落到 else,否则现场只会看到一个没有断点信息的 "failed"。
+            reason.startsWith("daemon-no-reply:") -> "pm_install"
             reason.contains("pm_failed") || reason.startsWith("daemon:") -> "pm_install"
             else -> "failed"
         }

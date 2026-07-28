@@ -2322,6 +2322,17 @@ class PlayerService : Service() {
             )
             when (val r = updater.downloadVerifyInstall(
                 packageName, url!!, sha!!, log = { logEvent(it) },
+                // daemon 不回复时用来核对"到底装上了没":问平台真实记录的 versionCode,
+                // 而不是把"没收到回复"当成失败(那会让成功的升级显示为 failed)。
+                targetVersionCode = targetCode,
+                installedVersionCode = {
+                    try {
+                        @Suppress("DEPRECATION")
+                        packageManager.getPackageInfo(packageName, 0).versionCode
+                    } catch (_: Exception) {
+                        null
+                    }
+                },
             )) {
                 is com.jieoz.lanmediawall.player.update.AppUpdater.Result.Installing -> {
                     logEvent("update_app installing (daemon activated pm install -r)")
