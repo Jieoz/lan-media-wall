@@ -9,8 +9,12 @@ publish_to: "none"
 # v1.19.9+1199: 修播放端大列表缓存失败 —— 下载池 maxQueued=64 被当成业务上限,推 200 首时
 # 超出的 138 首当场判 error:queue-full 且永不重试。改为溢出进 Downloader 侧 backlog
 # (纯数据,不持有闭包),worker 空出即补喂;并发上限不变。
+# v1.19.10+1200: 修「删歌后保存列表卡很久」—— 每次列表变更都把整个列表重新哈希一遍
+# (prefetch 对每个已缓存文件做整文件 sha256),且在接收线程上、持 downloader 监视器同步跑。
+# 改为:校验结果按文件身份(路径+长度+mtime)备忘,下载路径校验完直接登记;哈希移出锁;
+# playlist/music_playlist 的 reclaim+prefetch 整体移出接收线程。校验强度不变。
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.19.9+1199
+version: 1.19.10+1200
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

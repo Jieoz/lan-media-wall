@@ -1114,8 +1114,15 @@ class PlayerService : Service() {
         updateCacheProtection(pl)
         // §6 假闪存:投送新内容后、拉新媒体之前,先回收不再被任何近期 playlist 引用的
         // 旧媒体,给真实颗粒腾余量(prefetch 内部还会做配额 LRU + 写前探针)。
-        reclaimOrphans(pl)
-        if (pl.items.isNotEmpty()) downloader.prefetch(pl.items)
+        // §6.5 回收(目录扫描)+ prefetch(校验/探针)都是 O(列表) 的磁盘活,不能压在
+        // 接收线程上 —— 顺序仍是"先回收再拉取",只是整体挪到后台。
+        val batch = pl.items
+        scope.launch {
+            runCatching {
+                reclaimOrphans(pl)
+                if (batch.isNotEmpty()) downloader.prefetch(batch)
+            }
+        }
         }
     }
 
@@ -1151,7 +1158,13 @@ class PlayerService : Service() {
             if (contentChanged) {
                 musicQueue.reset()  // keeps the shuffle setting, drops position/history
                 musicFailures = emptySet()
-                if (incoming.items.isNotEmpty()) downloader.prefetch(incoming.items)
+                // §6.5 不要在接收线程上跑 prefetch。它会做配额 LRU 扫描、写前探针,以及对
+                // 已在磁盘上的每一项做校验 —— 96 首的列表足以把接收循环堵住十几秒,控制端
+                // 表现为"删歌后保存卡很久"。这些工作与回 result 无因果关系,挪到后台。
+                if (incoming.items.isNotEmpty()) {
+                    val batch = incoming.items
+                    scope.launch { runCatching { downloader.prefetch(batch) } }
+                }
                 if (runtimeModeState.current == PlaybackMode.MUSIC) {
                     val generation = cancelMediaOwners("music_playlist_replace")
                     MainActivity.instance?.showIdle()

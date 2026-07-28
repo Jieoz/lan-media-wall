@@ -123,6 +123,50 @@ class Downloader(
 
     /** Absolute paths that back the current playlist — NEVER evicted (§11). */
     @Volatile private var protectedPaths: Set<String> = emptySet()
+
+    /**
+     * §6.5 SHA 复算备忘录。键是**文件身份**(绝对路径 + 长度 + mtime),值是已校验通过
+     * 的 sha256。
+     *
+     * 为什么需要它:`ensureEntryAndStart` / `restoreReadyFromDisk` 都必须在把磁盘上的
+     * 文件标成 ready 之前校验 sha256(B2 黑屏根因:只比 size 会把截断文件当可播)。这个
+     * 校验本身是对的,不能去掉。但它此前**每次都重算** —— 保存一次 96 首的音乐列表就要把
+     * 96 个文件整体读一遍算哈希,在接收线程上同步跑,控制端因此卡十几秒。
+     *
+     * 文件身份变了(长度或 mtime 变化)备忘录自动失效,所以"文件在背后被改坏"这一情形
+     * 仍会被重新校验 —— 安全性不靠信任,靠身份。备忘录有界,防长期运行膨胀。
+     */
+    private val shaVerified = object : LinkedHashMap<String, String>(16, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, String>?
+        ): Boolean = size > SHA_MEMO_MAX
+    }
+
+    /** 文件身份:内容变了 mtime/length 必变,备忘录随之失效。 */
+    private fun fileIdentity(f: File): String? = try {
+        if (!f.exists()) null else "${f.absolutePath}|${f.length()}|${f.lastModified()}"
+    } catch (_: Exception) { null }
+
+    /**
+     * 校验磁盘文件的 sha256,命中备忘录时不重算。
+     *
+     * **绝不能在持有 [this] 监视器时调用** —— 哈希是整文件 IO,把它放在锁里会让
+     * 所有 cacheStatus/prefetch 调用方一起阻塞。
+     */
+    private fun sha256Verified(target: File, expectedSha: String): Boolean? {
+        val identity = fileIdentity(target) ?: return null
+        synchronized(shaVerified) {
+            shaVerified[identity]?.let { return it.equals(expectedSha, ignoreCase = true) }
+        }
+        val actual = try { sha256File(target) } catch (_: Exception) { return null }
+        synchronized(shaVerified) { shaVerified[identity] = actual }
+        return actual.equals(expectedSha, ignoreCase = true)
+    }
+    /** 下载路径刚校验过的文件直接登记,省掉后续列表变更时的重算。 */
+    private fun rememberVerified(target: File, sha: String) {
+        val identity = fileIdentity(target) ?: return
+        synchronized(shaVerified) { shaVerified[identity] = sha }
+    }
     private val pool = BoundedDownloadExecutor(
         maxConcurrent = MAX_CONCURRENT_DOWNLOADS,
         maxQueued = MAX_QUEUED_DOWNLOADS,
@@ -272,15 +316,15 @@ class Downloader(
             // sha256(无法校验)时保留,并显式记 unverified 供诊断。
             val expectedSha = item.sha256
             if (!expectedSha.isNullOrEmpty()) {
-                val actual = try {
-                    sha256File(target)
-                } catch (e: Exception) {
-                    log("restore skip=$itemId reason=sha-read-fail:${e.javaClass.simpleName}")
+                // §6.5 走备忘录:同一进程内已按文件身份校验过的不再重算(否则每次列表
+                // 变更都要把整个列表重新哈希一遍)。身份变了会自动失效并重算。
+                val ok = sha256Verified(target, expectedSha)
+                if (ok == null) {
+                    log("restore skip=$itemId reason=sha-read-fail")
                     continue
                 }
-                if (!actual.equals(expectedSha, ignoreCase = true)) {
-                    log("restore reject=$itemId reason=sha256-mismatch " +
-                        "actual=${actual.take(12)} expect=${expectedSha.take(12)} → delete+refetch")
+                if (!ok) {
+                    log("restore reject=$itemId reason=sha256-mismatch → delete+refetch")
                     target.delete() // corrupt on disk; force a clean re-download
                     continue
                 }
@@ -483,45 +527,74 @@ class Downloader(
     private fun ensureEntryAndStart(item: MediaItem, priority: DownloadPriority) {
         val itemId = item.itemId
         val target = localPath(item)
+
+        // §6.5 已在磁盘上的命中判定**放在锁外**。这里过去是在 synchronized(this) 里对整个
+        // 文件算 sha256:保存一次 96 首的列表 = 96 次全文件读,压在接收线程上,并且把
+        // downloader 的监视器一起占住 —— 现场表现就是"删歌后保存卡很久"。
+        // 校验不能省(B2:只比 size 会把截断文件当可播),但可以 ① 不占锁 ② 按文件身份复用
+        // 上次结果。
+        val alreadyBusy = synchronized(this) {
+            if (stopped) {
+                entries[itemId] = CacheEntry(itemId).apply { state = "error"; error = "stopped" }
+                return
+            }
+            val existing = entries[itemId]
+            if (existing != null && existing.state in setOf("downloading", "verifying", "retrying")) true
+            else if (inFlight.containsKey(itemId)) { pool.submit(itemId, priority) { }; true }
+            else false
+        }
+        if (alreadyBusy) return
+
+        if (target.exists() && quickOk(target, item)) {
+            val expectedSha = item.sha256
+            if (expectedSha.isNullOrEmpty()) {
+                if (markReadyIfStillIdle(itemId, target)) return
+            } else {
+                when (sha256Verified(target, expectedSha)) {
+                    true -> if (markReadyIfStillIdle(itemId, target)) return
+                    false -> {
+                        log("prefetch reject=$itemId reason=sha256-mismatch → delete+refetch")
+                        target.delete()
+                    }
+                    null -> { /* 读不到/算不出 → 当未缓存,走正常下载 */ }
+                }
+            }
+        }
+
         var token = 0L
         synchronized(this) {
             if (stopped) {
                 entries[itemId] = CacheEntry(itemId).apply { state = "error"; error = "stopped" }
                 return
             }
+            // 锁外校验期间可能已有别的路径接手了这一项,重新确认后再登记。
             val existing = entries[itemId]
-            if (existing != null && existing.state in setOf("downloading", "verifying", "retrying")) return
-            if (inFlight.containsKey(itemId)) {
-                pool.submit(itemId, priority) { }
-                return
-            }
-            if (target.exists() && quickOk(target, item)) {
-                val expectedSha = item.sha256
-                if (!expectedSha.isNullOrEmpty()) {
-                    val actual = try { sha256File(target) } catch (_: Exception) { null }
-                    if (actual == null || !actual.equals(expectedSha, ignoreCase = true)) {
-                        log("prefetch reject=$itemId reason=sha256-mismatch → delete+refetch")
-                        target.delete()
-                    } else {
-                        entries[itemId] = CacheEntry(itemId).apply {
-                            state = "ready"; progress = 100; path = target
-                        }
-                        notifyChange()
-                        return
-                    }
-                } else {
-                    entries[itemId] = CacheEntry(itemId).apply {
-                        state = "ready"; progress = 100; path = target
-                    }
-                    notifyChange()
-                    return
-                }
-            }
+            if (existing != null && existing.state in setOf("ready", "downloading", "verifying", "retrying")) return
+            if (inFlight.containsKey(itemId)) { pool.submit(itemId, priority) { }; return }
             token = generation.incrementAndGet()
             entries[itemId] = CacheEntry(itemId).apply { path = target }
             inFlight[itemId] = token
         }
         submitOrBacklog(item, itemId, token, priority)
+    }
+
+    /** 把锁外校验过的文件登记成 ready;期间被别的路径接手则不覆盖。 */
+    private fun markReadyIfStillIdle(itemId: String, target: File): Boolean {
+        val marked = synchronized(this) {
+            if (stopped) return false
+            val existing = entries[itemId]
+            if (existing != null &&
+                existing.state in setOf("downloading", "verifying", "retrying")) false
+            else if (inFlight.containsKey(itemId)) false
+            else {
+                entries[itemId] = CacheEntry(itemId).apply {
+                    state = "ready"; progress = 100; path = target
+                }
+                true
+            }
+        }
+        if (marked) notifyChange()
+        return marked
     }
 
     /**
@@ -697,6 +770,9 @@ class Downloader(
                 val e = entries.getOrPut(itemId) { CacheEntry(itemId) }
                 e.state = "ready"; e.progress = 100; e.path = target
             }
+            // §6.5 刚校验过的内容按落地后的文件身份记进备忘录:后续任何列表变更都不必
+            // 为这个文件再读一遍磁盘。必须在 rename 之后取身份(mtime/路径已定)。
+            if (!expectedSha.isNullOrEmpty()) rememberVerified(target, expectedSha)
             notifyChange()
         } catch (e: Exception) {
             activeCalls.remove(itemId)
@@ -726,7 +802,21 @@ class Downloader(
         return !stopped
     }
 
+    /**
+     * §6.5 全文件哈希次数。这是"删歌后保存卡很久"的直接成本度量:每一次都是把整个
+     * 媒体文件从闪存读一遍。诊断价值高(可在 player.log 侧对照),也是回归测试的观测量。
+     */
+    private val sha256Computations = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** 已执行的全文件哈希次数(诊断/回归用)。 */
+    fun sha256ComputeCount(): Long = sha256Computations.get()
+
     private fun sha256File(file: File): String {
+        sha256Computations.incrementAndGet()
+        return sha256FileUncounted(file)
+    }
+
+    private fun sha256FileUncounted(file: File): String {
         val md = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { ins ->
             val buf = ByteArray(1024 * 1024)
@@ -799,6 +889,8 @@ class Downloader(
          * 每项只是一个 item 引用,4096 首的内存代价可忽略,而 200 首这种规模远在其下。
          */
         private const val MAX_BACKLOG_ITEMS = 4096
+        /** §6.5 SHA 备忘录容量。比任何现实播放列表都大,又不至于长期占内存。 */
+        private const val SHA_MEMO_MAX = 4096
         /** Bound service teardown without relying on high-API lifecycle primitives. */
         private const val STOP_AWAIT_MS = 5_000L
         /** §6 写前探针大小:够小以免自身造成过度写,够大以真触达闪存写路径。4 MiB。 */
