@@ -1,5 +1,28 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **v1.19.11 — 修 OTA 升级报 `daemon:unreachable`（Player 侧）：**
+> 现场：推送升级后日志写 `daemon_probe=ready daemon_euid=0`，**4 秒后**却说
+> `install_daemon_fail resp=unreachable`，控制端记 `update=failed`。但设备重启后新版本
+> 其实生效了 —— 说明安装当时就成功了。
+>
+> 根因不是 daemon 不可达（那 4 毫秒前探针刚说 ready，自相矛盾）。客户端 INSTALL 请求的
+> 响应预算是 **4000ms**，而同一台设备上两次成功安装的 `send→reply` 实测是
+> **3450ms / 3521ms** —— 余量只有约 500ms。`pm install -r` 之后 PackageManager 还要
+> re-dexopt，盒子稍忙就必然超时；超时拿到 `null`，代码把它一律写成 `unreachable`。
+> 于是一次**成功**的升级被报成失败，且只能靠下次重启才看到新版本。
+>
+> 三处修正：
+> - INSTALL 的响应预算给到 60s（与 `pm install` + dexopt 的真实工作量相称）；探针仍是 4s，
+>   死掉的 daemon 不会把调用方拖住。
+> - 区分 **timeout** 与 **unreachable**。连不上 = 什么都没发生，可以安全重试；连上了但没读到
+>   回复 = 结果**未知**，daemon 可能已经装完了。以前两者都返回 `null`，才有那句矛盾日志。
+> - 没拿到回复时不猜：去问 PackageManager 真实记录的 versionCode（有界轮询，等 dexopt 落地）。
+>   已经是目标版本 → 判 **late success**，升级正常收尾，**不再需要重启**；仍是旧版本 → 才判失败，
+>   并把核对到的真实版本写进原因。
+>
+> 12 条新用例；三轮变异验证（把预算改回 4000ms、把 `ok` 写回 `!= FAILED`、把轮询退化成只读一次）
+> 均使测试失败。
+
 > **v1.19.10 — 修「删歌后保存列表卡很久」（Player 侧）：**
 > 现场：96 首音乐已全部缓存在盒子上，在控制端删掉一首再点保存，要等十几秒才回结果。
 >

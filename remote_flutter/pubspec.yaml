@@ -14,7 +14,12 @@ publish_to: "none"
 # 改为:校验结果按文件身份(路径+长度+mtime)备忘,下载路径校验完直接登记;哈希移出锁;
 # playlist/music_playlist 的 reclaim+prefetch 整体移出接收线程。校验强度不变。
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.19.10+1200
+# v1.19.11+1201: 修 OTA "daemon:unreachable" —— 那不是 daemon 不可达,是客户端 INSTALL
+# 的响应预算(4000ms)比 daemon 真实安装耗时(现场实测 3450/3521ms)只多 ~500ms,超时后把
+# null 写成 "unreachable"。安装其实成功了,所以重启后新版本生效、而控制端显示 failed。
+# 改:INSTALL 预算 60s;区分 TIMEOUT 与 UNREACHABLE;没回复时问 PackageManager 真实版本
+# (有界轮询等 dexopt),已装上则判 late success,不再需要重启。
+version: 1.19.11+1201
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

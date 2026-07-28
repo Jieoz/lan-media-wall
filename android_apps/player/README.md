@@ -1,5 +1,24 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.11 — OTA `daemon:unreachable` 其实是客户端超时（本端为唯一改动方）：**
+> `install_daemon_send ... daemon_probe=ready` 之后 4010ms 报 `resp=unreachable`，而同机两次
+> 成功安装的 `send→reply` 是 3450ms / 3521ms —— 客户端 `soTimeout` 恰好 4000ms。
+>
+> `RootInstaller.request()` 把「soTimeout 到期」和「连不上 socket」都返回 `null`，`install()`
+> 再把 `null` 一律写成 `unreachable`，于是出现「探针刚说 ready、4 秒后不可达」的矛盾日志；
+> 而 daemon 侧 `pm install -r` + dexopt 实际已经成功，只是回复没人收 —— 表现为「每次升级都要
+> 重启一次，控制端还显示失败」。
+>
+> - `responseTimeoutMs()`：`INSTALL ` 前缀走 `installResponseTimeoutMs = 60s`；探针保持 4s。
+> - `requestDetailed()` 返回 `Outcome.{OK,TIMEOUT,UNREACHABLE}`，空回复也算没拿到回复。
+> - 新增 `InstallState.UNKNOWN`；`InstallReply.ok` 改为显式白名单（`PM_SUCCESS ||
+>   LEGACY_ACTIVATION_DISPATCHED`）—— 若沿用 `!= FAILED`，新枚举值会让「不知道」变成「成功」。
+> - `AppUpdater.resolveUnknownInstall()`：有界轮询 PackageManager（默认 30s / 1s 一次，命中即返回）
+>   等 dexopt 落地；读到目标 versionCode → `Result.Installing`（late success，无需重启），否则失败
+>   并带上核对到的真实版本。`stageForReason("daemon-no-reply:*")` → `pm_install`，保留断点信息。
+>
+> 变异验证：预算改回 4000ms → 2 挂；`ok` 写回 `!= FAILED` → 1 挂；轮询退化成只读一次 → 2 挂。
+
 > **v1.19.10 — 列表变更时的重复全量哈希（本端为唯一改动方）：**
 > 现场：96 首音乐全部已缓存，控制端删掉一首再保存，等十几秒才回结果。
 >

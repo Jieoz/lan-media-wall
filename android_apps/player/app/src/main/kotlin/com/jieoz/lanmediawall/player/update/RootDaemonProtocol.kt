@@ -72,9 +72,21 @@ object RootDaemonProtocol {
 
     data class Probe(val ready: Boolean, val detail: String)
 
-    enum class InstallState { PM_SUCCESS, LEGACY_ACTIVATION_DISPATCHED, FAILED }
+    /**
+     * INSTALL 的结果状态。
+     *
+     * [UNKNOWN] 是**没拿到回复**(超时/连不上)时的状态,与 [FAILED] 是两件不同的事:
+     * FAILED 表示 daemon 明确回了失败,`pm install` 确实没成;UNKNOWN 表示我们不知道
+     * daemon 那边发生了什么 —— 它可能已经装完了。把 UNKNOWN 当 FAILED 报,就是现场
+     * "其实升级成功了却显示失败、下次重启才生效"的来源。
+     */
+    enum class InstallState { PM_SUCCESS, LEGACY_ACTIVATION_DISPATCHED, FAILED, UNKNOWN }
     data class InstallReply(val state: InstallState, val detail: String) {
-        val ok: Boolean get() = state != InstallState.FAILED
+        // 只有明确成功的两种状态才算 ok。UNKNOWN 不是成功 —— 它是"不知道",必须靠核对
+        // 真实安装结果来定论,绝不能因为"不是 FAILED"就当成功(那是加 UNKNOWN 时最容易
+        // 踩进去的坑:ok 原本写作 state != FAILED)。
+        val ok: Boolean get() =
+            state == InstallState.PM_SUCCESS || state == InstallState.LEGACY_ACTIVATION_DISPATCHED
         val rebootRequired: Boolean get() = state == InstallState.LEGACY_ACTIVATION_DISPATCHED
     }
 

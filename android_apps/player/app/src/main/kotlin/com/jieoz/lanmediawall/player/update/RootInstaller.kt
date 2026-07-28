@@ -27,8 +27,28 @@ import java.io.File
 object RootInstaller {
     private const val TAG = "lmw.RootInstaller"
     private const val PROBE_CACHE_MS = 30_000L
+    /**
+     * 探针/重启这类"立刻能答"的请求预算。这些请求 daemon 侧不做重活,4s 足够宽。
+     */
     private const val DEFAULT_RESPONSE_TIMEOUT_MS = 4_000
     const val daemonUpdateResponseTimeoutMs = 15_000
+
+    /**
+     * §OTA INSTALL 的响应预算。
+     *
+     * INSTALL 不是"立刻能答"的请求:daemon 侧要把 APK 复制到世界可读的暂存区,再顺序跑
+     * `pm install -r`(失败则 `-r -f`),PackageManager 还要 re-dexopt —— 现场实测
+     * send→reply 是 3450ms / 3521ms,而客户端预算是 4000ms。余量只有 ~500ms,盒子稍忙
+     * 就必然超时,超时后客户端把 `null` 解释成 `unreachable`,于是日志出现
+     * "probe 刚说 ready、4 秒后 daemon 不可达"这种自相矛盾的记录(现场实测 4010ms)。
+     *
+     * 而 daemon 那边其实**装成功了**,只是回复没人收 —— 所以设备重启后新版本就生效了,
+     * 表现为"每次升级都要重启一次,而且控制端显示失败"。
+     *
+     * 这里给 INSTALL 一个与它真实工作量相称的预算(dexopt 在低配盒子上可以很慢),
+     * 和 UPDATE_DAEMON 同级。超时不再是常态,真超时才代表真出问题。
+     */
+    const val installResponseTimeoutMs = 60_000
     @Volatile private var cachedProbe: Probe? = null
     @Volatile private var cachedProbeAtMs = 0L
 
@@ -78,7 +98,25 @@ object RootInstaller {
      * running). Best-effort with a bounded connect timeout so a dead daemon never
      * hangs the caller.
      */
-    private fun request(line: String): String? {
+    private fun request(line: String): String? = requestDetailed(line).response
+
+    /**
+     * 请求结果的**真实分类**。区分这两件事很关键,因为它们的正确处置完全相反:
+     *
+     * - [Outcome.UNREACHABLE] —— 连不上 socket。daemon 没跑/没配置,**什么都没发生**,
+     *   重试或报错都安全。
+     * - [Outcome.TIMEOUT] —— 连上了、请求已发出,但在预算内没读到回复。这时 daemon
+     *   **可能已经把活干完了**(INSTALL 的现场就是如此),结果是**未知**,绝不能当成
+     *   "没发生"。
+     *
+     * 以前两者都返回 `null`,调用方一律写成 `unreachable` —— 于是"探针刚说 ready、
+     * 4 秒后不可达"这种自相矛盾的日志诞生了,而且把一次**其实成功**的安装报成失败。
+     */
+    internal enum class Outcome { OK, TIMEOUT, UNREACHABLE }
+
+    internal data class Reply(val outcome: Outcome, val response: String?)
+
+    private fun requestDetailed(line: String): Reply {
         val socket = LocalSocket()
         return try {
             socket.connect(
@@ -88,18 +126,27 @@ object RootInstaller {
             socket.outputStream.write((line + "\n").toByteArray())
             socket.outputStream.flush()
             socket.shutdownOutput()
-            socket.inputStream.bufferedReader().readText().trim()
+            val text = socket.inputStream.bufferedReader().readText().trim()
+            // 读到空串同样是"没拿到回复",不是一个有效响应。
+            if (text.isEmpty()) Reply(Outcome.TIMEOUT, null) else Reply(Outcome.OK, text)
+        } catch (e: java.io.InterruptedIOException) {
+            // soTimeout 到期(SocketTimeoutException 是它的子类)。请求已经发出去了。
+            Log.w(TAG, "daemon request timed out after ${responseTimeoutMs(line)}ms")
+            Reply(Outcome.TIMEOUT, null)
         } catch (e: Exception) {
             Log.w(TAG, "daemon request failed: ${e.javaClass.simpleName}")
-            null
+            Reply(Outcome.UNREACHABLE, null)
         } finally {
             try { socket.close() } catch (_: Exception) {}
         }
     }
 
-    internal fun responseTimeoutMs(request: String): Int =
-        if (request.startsWith("UPDATE_DAEMON ")) daemonUpdateResponseTimeoutMs
-        else DEFAULT_RESPONSE_TIMEOUT_MS
+    internal fun responseTimeoutMs(request: String): Int = when {
+        request.startsWith("UPDATE_DAEMON ") -> daemonUpdateResponseTimeoutMs
+        // INSTALL 要等 pm install + dexopt,预算必须与实际工作量相称(见 installResponseTimeoutMs)。
+        request.startsWith("INSTALL ") -> installResponseTimeoutMs
+        else -> DEFAULT_RESPONSE_TIMEOUT_MS
+    }
 
     /**
      * §restart-semantics: ask the daemon to force-stop + relaunch ONLY the Player
@@ -151,12 +198,26 @@ object RootInstaller {
             return InstallResult(false, "daemon-not-ready:${probe.detail}")
         }
         log("install_daemon_send path=${apk.absolutePath} daemon_probe=${probe.detail}")
-        val resp = request(RootDaemonProtocol.installRequest(apk.absolutePath))
+        val reply = requestDetailed(RootDaemonProtocol.installRequest(apk.absolutePath))
+        if (reply.outcome != Outcome.OK) {
+            // 没拿到回复 ≠ 没装上。daemon 侧 pm install + dexopt 可能仍在跑或已经跑完,
+            // 结果是**未知**的 —— 直接报 fail 就是之前"其实装成功了却显示失败、还要靠
+            // 重启兜住"的来源。这里如实报告未知,并交给上层去核对真实结果。
+            val why = if (reply.outcome == Outcome.TIMEOUT) "timeout" else "unreachable"
+            Log.e(TAG, "daemon install no reply: $why")
+            log("install_daemon_no_reply why=$why budget_ms=${installResponseTimeoutMs}")
+            return InstallResult(
+                ok = false,
+                detail = "daemon-no-reply:$why",
+                state = RootDaemonProtocol.InstallState.UNKNOWN,
+            )
+        }
+        val resp = reply.response
         val parsed = RootDaemonProtocol.parseInstall(resp ?: "")
         if (parsed.state == RootDaemonProtocol.InstallState.FAILED) {
-            Log.e(TAG, "daemon install failed: ${resp ?: "unreachable"}")
-            log("install_daemon_fail resp=${resp ?: "unreachable"}")
-            return InstallResult(false, "daemon:${resp ?: "unreachable"}")
+            Log.e(TAG, "daemon install failed: $resp")
+            log("install_daemon_fail resp=$resp")
+            return InstallResult(false, "daemon:$resp")
         }
         log("install_daemon_reply state=${parsed.state} reboot_required=${parsed.rebootRequired} resp=$resp")
         return InstallResult(
