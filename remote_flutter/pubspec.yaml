@@ -6,8 +6,11 @@ publish_to: "none"
 # v1.19.8+1198: 控制端批量上传修复 —— Android 多选失效 (FileType.custom → audio)、
 # 新增整文件夹上传、并发上传 (保序 + 单个失败不中断)、删除与「上一项/下一项」重复的
 # 「上一首/下一首」按钮。
+# v1.19.9+1199: 修播放端大列表缓存失败 —— 下载池 maxQueued=64 被当成业务上限,推 200 首时
+# 超出的 138 首当场判 error:queue-full 且永不重试。改为溢出进 Downloader 侧 backlog
+# (纯数据,不持有闭包),worker 空出即补喂;并发上限不变。
 # Rule: major*1000 + minor*10 + patch. Single-sourced here.
-version: 1.19.8+1198
+version: 1.19.9+1199
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
