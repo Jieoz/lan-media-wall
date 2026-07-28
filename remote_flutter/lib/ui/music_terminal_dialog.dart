@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../net/media_upload.dart';
 import '../protocol/messages.dart';
 import '../state/wall_state.dart';
 
@@ -20,6 +21,71 @@ Future<void> showMusicTerminalDialog(
   var status = !authoritative && reportedSize > 0
       ? '该播放端报告 $reportedSize 首，但未提供完整清单；已禁止空列表覆盖，请先升级播放端'
       : '';
+
+  /// 选音频文件。**Android 上必须用 `FileType.audio`**:配 `FileType.custom` +
+  /// `allowedExtensions` 时,Android 走的是 `*/*` 加扩展名过滤的 SAF 意图,多选常常
+  /// 失效(只能一个一个加,正是实测到的现象)。`FileType.audio` 直接声明 audio MIME,
+  /// 系统选择器才会给出真正的多选。桌面端两种都支持多选,所以统一走 audio。
+  ///
+  /// 扩展名过滤改在拿到结果后自己做 —— 过滤规则本来就已经在 [kAudioExtensions] 里了。
+  Future<List<({String path, String name})>> pickAudioFiles() async {
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.audio,
+      allowMultiple: true,
+      withData: false,
+    );
+    if (picked == null) return const [];
+    final allowed = kAudioExtensions.toSet();
+    return [
+      for (final f in picked.files)
+        if (f.path != null && allowed.contains(f.extension?.toLowerCase()))
+          (path: f.path!, name: f.name),
+    ];
+  }
+
+  /// 选一个文件夹,递归取其中所有音频文件(按路径排序 = 播放顺序)。
+  Future<List<({String path, String name})>> pickAudioFolder(
+      StateSetter setLocal) async {
+    final dir = await FilePicker.platform.getDirectoryPath();
+    if (dir == null) return const [];
+    setLocal(() => status = '正在扫描文件夹…');
+    try {
+      return await scanAudioFolder(Directory(dir));
+    } catch (e) {
+      setLocal(() => status = '扫描文件夹失败：$e');
+      return const [];
+    }
+  }
+
+  /// 选文件与选文件夹的共同下半段:并发上传 + 保序追加 + 单个失败不中断整批。
+  Future<void> addFiles(
+      Future<List<({String path, String name})>> source,
+      StateSetter setLocal) async {
+    final files = await source;
+    if (files.isEmpty) {
+      setLocal(() => status = status.startsWith('扫描文件夹失败')
+          ? status
+          : '未选到可上传的音频文件');
+      return;
+    }
+    setLocal(() => busy = true);
+    final result = await uploadFilesInBatch(
+      files: files,
+      onStatus: (s) => setLocal(() => status = s),
+      upload: (f, onProgress) => state.uploadLocalMedia(
+        file: File(f.path),
+        type: 'audio',
+        name: f.name,
+        onProgress: onProgress,
+      ),
+    );
+    // 成功项按挑选/扫描顺序追加(并发不打乱曲序);失败项不中断整批。
+    items.addAll(result.items);
+    setLocal(() {
+      busy = false;
+      status = result.describe(okSuffix: '；保存后才会下发到设备');
+    });
+  }
 
   Future<void> saveList(BuildContext ctx, StateSetter setLocal) async {
     setLocal(() {
@@ -58,49 +124,23 @@ Future<void> showMusicTerminalDialog(
                 Text('设备列表 ${device.status?.musicPlaylistSize ?? 0} 首 · '
                     '保存后可在播放控制区切换到“音乐终端”模式'),
                 const SizedBox(height: 8),
-                FilledButton.tonalIcon(
-                  onPressed: busy ? null : () async {
-                    final picked = await FilePicker.platform.pickFiles(
-                      type: FileType.custom,
-                      allowedExtensions: const [
-                        'mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'opus'
-                      ],
-                      allowMultiple: true,
-                      withData: false,
-                    );
-                    if (picked == null) return;
-                    setLocal(() {
-                      busy = true;
-                      status = '准备上传…';
-                    });
-                    try {
-                      for (final file in picked.files) {
-                        if (file.path == null) continue;
-                        setLocal(() => status = '上传 ${file.name}…');
-                        final item = await state.uploadLocalMedia(
-                          file: File(file.path!),
-                          type: 'audio',
-                          name: file.name,
-                          onProgress: (sent, total) {
-                            if (total > 0) {
-                              setLocal(() => status =
-                                  '上传 ${file.name} ${(sent / total * 100).toStringAsFixed(0)}%');
-                            }
-                          },
-                        );
-                        items.add(item);
-                        setLocal(() {});
-                      }
-                      setLocal(() => status = '上传完成；保存后才会下发到设备');
-                    } catch (e) {
-                      setLocal(() => status = '上传失败：$e');
-                    } finally {
-                      setLocal(() => busy = false);
-                    }
-                  },
-                  icon: const Icon(Icons.audio_file),
-                  label: const Text('添加音乐文件'),
-                ),
+                Row(children: [
+                  Expanded(child: FilledButton.tonalIcon(
+                    onPressed: busy
+                        ? null
+                        : () => addFiles(pickAudioFiles(), setLocal),
+                    icon: const Icon(Icons.audio_file),
+                    label: const Text('添加音乐文件'),
+                  )),
+                  const SizedBox(width: 8),
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: busy
+                        ? null
+                        : () => addFiles(pickAudioFolder(setLocal), setLocal),
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('添加整个文件夹'),
+                  )),
+                ]),
                 const SizedBox(height: 8),
                 // §6.3c ordering is part of the list, so it saves with the list —
                 // no separate command, one authoritative writer.

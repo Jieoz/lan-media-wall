@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../net/media_upload.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/group_playlist_load.dart';
@@ -475,26 +476,23 @@ class _OrchestrationPaneState extends State<OrchestrationPane> {
       _uploadHint = '准备上传…';
     });
     try {
-      for (final f in result.files) {
-        final path = f.path;
-        if (path == null) continue;
-        final name = f.name;
-        setState(() => _uploadHint = '上传 $name …');
-        final item = await state.uploadLocalMedia(
-          file: File(path),
+      // 受限并发 + 保序 + 单个失败不中断整批(实现见 media_upload.dart)。
+      final batch = await uploadFilesInBatch(
+        files: [
+          for (final f in result.files)
+            if (f.path != null) (path: f.path!, name: f.name),
+        ],
+        onStatus: (s) => setState(() => _uploadHint = s),
+        upload: (f, onProgress) => state.uploadLocalMedia(
+          file: File(f.path),
           type: type,
-          name: name,
+          name: f.name,
           durationMs: durationMs,
-          onProgress: (sent, total) {
-            if (total > 0) {
-              setState(() => _uploadHint =
-                  '上传 $name  ${(sent / total * 100).toStringAsFixed(0)}%');
-            }
-          },
-        );
-        _draft.add(item);
-      }
-      _toast('上传完成,已加入列表');
+          onProgress: onProgress,
+        ),
+      );
+      _draft.addAll(batch.items);
+      _toast(batch.describe(okSuffix: '，已加入列表'));
     } catch (e) {
       _toast('上传失败: $e');
     } finally {

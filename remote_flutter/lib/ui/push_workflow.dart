@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../net/media_upload.dart';
 import '../protocol/envelope.dart';
 import '../protocol/messages.dart';
 import '../state/playlist_draft.dart';
@@ -163,25 +164,23 @@ Future<void> showPushToDeviceDialog(
             uploadHint = '准备上传…';
           });
           try {
-            for (final f in result.files) {
-              final path = f.path;
-              if (path == null) continue;
-              setLocal(() => uploadHint = '上传 ${f.name} …');
-              final item = await state.uploadLocalMedia(
-                file: File(path),
+            // 受限并发 + 保序 + 单个失败不中断整批(实现见 media_upload.dart)。
+            final batch = await uploadFilesInBatch(
+              files: [
+                for (final f in result.files)
+                  if (f.path != null) (path: f.path!, name: f.name),
+              ],
+              onStatus: (s) => setLocal(() => uploadHint = s),
+              upload: (f, onProgress) => state.uploadLocalMedia(
+                file: File(f.path),
                 type: type,
                 name: f.name,
                 durationMs: durationMs,
-                onProgress: (sent, total) {
-                  if (total > 0) {
-                    setLocal(() => uploadHint =
-                        '上传 ${f.name}  ${(sent / total * 100).toStringAsFixed(0)}%');
-                  }
-                },
-              );
-              draft.add(item);
-              setLocal(() {});
-            }
+                onProgress: onProgress,
+              ),
+            );
+            draft.addAll(batch.items);
+            setLocal(() => uploadHint = batch.describe());
           } catch (e) {
             setLocal(() => uploadHint = '上传失败: $e');
           } finally {
