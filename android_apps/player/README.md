@@ -1,5 +1,22 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **v1.19.10 — 列表变更时的重复全量哈希（本端为唯一改动方）：**
+> 现场：96 首音乐全部已缓存，控制端删掉一首再保存，等十几秒才回结果。
+>
+> `prefetch → ensureEntryAndStart` 对每个**已在磁盘上**的条目做整文件 `sha256`，位置在
+> `synchronized(this)` 内、由接收线程同步执行。于是每次列表变更的代价 = 列表长度 × 全文件
+> 闪存读，且期间 downloader 的监视器被占住。`restoreReadyFromDisk` 走同一条重算路径。
+>
+> 校验强度**不变**（只比长度会把截断文件当可播 → 黑屏）。改的是重复与位置：
+> - `shaVerified` 备忘录按**文件身份**（路径 + 长度 + mtime）缓存校验结论，上限 4096；
+>   文件在背后被改动 → 身份变化 → 备忘失效并真的重算（等长篡改也能抓住，靠的就是 sha）。
+> - 下载完成落地后调 `rememberVerified`，把刚算过的结果登记进去。
+> - 哈希在锁外进行，`markReadyIfStillIdle` 负责回到锁内做一次"是否已被别的路径接手"的复检。
+> - `hPlaylist` / `hMusicPlaylist` 的 `reclaimOrphans` + `prefetch` 移到 `scope.launch`，
+>   接收线程只负责回 result。顺序仍是先回收再拉取。
+>
+> `sha256ComputeCount()` 暴露真实哈希次数，供诊断与回归断言使用。
+>
 > **v1.19.9 — 大播放列表缓存大面积失败（本端为唯一改动方）：**
 > 现场：推 200 首 mp3 到一台盒子，只有 68 首 `ready`，**138 首 `error:queue-full`**，
 > 且队列空出后不会自己补下——那 138 首永久停在 error，除非重新推。日志里紧随其后的
