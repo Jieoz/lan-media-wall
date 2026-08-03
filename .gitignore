@@ -51,3 +51,7 @@ Thumbs.db
 .pytest_cache/
 **/__pycache__/
 *.pyc
+
+# broker compose 运行期数据卷:state.json(设备注册表)、config.yaml、certs/、
+# 上传的媒体。都是本地部署产物,不进仓库。
+broker/data/

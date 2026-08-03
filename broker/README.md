@@ -234,24 +234,60 @@ python3 broker.py
 Install the optional `qrcode` package to render a scannable pairing QR on
 startup (otherwise the `lmw://pair?...` URI is printed as text).
 
+## Run with Docker Compose (推荐)
+
+```bash
+cd broker
+docker compose up -d
+```
+
+就这一条。首次启动会在 `./data/` 下生成 `state.json`,`auth_mode` 默认 `open`
+(零配置,不需要 PSK)。查看状态和日志:
+
+```bash
+docker compose ps
+docker compose logs -f
+```
+
+要改配置:把 `config.example.yaml` 复制成 `data/config.yaml` 再改 —— 容器已经把
+`LMW_CONFIG` 指向 `/data/config.yaml`。要开签名校验,在 compose 的 `environment:`
+里设 `LMW_AUTH_MODE: required` 和 `LMW_PSK: <32+ 字节 hex>`(三端必须同一个 PSK)。
+
+### 为什么用 `network_mode: host`
+
+broker 的 UDP 自动发现(§7/§14.5)往 `255.255.255.255` 发广播,让播放端和控制端
+自己找到 broker。**广播不跨 Docker bridge 网络** —— 用 bridge + 端口映射的话,
+WebSocket 能连上,但自动发现会静默失效,现场表现为「盒子扫不到 broker,必须手填 IP」。
+
+如果环境不能用 host 网络(如 Docker Desktop for Mac/Windows),`docker-compose.yml`
+末尾有 bridge 备选配置,但要接受手填 IP 这个代价。
+
+### 端口
+
+| 端口 | 用途 |
+|---|---|
+| 8770/tcp | WebSocket(主控制通道) |
+| 8771/tcp | WSS —— 仅当 `/data/certs/` 有 `cert.pem` + `key.pem` 时启用 |
+| 8772/udp | UDP 自动发现 |
+| 8773/tcp | 媒体库上传/下载(§20.1),控制端本地上传走这个口 |
+
+`state.json`(设备注册表 + 分组)、可选的 `config.yaml`、`certs/`、上传的媒体都在
+挂载的 `/data` 里,重启和重建容器都不会丢。
+
 ## Run on Synology (Docker)
+
+Synology 的 Container Manager 也能跑 compose:把 `broker/` 传到共享文件夹,新建项目
+指向这份 `docker-compose.yml` 即可。若手工建容器,记得选 host 网络(否则自动发现失效),
+并挂一个共享文件夹到 `/data`。
+
+手动 `docker run` 等价写法:
 
 ```bash
 docker build -t lmw-broker .
-docker run -d --name lmw-broker \
-  -p 8770:8770 -p 8771:8771 -p 8772:8772/udp \
-  -e LMW_PSK=<your-32+byte-hex> \
+docker run -d --name lmw-broker --network host \
   -v /volume1/docker/lmw-broker:/data \
   lmw-broker
 ```
-
-`state.json` (and an optional `config.yaml` / `certs/`) live in the mounted
-`/data` volume so registry and group assignments survive restarts. Drop
-`cert.pem` + `key.pem` into `/data/certs/` to enable WSS on 8771.
-
-In Synology's Container Manager you can equivalently create the container from
-this image, map the three ports, set the `LMW_PSK` environment variable, and
-mount a shared folder to `/data`.
 
 ## Tests
 
