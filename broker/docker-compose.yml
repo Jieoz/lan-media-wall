@@ -1,0 +1,69 @@
+# LAN Media Wall broker — Docker Compose 部署。
+#
+#   cd broker
+#   docker compose up -d
+#
+# 首次启动会在 ./data/ 下生成 state.json。要改配置就把 config.example.yaml
+# 复制成 data/config.yaml 再改,容器已经把 LMW_CONFIG 指向 /data/config.yaml。
+#
+# ── 为什么用 network_mode: host ──────────────────────────────────────────
+# broker 的 UDP 自动发现(§7/§14.5)往 255.255.255.255 发广播,让播放端和控制端
+# 自己找到 broker。**广播不跨 Docker bridge 网络** —— 用 bridge + 端口映射的话,
+# WebSocket 能连上,但自动发现会静默失效,现场表现为「盒子扫不到 broker,必须手填 IP」。
+# host 网络让 broker 直接用宿主网卡,发现才能正常工作。
+#
+# 如果你的环境不能用 host 网络(比如 Docker Desktop for Mac/Windows),见文件末尾
+# 的 bridge 备选方案,但要接受「必须手填 broker IP」这个代价。
+services:
+  broker:
+    build: .
+    image: lmw-broker
+    container_name: lmw-broker
+    restart: unless-stopped
+
+    # host 网络下不需要(也不能)写 ports:,容器直接用宿主的
+    # 8770/tcp 8771/tcp 8772/udp 8773/tcp。
+    network_mode: host
+
+    volumes:
+      # state.json(设备注册表 + 分组)、可选的 config.yaml、certs/、上传的媒体
+      # 都在这里,重启和重建容器都不会丢。
+      - ./data:/data
+
+    environment:
+      # auth_mode 默认 open(零配置,家用/展厅可信局域网)。
+      # 要签名校验就设成 required,并给一个 PSK —— 三端必须是同一个字符串。
+      #   生成:python3 -c "import secrets; print(secrets.token_hex(32))"
+      # LMW_AUTH_MODE: required
+      # LMW_PSK: <32+ 字节 hex>
+
+      # 上传接口的可选 Bearer token(留空 = 不校验)。
+      # LMW_MEDIA_UPLOAD_TOKEN: ""
+
+      LMW_LOG: INFO
+
+    healthcheck:
+      # 只探 WS 端口在不在听。用 python 是因为镜像基于 python:3.11-slim,
+      # 里面没有 curl/nc,写了也是白搭。
+      test: ["CMD", "python3", "-c",
+             "import socket,sys; s=socket.create_connection(('127.0.0.1',8770),3); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# ── bridge 备选(自动发现会失效,需在控制端手填 broker IP)────────────────
+#
+# services:
+#   broker:
+#     build: .
+#     image: lmw-broker
+#     container_name: lmw-broker
+#     restart: unless-stopped
+#     ports:
+#       - "8770:8770"        # WebSocket
+#       - "8771:8771"        # WSS(/data/certs/ 里有 cert.pem+key.pem 时才启用)
+#       - "8772:8772/udp"    # UDP 发现 —— 单播能回,广播出不去
+#       - "8773:8773"        # 媒体上传/下载(§20.1)
+#     volumes:
+#       - ./data:/data
