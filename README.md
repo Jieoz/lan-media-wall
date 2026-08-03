@@ -406,9 +406,17 @@ The controller orchestration pane can load and edit the active playlist reported
    ```bash
    # 下载到的中枢文件名是 LANMediaWall-<版本>-Broker-Linux，赋可执行权后直接跑
    chmod +x LANMediaWall-*-Broker-Linux
-   ./LANMediaWall-*-Broker-Linux          # 默认 open 模式零配置;或 docker 跑,见 broker/README.md
+   ./LANMediaWall-*-Broker-Linux          # 默认 open 模式零配置
    # 需要鉴权时:LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-Linux
    ```
+   用 Docker 跑(群晖推荐,一条命令):
+   ```bash
+   git clone --depth=1 https://github.com/Jieoz/lan-media-wall.git
+   cd lan-media-wall/broker && docker compose up -d
+   ```
+   端口、`network_mode: host` 的原因、数据持久化、更新流程都在
+   [`broker/README.md`](broker/README.md)。
+
    记下 broker 的局域网 IP(如 `192.168.1.10`)和这把 `PSK`,全系统共用。
 2. **装被控端**(每块屏):装 Windows 安装包或 Android 被控端 APK。**默认 `open` 模式零配置**——同一局域网自动发现 broker 即可上线,无需手填密钥。需要鉴权时再切 `required` 并填同一把 PSK。
 3. **装遥控端**(手机/平板):装对应架构的遥控 APK(多数人选「新手机 ARM64」)。最省事的入组方式是**用遥控端扫描被控端首启页展示的配对二维码**,免手输 IP/PSK;也可手动填 broker IP / 端口 / PSK。
@@ -527,9 +535,16 @@ Every exact commit on `main` is built once across all four targets and must pass
    ```bash
    # the downloaded hub is named LANMediaWall-<ver>-Broker-Linux; mark it executable and run
    chmod +x LANMediaWall-*-Broker-Linux
-   ./LANMediaWall-*-Broker-Linux          # default open mode, zero-config; or via Docker, see broker/README.md
+   ./LANMediaWall-*-Broker-Linux          # default open mode, zero-config
    # with auth: LMW_PSK=$(python3 -c "import secrets;print(secrets.token_hex(32))") LMW_AUTH_MODE=required ./LANMediaWall-*-Broker-Linux
    ```
+   Via Docker (recommended on Synology, one command):
+   ```bash
+   git clone --depth=1 https://github.com/Jieoz/lan-media-wall.git
+   cd lan-media-wall/broker && docker compose up -d
+   ```
+   Ports, why `network_mode: host`, data persistence and the update flow are all
+   in [`broker/README.md`](broker/README.md).
    Note the broker LAN IP (e.g. `192.168.1.10`) and this `PSK` — shared system-wide.
 2. **Install players** (each screen): run the Windows installer or the Android player APK. **Default `open` mode is zero-config** — players auto-discover the broker on the same LAN and come online with no key to type. Switch to `required` and set a shared PSK when you need auth.
 3. **Install the controller** (phone/tablet): install the arch-matching controller APK (most people want the modern ARM64 build). Easiest onboarding: **scan the pairing QR the player shows on its first-boot screen** — no IP/PSK typing; or enter broker IP / port / PSK manually.

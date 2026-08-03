@@ -274,6 +274,70 @@ WebSocket 能连上,但自动发现会静默失效,现场表现为「盒子扫�
 `state.json`(设备注册表 + 分组)、可选的 `config.yaml`、`certs/`、上传的媒体都在
 挂载的 `/data` 里,重启和重建容器都不会丢。
 
+启动日志正常长这样(没放证书时 `WSS disabled` 是预期的):
+
+```
+broker WS listening on :8770 (auth_mode=open key_mode=derived topology=dedicated)
+no certs in certs -> WSS disabled
+broker media library on 0.0.0.0:8773 (dir=media, max=500MB, open-upload)
+UDP discovery on :8772
+```
+
+### 网络不稳时怎么拿到代码
+
+git 传整个仓库(4500+ 对象)在链路不稳时容易断在 `Compressing objects: 100%`
+之后,报 `RPC failed; curl 56 GnuTLS recv error` / `early EOF`。两个绕法:
+
+```bash
+# 浅克隆:只取最新一次提交,.git 从 15M 降到 1.4M
+git clone --depth=1 https://github.com/Jieoz/lan-media-wall.git
+
+# 还是断就用 tarball(单次 HTTP 下载,整仓约 1MB,不走 git pack 传输)
+curl -fsSL -o lmw.tar.gz https://codeload.github.com/Jieoz/lan-media-wall/tar.gz/refs/heads/main
+tar xzf lmw.tar.gz && cd lan-media-wall-main/broker
+```
+
+### 更新
+
+```bash
+cd lan-media-wall
+git fetch --depth=1 origin main
+git reset --hard FETCH_HEAD
+cd broker && docker compose up -d --build
+```
+
+**`--build` 必须加。** broker 是本地源码构建,不是拉远程镜像。少了它,新代码不会
+进镜像 —— 命令照样成功、容器照样 healthy,但跑的还是旧代码。想确认真换了,比对
+`docker compose ps -q` 前后的容器 ID。
+
+**浅克隆的仓库不能用 `git pull`。** 浅仓库和远端没有共同祖先,git 判定分叉:
+`git pull` 报 `Need to specify how to reconcile divergent branches`,`git pull --ff-only`
+报 `Not possible to fast-forward`,而 `git pull --depth=1` 更糟 —— 它可能直接说
+`Already up to date.` 退出码 0,看着成功实际一个字节都没更新。上面那条
+`fetch` + `reset --hard` 是浅仓库唯一可靠的写法。
+
+用 `FETCH_HEAD` 而不是 `origin/main`:如果当初是 `--branch <tag>` 克隆的,远端
+refspec 里没有 `main`,`origin/main` 这个引用根本不存在,`reset` 会失败 —— 而且
+**版本号不变、退出码仍是 0**,又一个看着成功实际没更新的坑。`FETCH_HEAD` 由上一条
+`fetch` 直接产生,跟当初怎么克隆无关。
+
+`reset --hard` 会丢弃本地对**被跟踪文件**的修改。`data/` 已在 `.gitignore` 里,
+不受影响,注册表和媒体都安全。
+
+tarball 装的没有 `.git`:重新下 tarball 解压,把新的 `*.py` 覆盖进去(**不要覆盖
+`data/`**),然后 `docker compose up -d --build`。
+
+`docker compose pull` 对本项目没有意义(没有发布到 registry 的镜像),不要用。
+
+### 常用操作
+
+```bash
+docker compose logs -f       # 看日志
+docker compose ps            # 看状态,要 healthy
+docker compose restart       # 重启,数据不丢
+docker compose down          # 停掉并删容器,data/ 保留
+```
+
 ## Run on Synology (Docker)
 
 Synology 的 Container Manager 也能跑 compose:把 `broker/` 传到共享文件夹,新建项目
