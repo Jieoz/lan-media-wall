@@ -332,11 +332,24 @@ tarball 装的没有 `.git`:重新下 tarball 解压,把新的 `*.py` 覆盖进�
 ### 常用操作
 
 ```bash
+# 在 broker/ 目录下:
 docker compose logs -f       # 看日志
 docker compose ps            # 看状态,要 healthy
 docker compose restart       # 重启,数据不丢
 docker compose down          # 停掉并删容器,data/ 保留
+
+# 不在 broker/ 目录时用容器名(任何位置都能跑):
+docker logs -f lmw-broker
+docker logs --tail 50 lmw-broker
 ```
+
+`docker compose …` 靠当前目录找 `docker-compose.yml`。在仓库根目录跑会报
+`no configuration file provided: not found` —— 要么 `cd broker`,要么用
+`docker logs lmw-broker`。
+
+healthcheck 探的是 **8773**(媒体 HTTP),不是 8770。早期版本探 8770 会让
+websockets 每 30 秒打一条 `connection closed`,把真日志淹没;已改掉。若你还在
+刷那条,按上面的更新命令重建一次容器即可。
 
 ## Run on Synology (Docker)
 
