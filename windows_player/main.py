@@ -130,6 +130,7 @@ class Player:
         # playback state
         self.play_state = "idle"
         self.playlist: Optional[Dict[str, Any]] = None
+        self._pending_prepare: Optional[Dict[str, Any]] = None
         self.index = 0
         current_mode = PlaybackMode.parse(self.state.runtime_mode) or PlaybackMode.VISUAL
         previous_mode = (PlaybackMode.parse(self.state.previous_active_mode)
@@ -1008,6 +1009,14 @@ class Player:
             self.downloader.prefetch(items)
             # sync=false → broker drives single-box play_at=now separately; we just
             # store. sync=true → wait for prepare/play_at.
+            parked = self._pending_prepare
+            if parked and parked.get("playlist_id") == self.playlist.get("playlist_id") \
+                    and parked.get("push_id") == self.playlist.get("push_id"):
+                self._pending_prepare = None
+                logging.info(f"prepare_unpark pid={parked.get('playlist_id')} push={parked.get('push_id')}")
+                await self._h_prepare(parked, env)
+            elif payload.get("mode", "replace") != "append":
+                self._pending_prepare = None
 
     async def _clear_active_playlist(self, playlist_id: str,
                                      *, lock_held: bool = False) -> None:
@@ -1044,8 +1053,16 @@ class Player:
         prefetch_barrier = bool(payload.get("prefetch", False))
         barrier_timeout_ms = int(payload.get("barrier_timeout_ms", 120000))
         pl = self._resolve_playlist(pid)
-        if not pl or not push_id or pl.get("push_id") != push_id:
+        if not push_id:
             return
+        if not pl or pl.get("push_id") != push_id:
+            # playlist/prepare race: park until matching playlist adopts push_id
+            self._pending_prepare = dict(payload)
+            if prepare_id is not None:
+                self._pending_prepare["prepare_id"] = prepare_id
+            logging.info(f"prepare_parked pid={pid} push={push_id}")
+            return
+        self._pending_prepare = None
         ready = False
         self._cancel_dwell()  # §6.3: a new session voids any pending dwell
         if pl is not None:
