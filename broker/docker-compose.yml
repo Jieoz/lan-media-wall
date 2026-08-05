@@ -43,10 +43,13 @@ services:
       LMW_LOG: INFO
 
     healthcheck:
-      # 只探 WS 端口在不在听。用 python 是因为镜像基于 python:3.11-slim,
-      # 里面没有 curl/nc,写了也是白搭。
+      # 探 8773(媒体 HTTP),不要探 8770。
+      # 以前用 socket 连 8770:websockets.serve 会把每次探测记成
+      # "connection closed",30s 一次把真日志淹没(现场已踩过)。
+      # 8773 是 stdlib asyncio HTTP,短连接不留噪声;镜像无 curl/nc,
+      # 所以用 python 发一行 GET,404 也算活着(根路径本来就 404)。
       test: ["CMD", "python3", "-c",
-             "import socket,sys; s=socket.create_connection(('127.0.0.1',8770),3); s.close()"]
+             "import socket,sys; s=socket.create_connection(('127.0.0.1',8773),3); s.sendall(b'GET / HTTP/1.0\\r\\nHost: h\\r\\n\\r\\n'); r=s.recv(32); s.close(); sys.exit(0 if r.startswith(b'HTTP/') else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
