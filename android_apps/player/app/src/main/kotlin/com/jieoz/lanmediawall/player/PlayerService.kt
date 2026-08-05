@@ -51,6 +51,8 @@ import com.jieoz.lanmediawall.player.net.jsonStrArr
 import com.jieoz.lanmediawall.player.net.sendRequired
 import com.jieoz.lanmediawall.player.sync.ClockSync
 import com.jieoz.lanmediawall.player.sync.LoopBoundarySync
+import com.jieoz.lanmediawall.player.sync.PendingPreparePolicy
+import com.jieoz.lanmediawall.player.sync.CarouselSyncPolicy
 import com.jieoz.lanmediawall.player.update.RootInstaller
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -130,6 +132,12 @@ class PlayerService : Service() {
     /** Generation guard + job handle prevent stale prepare waiters from priming. */
     private val prepareGeneration = PrepareGeneration()
     private val prepareWaiter = AtomicReference<Job?>(null)
+    /** playlist/prepare race: park prepare until matching push_id is adopted. */
+    @Volatile private var pendingPrepare: PendingPreparePolicy.Parked? = null
+    private val pendingPreparePayload = AtomicReference<Json.Obj?>(null)
+    private val pendingPrepareToken = AtomicLong(0L)
+    /** Multi-item ALL carousel epoch on the master clock (not local EOF). */
+    @Volatile private var activeCarousel: ActiveCarouselSync? = null
     private val restoreTask = AtomicReference<Job?>(null)
     /** §6.3 carousel: pending "hold this image for duration_ms, then advance"
      *  timer. Cancelled by any new prepare/play_at/advance/stop. */
@@ -155,6 +163,15 @@ class PlayerService : Service() {
         val itemId: String,
         val playAtMasterMs: Long,
         val baseSeekMs: Long,
+    )
+
+    private data class ActiveCarouselSync(
+        val sessionId: String,
+        val playlistId: String,
+        val pushId: String,
+        val itemIndex: Int,
+        val itemId: String,
+        val playAtMasterMs: Long,
     )
 
     private val startupDaemonReconciler by lazy {
@@ -1068,6 +1085,7 @@ class PlayerService : Service() {
      * verbatim under the frame's playlist_id so restart restores order+index.
      */
     private fun hPlaylist(payload: Json.Obj) {
+        var unparkPayload: Json.Obj? = null
         synchronized(cacheGenerationLock) {
         val incoming = Playlist.fromJson(payload) ?: return
         val mode = PlaylistOps.Mode.parse(payload["mode"].asString())
@@ -1075,6 +1093,8 @@ class PlayerService : Service() {
         // playlist alone is insufficient because the old decoder/timer/frame
         // would keep running.
         if (PlaylistOps.isClear(mode, incoming.items)) {
+            pendingPrepare = null
+            pendingPreparePayload.set(null)
             clearActivePlaylist(incoming.playlistId)
             return
         }
@@ -1097,10 +1117,12 @@ class PlayerService : Service() {
             newIndex = merged.index
             scheduledStart.getAndSet(null)?.cancel()
             restoreTask.getAndSet(null)?.cancel()
-            prepareGeneration.cancel()
+            // prepareGeneration cancelled after pending-prepare decision below so a
+            // same-tick prepare parked for this push_id is not killed by replace.
             prepareWaiter.getAndSet(null)?.cancel()
             dwellTimer.getAndSet(null)?.cancel()
             cancelLoopBoundarySync("playlist_replace")
+            activeCarousel = null
         }
         playlist = pl
         index = newIndex
@@ -1112,6 +1134,18 @@ class PlayerService : Service() {
         // this an append would round-trip the order but resume at a stale index.
         persistLastTask(pl.playlistId, newIndex, 0)
         updateCacheProtection(pl)
+        // §9.1 race: prepare often arrives in the same tick as playlist. If we
+        // parked it, adopt now that push_id matches. Otherwise drop stale park.
+        val parked = pendingPrepare
+        if (parked != null && PendingPreparePolicy.matches(parked, pl.playlistId, pl.pushId)) {
+            unparkPayload = pendingPreparePayload.getAndSet(null)
+            pendingPrepare = null
+            logEvent("prepare_unpark_queued pid=${pl.playlistId} push=${pl.pushId}")
+        } else if (mode != PlaylistOps.Mode.APPEND) {
+            pendingPrepare = null
+            pendingPreparePayload.set(null)
+            prepareGeneration.cancel()
+        }
         // §6 假闪存:投送新内容后、拉新媒体之前,先回收不再被任何近期 playlist 引用的
         // 旧媒体,给真实颗粒腾余量(prefetch 内部还会做配额 LRU + 写前探针)。
         // §6.5 回收(目录扫描)+ prefetch(校验/探针)都是 O(列表) 的磁盘活,不能压在
@@ -1124,7 +1158,10 @@ class PlayerService : Service() {
             }
         }
         }
+        // Outside the lock: re-enter prepare with the parked payload.
+        unparkPayload?.let { hPrepare(it) }
     }
+
 
     private fun hMusicPlaylist(payload: Json.Obj) {
         if (!targetsMe(payload)) return
@@ -1250,6 +1287,9 @@ class PlayerService : Service() {
         prepareGeneration.cancel()
         prepareWaiter.getAndSet(null)?.cancel()
         dwellTimer.getAndSet(null)?.cancel()
+        pendingPrepare = null
+        pendingPreparePayload.set(null)
+        activeCarousel = null
         cancelLoopBoundarySync(reason)
         controllerRef?.onVideoEnded = null
         controllerRef?.stop()
@@ -1326,6 +1366,9 @@ class PlayerService : Service() {
         prepareGeneration.cancel()
         prepareWaiter.getAndSet(null)?.cancel()
         dwellTimer.getAndSet(null)?.cancel()
+        pendingPrepare = null
+        pendingPreparePayload.set(null)
+        activeCarousel = null
         cancelLoopBoundarySync("playlist_clear")
         if (runtimeModeState.current == PlaybackMode.VISUAL) controllerRef?.stop()
         // Invalidate the definition too: a delayed prepare/play_at for the same
@@ -1399,7 +1442,43 @@ class PlayerService : Service() {
         val prefetchBarrier = payload["prefetch"].asBoolOrNull() ?: false
         val barrierTimeoutMs = payload["barrier_timeout_ms"].asLongOrNull() ?: 120000L
         val pl = resolvePlaylist(pid)
+        when (PendingPreparePolicy.decide(
+            playlistId = pid,
+            pushId = pushId,
+            resolvedPushId = pl?.pushId,
+            playlistFound = pl != null,
+        )) {
+            PendingPreparePolicy.Decision.REJECT -> {
+                logEvent("prepare_reject pid=$pid push=$pushId reason=missing_identity")
+                return
+            }
+            PendingPreparePolicy.Decision.PARK -> {
+                // Controller fires playlist+prepare in the same tick; parking
+                // keeps the barrier alive until hPlaylist adopts the push_id.
+                val token = pendingPrepareToken.incrementAndGet()
+                pendingPreparePayload.set(payload)
+                pendingPrepare = PendingPreparePolicy.Parked(
+                    playlistId = pid ?: "",
+                    pushId = pushId ?: "",
+                    prepareId = prepareId,
+                    groupId = groupId,
+                    startIndex = startIndex,
+                    seekMs = seekMs,
+                    prefetchBarrier = prefetchBarrier,
+                    barrierTimeoutMs = barrierTimeoutMs,
+                    rawPayloadToken = token,
+                )
+                logEvent("prepare_parked pid=$pid push=$pushId waiting_playlist_adopt")
+                return
+            }
+            PendingPreparePolicy.Decision.ADOPT_NOW -> {
+                // fall through with non-null pl + matching push_id
+            }
+        }
         if (pl == null || pushId.isNullOrEmpty() || pl.pushId != pushId) return
+        // A fresh adopted prepare supersedes any parked race entry.
+        pendingPrepare = null
+        pendingPreparePayload.set(null)
         var ready = false
         dwellTimer.getAndSet(null)?.cancel() // §6.3: a new session voids any dwell
         cancelLoopBoundarySync("prepare")
@@ -1531,7 +1610,25 @@ class PlayerService : Service() {
             ctl.showImage(uri, itemId = item.itemId)
             playState = "playing"
             MainActivity.instance?.hideIdle()
-            armDwell(item)
+            if (CarouselSyncPolicy.shouldOwnAutoAdvance(
+                    itemCount = pl.items.size,
+                    loopModeAll = pl.loopMode == LoopMode.ALL,
+                    playlistSync = pl.sync,
+                    singleItemOemLoop = false,
+                )) {
+                activeCarousel = ActiveCarouselSync(
+                    sessionId = syncSessionId,
+                    playlistId = pl.playlistId,
+                    pushId = pl.pushId ?: "",
+                    itemIndex = pl.items.indexOfFirst { it.itemId == item.itemId }.takeIf { it >= 0 } ?: index,
+                    itemId = item.itemId,
+                    playAtMasterMs = playAt,
+                )
+                armDwellSynced(item, playAt)
+            } else {
+                activeCarousel = null
+                armDwell(item)
+            }
             return
         }
         // video: prime paused at seek (idempotent if prepare already did it),
@@ -1556,6 +1653,7 @@ class PlayerService : Service() {
         playState = "playing"
         MainActivity.instance?.hideIdle()
         if (loop) {
+            activeCarousel = null
             armLoopBoundarySync(
                 ActiveLoopSync(
                     sessionId = syncSessionId,
@@ -1565,6 +1663,24 @@ class PlayerService : Service() {
                 ),
                 durationHintMs = item.durationMs ?: 0L,
             )
+        } else if (CarouselSyncPolicy.shouldOwnAutoAdvance(
+                itemCount = pl.items.size,
+                loopModeAll = pl.loopMode == LoopMode.ALL,
+                playlistSync = pl.sync,
+                singleItemOemLoop = false,
+            )) {
+            // Multi-item synced carousel: own auto-advance on the master clock.
+            activeCarousel = ActiveCarouselSync(
+                sessionId = syncSessionId,
+                playlistId = pl.playlistId,
+                pushId = pl.pushId ?: "",
+                itemIndex = pl.items.indexOfFirst { it.itemId == item.itemId }.takeIf { it >= 0 } ?: index,
+                itemId = item.itemId,
+                playAtMasterMs = playAt,
+            )
+            logEvent("carousel_epoch item=${item.itemId} play_at=$playAt session=$syncSessionId")
+        } else {
+            activeCarousel = null
         }
     }
 
@@ -1931,6 +2047,7 @@ class PlayerService : Service() {
         val pl = playlist ?: return
         if (pl.items.isEmpty()) return
         cancelLoopBoundarySync("advance")
+        activeCarousel = null  // explicit/local step leaves the shared epoch
         val oldItemId = pl.items.getOrNull(index)?.itemId
         dwellTimer.getAndSet(null)?.cancel()
         // §6.3 three-mode progression. ONE on an automatic (EOF/dwell) completion
@@ -1984,9 +2101,97 @@ class PlayerService : Service() {
     }
 
     /** §6.3: a non-looping video finished (ExoPlayer STATE_ENDED) → step
-     *  forward. Fired on the main thread, so hop to a coroutine for the I/O. */
+     *  forward. Fired on the main thread, so hop to a coroutine for the I/O.
+     *  When a multi-item synced carousel owns the timeline, step on the master
+     *  clock instead of local EOF so every box shares the same next play_at. */
     private fun onCurrentEnded() {
-        if (runtimeModeState.current == PlaybackMode.VISUAL) scope.launch { advance(+1) }
+        if (runtimeModeState.current != PlaybackMode.VISUAL) return
+        val carousel = activeCarousel
+        val pl = playlist
+        if (carousel != null && pl != null &&
+            CarouselSyncPolicy.shouldOwnAutoAdvance(
+                itemCount = pl.items.size,
+                loopModeAll = pl.loopMode == LoopMode.ALL,
+                playlistSync = pl.sync,
+                singleItemOemLoop = singleLoop(pl),
+            )) {
+            scope.launch { advanceSyncedCarousel(carousel, pl) }
+        } else {
+            scope.launch { advance(+1) }
+        }
+    }
+
+    /** Image dwell that lands the next item on the shared master timeline. */
+    private fun armDwellSynced(item: MediaItem, playAtMasterMs: Long) {
+        val dwell = item.durationMs?.takeIf { it > 0 } ?: DEFAULT_IMAGE_DWELL_MS
+        val job = scope.launch {
+            val targetMaster = CarouselSyncPolicy.nextPlayAtMasterMs(
+                currentPlayAtMasterMs = playAtMasterMs,
+                currentDurationMs = dwell,
+                masterNowMs = clock.masterNow(),
+            )
+            awaitLocal(clock.toLocal(targetMaster))
+            if (!isActive || runtimeModeState.current != PlaybackMode.VISUAL) return@launch
+            val carousel = activeCarousel ?: return@launch
+            val pl = playlist ?: return@launch
+            advanceSyncedCarousel(carousel, pl, forcedNextPlayAt = targetMaster)
+        }
+        dwellTimer.getAndSet(job)?.cancel()
+    }
+
+    /**
+     * Multi-item synced step: compute next play_at from the shared epoch and
+     * re-enter the same scheduledStart path used by broker play_at. No network
+     * round-trip — every box with the same epoch+duration lands together.
+     */
+    private suspend fun advanceSyncedCarousel(
+        epoch: ActiveCarouselSync,
+        pl: Playlist,
+        forcedNextPlayAt: Long? = null,
+    ) {
+        if (activeCarousel != epoch) return
+        if (pl.playlistId != epoch.playlistId) return
+        if (pl.pushId != null && epoch.pushId.isNotEmpty() && pl.pushId != epoch.pushId) return
+        val nextIdx = CarouselSyncPolicy.nextIndex(
+            currentIndex = epoch.itemIndex,
+            itemCount = pl.items.size,
+            loopModeAll = pl.loopMode == LoopMode.ALL,
+            explicit = false,
+        ) ?: run {
+            activeCarousel = null
+            return
+        }
+        val cur = pl.items.getOrNull(epoch.itemIndex)
+        val duration = when {
+            cur == null -> 0L
+            cur.type == "image" -> cur.durationMs?.takeIf { it > 0 } ?: DEFAULT_IMAGE_DWELL_MS
+            else -> {
+                val snap = controllerRef?.snapshot()
+                snap?.durationMs?.takeIf { it > 0 }
+                    ?: cur.durationMs?.takeIf { it > 0 }
+                    ?: 0L
+            }
+        }
+        val nextPlayAt = forcedNextPlayAt ?: CarouselSyncPolicy.nextPlayAtMasterMs(
+            currentPlayAtMasterMs = epoch.playAtMasterMs,
+            currentDurationMs = duration,
+            masterNowMs = clock.masterNow(),
+        )
+        val item = pl.items[nextIdx]
+        val readyFile = downloader.readyPath(item.itemId)
+        readyFile?.let { downloader.touch(it) }
+        val source = readyFile?.absolutePath ?: item.url
+        synchronized(cacheGenerationLock) { index = nextIdx }
+        persistLastTask(pl.playlistId, nextIdx, 0)
+        logEvent(
+            "carousel_advance from=${epoch.itemId} to=${item.itemId} " +
+                "idx=$nextIdx play_at=$nextPlayAt duration_ms=$duration",
+        )
+        scheduledStart.getAndSet(null)?.cancel()
+        val job = scope.launch {
+            scheduledStart(source, 0L, nextPlayAt, pl, item, epoch.sessionId)
+        }
+        scheduledStart.set(job)
     }
 
     /** §6.3 loop semantics: only a *single-item* looping playlist maps to OEM

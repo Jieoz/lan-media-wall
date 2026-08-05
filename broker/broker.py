@@ -630,10 +630,19 @@ class Hub:
 
     async def check_sync_timeouts(self) -> None:
         """Called periodically: fire play_at for sessions past their 2s
-        deadline using whoever is ready (§9.2)."""
+        deadline using whoever is ready (§9.2).
+
+        Zero-ready is a hard no-op. `_emit_play_at` treats an empty target list
+        as "address the whole group", so calling it with ready=[] would fan
+        play_at to every online member of a session nobody prepared — the
+        mid-group-push failure mode (some boxes start, others look stuck).
+        """
         for session in self.sync.expired_sessions():
             ready = session.ready_members()
             play_at = self.sync.complete(session)
+            if not ready:
+                # Nobody primed. Drop the session; do not invent a group start.
+                continue
             await self._emit_play_at(session.group_id, session.playlist_id,
                                      session.start_index, session.seek_ms,
                                      play_at, ready, session.push_id,

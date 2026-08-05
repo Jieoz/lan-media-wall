@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.19.12
+
+### Fixed
+- **组内推送中途失败**: `playlist`/`prepare` 同 tick 竞态时,player 不再静默丢 prepare,而是 park 到 push_id 采纳后再 ready。
+- **空 ready 超时误广播**: broker 在零成员 ready 时不再把空 targets 当成整组 `play_at` fanout。
+- **多视频轮播漂移**: `loop_mode=all` + `sync=true` 的多条目列表,条目切换改走共享 master 时钟,不再纯本地 EOF 接力。
+
+### Notes
+- 需更新 **broker** + **Player APK 1.19.12**；只升一端不够。
+- 真机多屏对齐仍需现场验收。
+
 ## [v1.19.3] — 2026-07-23
 
 - **Playback controls are composed by intent, not copied actions.** Per-device controls are grouped into playback transport, a single authoritative `图片/视频` / `音乐终端` mode selector, music-list editing, and contextual standby power. The music dialog is now solely a list editor and no longer duplicates mode-switch actions.

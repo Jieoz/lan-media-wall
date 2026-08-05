@@ -247,8 +247,10 @@ active_playlist 中的当前位置)、`playlist_count`(序列长度)。
 `push_id`(随机/内容无关),随 `playlist`、`prepare`、`play_at` 帧一起下发。语义:
 
 - player **采纳**该命令后,在 `status.push_id` 原样回显,作为唯一的采纳 ACK;
-- player 端 `prepare`/`play_at` 硬校验:`push_id` 缺失或与当前 job 不符则**整帧丢弃**
-  (不回 `ready`、不起播),避免旧代/重复帧驱动新任务;
+- player 端 `prepare`/`play_at` 硬校验:`push_id` 缺失 → **整帧丢弃**;
+  `push_id` 与当前 job 暂不符(常见:controller 同 tick 先发 prepare 后发 playlist)
+  → **停放(park)**,等匹配的 `playlist` 采纳后再执行,不得静默永久丢弃;
+  与当前 job 永久不符的旧代 `play_at` 仍丢弃,避免旧代/重复帧驱动新任务;
 - controller 端进度状态机(§6.0)只有收到匹配的 `push_id` 回显、或看到真正重新下载的
   `downloading:<100`(仅限**完全不带** `push_id` 的老 player 兜底),才释放「新 job 陈旧
   ready 屏障」;
@@ -402,6 +404,12 @@ items 内容变化才重建队列。重启后必须从持久化列表恢复该�
 - `v1.18.7+` 的循环视频把 `play_at` 作为公共内容时间轴原点；每轮理论边界为
   `play_at + n × duration_ms`。Player 在边界按最新 broker 时钟计算理论位置，绝对漂移
   `≤80ms` 不动作，超阈值才 `seek`。这是低风险边界校正，不做持续倍速闭环。
+- `v1.19.12+` **多条目** `loop_mode=all` 且 `playlist.sync=true` 时,Player 在本地 EOF/图片 dwell
+  后不再各播各的接力,而是用同一 `play_at` 原点推算下一项的 master `play_at =
+  play_at + duration_ms`,再走与 §9.2 相同的本地等待起播。单条目 `one` 仍用上面的
+  `loop_boundary_sync_v1`。`sync=false` 或显式 prev/next 仍走本机 advance。
+- broker 在 ready 超时且 **零成员 ready** 时**不得** fanout `play_at`(空 targets 曾被
+  误当成整组广播,导致组推中途“有的起有的不起”)。
 
 ---
 
