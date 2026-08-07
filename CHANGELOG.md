@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.19.13
+
+### Fixed
+- **缓存下载传输层零重试**: ConnectException / ConnectionError / 短读截断此前一次失败就永久 error（现场 96 项音乐列表里 2 项）。现在与 HTTP 429/503 共用退避预算；预算耗尽才终态，并保留真实异常名；短读保留 `.part` 带 Range 续传。真内容错（长度够但 sha 不对）仍走终态 `sha256-mismatch`。
+- Android Player + Windows Player 对齐。
+
+### Notes
+- 需更新 **Player**（Android/Windows）。broker 无协议改动，可不升。
+- 版本：1.19.13+1203。
+
 ## 1.19.12
 
 ### Fixed

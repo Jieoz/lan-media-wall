@@ -107,6 +107,8 @@ class CacheEntry:
             return f"downloading:{pct}%"
         if self.state == "verifying":
             return "verifying"
+        if self.state == "retrying":
+            return "retrying"
         if self.state == "error":
             return f"error:{self.error}" if self.error else "error"
         return self.state
@@ -119,12 +121,23 @@ class Downloader:
     def __init__(self, cache_dir: Path, *,
                  on_change: Optional[Callable[[], None]] = None,
                  chunk_size: int = 256 * 1024,
-                 timeout: float = 30.0):
+                 timeout: float = 30.0,
+                 retry_base_delay_s: float = 1.0,
+                 retry_max_delay_s: float = 30.0,
+                 max_retry_attempts: int = 5):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.on_change = on_change
         self.chunk_size = chunk_size
         self.timeout = timeout
+        # §6 transport-layer retry budget (mirrors Android Downloader).
+        # Instant ConnectionError / short reads share this budget with any
+        # future HTTP 429/503 path; field evidence on Android: 2 of 96 music
+        # items died on ConnectException with zero retries while siblings of
+        # the same batch succeeded.
+        self.retry_base_delay_s = retry_base_delay_s
+        self.retry_max_delay_s = retry_max_delay_s
+        self.max_retry_attempts = max_retry_attempts
         self._entries: Dict[str, CacheEntry] = {}
         self._threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
@@ -178,7 +191,7 @@ class Downloader:
         with self._lock:
             out: Dict[str, Optional[Path]] = {}
             for k, e in self._entries.items():
-                if e.state in ("pending", "downloading", "verifying"):
+                if e.state in ("pending", "downloading", "verifying", "retrying"):
                     out[k] = e.path
             return out
 
@@ -201,7 +214,8 @@ class Downloader:
                 if entry.path is None:
                     continue
                 if (Path(entry.path).resolve(strict=False) == target and
-                        entry.state in ("pending", "downloading", "verifying")):
+                        entry.state in ("pending", "downloading", "verifying",
+                                      "retrying")):
                     return False
             try:
                 if not target.exists():
@@ -223,7 +237,7 @@ class Downloader:
         with self._lock:
             # already on disk and matching → mark ready without re-download
             entry = self._entries.get(item_id)
-            if entry and entry.state in ("downloading", "verifying"):
+            if entry and entry.state in ("downloading", "verifying", "retrying"):
                 return  # in flight
             if target.exists() and self._quick_ok(target, item):
                 self._entries[item_id] = CacheEntry(
@@ -247,6 +261,21 @@ class Downloader:
         return True
 
     # --- worker -------------------------------------------------------
+    def _retry_delay_s(self, attempt: int) -> float:
+        """Exponential backoff for transport retries. `attempt` is 1-based."""
+        shift = min(max(attempt - 1, 0), 20)
+        return min(self.retry_max_delay_s,
+                   self.retry_base_delay_s * (2 ** shift))
+
+    def _sleep_interruptibly(self, delay_s: float) -> bool:
+        """Sleep in slices so stop() can cut a retry wait short. True = continue."""
+        remaining = delay_s
+        while not self._stop.is_set() and remaining > 0:
+            slice_s = min(remaining, 0.05)
+            time.sleep(slice_s)
+            remaining -= slice_s
+        return not self._stop.is_set()
+
     def _worker(self, item: Dict[str, Any]) -> None:
         item_id = item["item_id"]
         target = self.local_path(item)
@@ -255,38 +284,88 @@ class Downloader:
         if requests is None:
             self._fail(item_id, "requests-unavailable")
             return
+        attempt = 0
         try:
-            existing = part.stat().st_size if part.exists() else 0
-            headers = range_header(existing) or {}
-            with requests.get(url, headers=headers, stream=True,
-                              timeout=self.timeout) as resp:
-                if resp.status_code not in (200, 206):
-                    self._fail(item_id, f"http-{resp.status_code}")
-                    return
-                if resp.status_code == 200 and existing:
-                    # server ignored Range → restart from scratch
-                    existing = 0
-                    part.unlink(missing_ok=True)
-                clen = resp.headers.get("Content-Length")
-                clen_i = int(clen) if clen and clen.isdigit() else None
-                cr_total = parse_content_range_total(
-                    resp.headers.get("Content-Range"))
-                total = expected_total(existing, resp.status_code, clen_i,
-                                       cr_total) or item.get("size")
-                downloaded = existing
-                self._set(item_id, state="downloading",
-                          progress=percent(downloaded, total), path=target)
-                mode = "ab" if existing else "wb"
-                with part.open(mode) as f:
-                    for chunk in resp.iter_content(self.chunk_size):
-                        if self._stop.is_set():
-                            return  # leave .part for next resume
-                        if not chunk:
+            while not self._stop.is_set():
+                existing = part.stat().st_size if part.exists() else 0
+                headers = range_header(existing) or {}
+                try:
+                    with requests.get(url, headers=headers, stream=True,
+                                      timeout=self.timeout) as resp:
+                        if resp.status_code in (429, 503):
+                            if attempt >= self.max_retry_attempts:
+                                self._fail(item_id, f"http-{resp.status_code}")
+                                return
+                            attempt += 1
+                            self._set(item_id, state="retrying", path=target)
+                            if not self._sleep_interruptibly(
+                                    self._retry_delay_s(attempt)):
+                                return
                             continue
-                        f.write(chunk)
-                        downloaded += len(chunk)
+                        if resp.status_code not in (200, 206):
+                            self._fail(item_id, f"http-{resp.status_code}")
+                            return
+                        if resp.status_code == 200 and existing:
+                            # server ignored Range → restart from scratch
+                            existing = 0
+                            part.unlink(missing_ok=True)
+                        clen = resp.headers.get("Content-Length")
+                        clen_i = int(clen) if clen and clen.isdigit() else None
+                        cr_total = parse_content_range_total(
+                            resp.headers.get("Content-Range"))
+                        total = expected_total(
+                            existing, resp.status_code, clen_i, cr_total
+                        ) or item.get("size")
+                        downloaded = existing
                         self._set(item_id, state="downloading",
-                                  progress=percent(downloaded, total))
+                                  progress=percent(downloaded, total),
+                                  path=target)
+                        mode = "ab" if existing else "wb"
+                        with part.open(mode) as f:
+                            for chunk in resp.iter_content(self.chunk_size):
+                                if self._stop.is_set():
+                                    return  # leave .part for next resume
+                                if not chunk:
+                                    continue
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                self._set(item_id, state="downloading",
+                                          progress=percent(downloaded, total))
+                        if self._stop.is_set():
+                            return
+                        # §6 short read = transport cut, NOT content error.
+                        # Keep .part and resume with Range on the next attempt.
+                        # True content corruption (full length, wrong sha) still
+                        # falls through to the sha256 guard below — that is the
+                        # B2 black-screen root-cause guard and must stay terminal.
+                        if total and total > 0 and downloaded < total:
+                            if attempt >= self.max_retry_attempts:
+                                self._fail(item_id, "truncated")
+                                return
+                            attempt += 1
+                            self._set(item_id, state="retrying", path=target)
+                            if not self._sleep_interruptibly(
+                                    self._retry_delay_s(attempt)):
+                                return
+                            continue
+                        break  # body complete → verify
+                except Exception as exc:
+                    # Transport failure shares the same budget as 429/503.
+                    # Preserve the real exception name for diagnosis; keep
+                    # .part so the next attempt resumes with Range.
+                    if self._stop.is_set():
+                        return
+                    if attempt >= self.max_retry_attempts:
+                        self._fail(item_id, type(exc).__name__)
+                        return
+                    attempt += 1
+                    self._set(item_id, state="retrying", path=target)
+                    if not self._sleep_interruptibly(
+                            self._retry_delay_s(attempt)):
+                        return
+                    continue
+            if self._stop.is_set():
+                return
             # verify
             self._set(item_id, state="verifying")
             sha = item.get("sha256")
@@ -298,15 +377,17 @@ class Downloader:
                     return
             with self._lock:
                 entry = self._entries.get(item_id)
-                if entry is None or entry.state not in ("downloading", "verifying"):
+                if entry is None or entry.state not in ("downloading", "verifying",
+                                                       "retrying"):
                     return
                 part.replace(target)  # atomic publish under cleanup exclusion
                 entry.state = "ready"
                 entry.progress = 100
                 entry.path = target
             self._notify()
-        except Exception as exc:  # network/IO — keep .part for resume
-            self._fail(item_id, type(exc).__name__)
+        except Exception as exc:  # unexpected non-transport failure
+            if not self._stop.is_set():
+                self._fail(item_id, type(exc).__name__)
 
     # --- state helpers ------------------------------------------------
     def _set(self, item_id: str, **kw: Any) -> None:

@@ -164,7 +164,7 @@ player 据此精确门控缩略图采集(§6.4)，无需轮询。`thumbnail.alwa
 ### 6.0 媒体推送进度语义 (media-push progress, [v1.15])
 
 进度**不是独立的线协议帧**：它搭载在每台 player 的 `status.cache = {item_id: 值}` 上，
-值形如 `"pending" | "downloading:NN%" | "verifying" | "retrying"(仅 Android) | "ready" | "error[:原因]"`。
+值形如 `"pending" | "downloading:NN%" | "verifying" | "retrying" | "ready" | "error[:原因]"`。`retrying` = 有界传输/429/503 退避中(Android + Windows)。
 P2P 与 broker 两条链路都最终汇入 controller 的同一状态机(`MediaProgressMachine`),因此进度
 消费/UI 与传输无关。该状态机强制以下**真实性不变量**:
 
@@ -204,6 +204,14 @@ generation 由 controller 侧按推送 job 分配,状态机据此在**本地**�
 {"type":"cache_prefetch","payload":{"items":[ {/*media item*/} ]}}
 ```
 被控端后台**断点续传**下载到本地缓存目录，下载完按 `sha256` 校验，结果反映在 `status.cache`。
+
+**传输层重试(v1.19.13)**:HTTP `429/503` **与** 瞬时传输失败(`ConnectException` /
+`ConnectionError` / 读到一半断流 / 声明了 `Content-Length` 却短读)共用同一套有界
+退避预算(默认最多 5 次,指数 + jitter,尊重 `Retry-After`)。预算内保留 `.part` 并
+用 `Range: bytes=N-` 续传,`status.cache` 投影为 `retrying`;预算耗尽才终态
+`error:<真实异常名|http-N|truncated>`。真正的内容错误(长度足够但 sha256 不匹配)仍
+**立即**终态 `error:sha256-mismatch` 并删除 `.part` —— 这是 B2 黑屏根因守卫,不因
+传输重试而放宽。
 
 ### 6.3 `playlist` (controller→broker→group)
 
@@ -551,7 +559,7 @@ broker 独立进程/容器,被控端与遥控端都**作为 WS 客户端**拨向
 
 ### 14.4 模式 C 的明确退化(实现与文档都要写清)
 - **同步精度**:协调者(遥控端)通常在 WiFi 上,抖动比有线 broker 大;主时钟随遥控端走,遥控端断开则同步会话中断。目标精度从 ±50–100ms 放宽到**尽力而为(典型 ±100–200ms)**。
-- **规模**:遥控端要同时维持 N 条连接并本地扇出,**适合小规模(经验值 ≤8 台)**;30 屏仍应用模式 A/B。P2P 媒体传输采用两级有界背压:控制端本地 HTTP 服务最多同时流式发送 6 条、等待队列最多 64；每台 Android 播放端最多同时下载 2 项、pending 最多 64。v1.14.12 起 `prepare` 当前项使用前台 lane 并可提升已排队同 item，整表预取留在后台 FIFO；HTTP `429/503` 按受限 `Retry-After`/指数退避恢复，保留 `.part` 并 Range 续传。控制端超限返回空体 `503 Retry-After: 1`；严格 Range 对 malformed、multi-range 及重复物理 `Range` headers 均返回空体 `416 Content-Range: bytes */total`。stop/close 解除 waiter 和下载任务。sha256 校验和本地缓存播放合同不变；该边界防止 `设备数 × 列表项数` 放大为无界线程/连接，但不把 P2P 扩展为大墙分发架构。
+- **规模**:遥控端要同时维持 N 条连接并本地扇出,**适合小规模(经验值 ≤8 台)**;30 屏仍应用模式 A/B。P2P 媒体传输采用两级有界背压:控制端本地 HTTP 服务最多同时流式发送 6 条、等待队列最多 64；每台 Android 播放端最多同时下载 2 项、pending 最多 64。v1.14.12 起 `prepare` 当前项使用前台 lane 并可提升已排队同 item，整表预取留在后台 FIFO；HTTP `429/503` **与** 瞬时传输失败(拒连/超时/短读)按受限 `Retry-After`/指数退避恢复，保留 `.part` 并 Range 续传(v1.19.13 起两端对齐)。控制端超限返回空体 `503 Retry-After: 1`；严格 Range 对 malformed、multi-range 及重复物理 `Range` headers 均返回空体 `416 Content-Range: bytes */total`。stop/close 解除 waiter 和下载任务。sha256 校验和本地缓存播放合同不变；该边界防止 `设备数 × 列表项数` 放大为无界线程/连接，但不把 P2P 扩展为大墙分发架构。
 - **多遥控端**:p2p 下不建议多个遥控端同时控同一批被控端(无 broker 做单一真相源,时钟主可能打架)。如需多控,用模式 A/B。
 - **单控制连接租约**:被控端同一时刻只接受一个活跃 controller。任何入站 WS 帧（含 ping/pong）续租；服务端以 monotonic clock、5s read tick/ping 和 15s inactivity lease 检测半开连接。租约内的第二 controller 在 upgrade 后收到 close `1013`;租约到期后新连接可原子接管并关闭旧 socket，旧接收线程的 finally 以 generation 校验，不能清掉新 owner。
 - **关闭可观测与重连**:controller 必须记录/上报 WS close code 与 reason。HTTP upgrade 不代表稳定连接，不能据此清空重连退避；只有收到并验过 `welcome`/首个有效协议帧后才重置。连续 `1013` 按 1s→2s→4s…指数退避（上限 30s），避免固定 1s 风暴。
