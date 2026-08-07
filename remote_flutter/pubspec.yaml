@@ -19,7 +19,7 @@ publish_to: "none"
 # null 写成 "unreachable"。安装其实成功了,所以重启后新版本生效、而控制端显示 failed。
 # 改:INSTALL 预算 60s;区分 TIMEOUT 与 UNREACHABLE;没回复时问 PackageManager 真实版本
 # (有界轮询等 dexopt),已装上则判 late success,不再需要重启。
-version: 1.19.12+1202
+version: 1.19.13+1203
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

@@ -703,47 +703,94 @@ class Downloader(
                     activeCalls[itemId] = created
                     created
                 }
-                val retryDelay = call.execute().use { resp ->
-                    activeCalls.remove(itemId, call)
-                    val code = resp.code()
-                    if (code == 429 || code == 503) {
-                        if (attempt >= maxRetryAttempts) {
-                            failIfCurrent(itemId, token, "http-$code")
-                            return
-                        }
-                        attempt++
-                        retryDelayMs(resp.header("Retry-After"), attempt)
-                    } else {
-                        if (code != 200 && code != 206) {
-                            failIfCurrent(itemId, token, "http-$code")
-                            return
-                        }
-                        if (code == 200 && existing > 0) {
-                            existing = 0
-                            part.delete()
-                        }
-                        val clen = resp.header("Content-Length")?.toLongOrNull()
-                        val crTotal = RangeMath.parseContentRangeTotal(resp.header("Content-Range"))
-                        val total = RangeMath.expectedTotal(existing, code, clen, crTotal) ?: item.size
-                        var downloaded = existing
-                        setIfCurrent(itemId, token, state = "downloading", progress = RangeMath.percent(downloaded, total))
-                        val body = resp.body() ?: run { failIfCurrent(itemId, token, "no-body"); return }
-                        java.io.FileOutputStream(part, existing > 0).use { fos ->
-                            val src = body.byteStream()
-                            val buf = ByteArray(chunkSize)
-                            while (!stopped) {
-                                val n = src.read(buf)
-                                if (n < 0) break
-                                if (n == 0) continue
-                                fos.write(buf, 0, n)
-                                downloaded += n
-                                setIfCurrent(itemId, token, state = "downloading",
-                                    progress = RangeMath.percent(downloaded, total))
+                val retryDelay = try {
+                    call.execute().use { resp ->
+                        activeCalls.remove(itemId, call)
+                        val code = resp.code()
+                        if (code == 429 || code == 503) {
+                            if (attempt >= maxRetryAttempts) {
+                                failIfCurrent(itemId, token, "http-$code")
+                                return
+                            }
+                            attempt++
+                            retryDelayMs(resp.header("Retry-After"), attempt)
+                        } else {
+                            if (code != 200 && code != 206) {
+                                failIfCurrent(itemId, token, "http-$code")
+                                return
+                            }
+                            if (code == 200 && existing > 0) {
+                                existing = 0
+                                part.delete()
+                            }
+                            val clen = resp.header("Content-Length")?.toLongOrNull()
+                            val crTotal = RangeMath.parseContentRangeTotal(resp.header("Content-Range"))
+                            val total = RangeMath.expectedTotal(existing, code, clen, crTotal) ?: item.size
+                            var downloaded = existing
+                            setIfCurrent(itemId, token, state = "downloading", progress = RangeMath.percent(downloaded, total))
+                            val body = resp.body() ?: run { failIfCurrent(itemId, token, "no-body"); return }
+                            java.io.FileOutputStream(part, existing > 0).use { fos ->
+                                val src = body.byteStream()
+                                val buf = ByteArray(chunkSize)
+                                while (!stopped) {
+                                    val n = src.read(buf)
+                                    if (n < 0) break
+                                    if (n == 0) continue
+                                    fos.write(buf, 0, n)
+                                    downloaded += n
+                                    setIfCurrent(itemId, token, state = "downloading",
+                                        progress = RangeMath.percent(downloaded, total))
+                                }
+                            }
+                            if (stopped) return
+                            // §6 短读 = 传输被截断,**不是**内容错误。
+                            //
+                            // 取证(ProbeTruncatedStreamTest):服务端声明 Content-Length=10 却只发
+                            // 4 字节就断开时,okhttp 的 byteStream().read() 直接返回 -1 而**不抛
+                            // 异常**。旧代码因此把短读当成"下载完成",带着半个文件进 sha256 校验 →
+                            // 必然 mismatch → **删掉 .part** → 永久 error,整个过程只发出 1 个请求。
+                            // 现场表现和 ConnectException 那 2 项一样:必须人工重推列表。
+                            //
+                            // 已知总长时短读一律按可重试的传输失败处理:保留 .part,下一轮带
+                            // `Range: bytes=<part.length()>-` 续传。真正的内容错(长度足够但哈希
+                            // 不对)仍走下面的 sha256 守卫并终态失败 —— 那是 B2 黑屏的根因守卫,
+                            // 不能因为这里放宽而被绕过。
+                            if (total != null && total > 0 && downloaded < total) {
+                                if (attempt >= maxRetryAttempts) {
+                                    // 预算耗尽:直接终态,不能 fall-through 到 sha256
+                                    // (半文件必然 mismatch → 把诊断名改成 sha256-mismatch,
+                                    // 还可能把 .part 删掉,现场就再也续不上了)。
+                                    failIfCurrent(itemId, token, "truncated")
+                                    return
+                                }
+                                attempt++
+                                retryDelayMs(null, attempt)
+                            } else {
+                                null
                             }
                         }
-                        if (stopped) return
-                        null
                     }
+                } catch (e: java.io.IOException) {
+                    // §6 传输层失败与 429/503 共用同一套退避预算。
+                    //
+                    // 现场取证(96 项音乐列表,盒子 d627e9ccb4a9 / e3f4d752376d):broker 媒体口
+                    // 瞬时拒连时有 2 项报 `error:ConnectException` 后**一次都没重试**就永久停在
+                    // error —— 另外 94 项同一批全部成功,说明拒连是瞬时的。根因是重试循环当时只
+                    // 覆盖 HTTP 429/503,任何 IOException(ConnectException / SocketTimeout /
+                    // 读到一半断流)都直接落到外层 catch → failIfCurrent,`maxRetryAttempts`
+                    // 对传输层完全不适用,现场表现为「必须人工重推整个列表」。
+                    //
+                    // 预算耗尽才落 error,并保留真实异常名(诊断不能退化成通用码)。`.part`
+                    // 一律保留,下一轮按 part.length() 带 `Range` 续传,不从头下。
+                    activeCalls.remove(itemId, call)
+                    if (stopped) return
+                    if (attempt >= maxRetryAttempts) {
+                        failIfCurrent(itemId, token, e.javaClass.simpleName)
+                        return
+                    }
+                    attempt++
+                    // 传输层没有 Retry-After 可参考,走纯指数退避 + jitter。
+                    retryDelayMs(null, attempt)
                 }
                 if (retryDelay == null) break
                 setIfCurrent(itemId, token, state = "retrying")
