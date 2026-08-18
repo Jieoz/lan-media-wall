@@ -54,7 +54,7 @@ void main() {
       expect(GroupExpander.expand('group:nope', devices: devices), isEmpty);
     });
 
-    // --- v1.10.5 回归:group_id 漂移容忍 + 空 gid 通配 ---
+    // --- group_id 漂移容忍; empty/unknown targets fail closed ---
     // 真机根因:扫码直连一台盒子后「推送并播放」算出 0 台目标(group_id 因空格/
     // 大小写/前后空白与 UI 选中的 gid 严格不等)→ 一条 prepare 都不发 → 图永远出不来。
     test('group 匹配容忍大小写差异', () {
@@ -75,9 +75,13 @@ void main() {
       expect(r, ['a']);
     });
 
-    test('空 gid → 通配匹配所有设备(避免"未指定组"误判为空组)', () {
-      final r = GroupExpander.expand('group:', devices: devices);
-      expect(r.toSet(), {'a', 'b', 'c'});
+    test('空 gid → 空列表，绝不能扩大为全体设备', () {
+      expect(GroupExpander.expand('group:', devices: devices), isEmpty);
+    });
+
+    test('未知目标格式 → 空列表，绝不能扩大为全体设备', () {
+      expect(GroupExpander.expand('groupp:lobby', devices: devices), isEmpty);
+      expect(GroupExpander.expand('', devices: devices), isEmpty);
     });
   });
 
