@@ -1,5 +1,8 @@
 # LAN Media Wall — Android Player (被控端)
 
+> **当前正式版本：v1.19.14+1204。** 本版 Player 无运行逻辑或协议改动；统一版本随
+> Controller 路由安全修复发布。以下 v1.19.11 及更早内容为历史变更。
+>
 > **v1.19.11 — OTA `daemon:unreachable` 其实是客户端超时（本端为唯一改动方）：**
 > `install_daemon_send ... daemon_probe=ready` 之后 4010ms 报 `resp=unreachable`，而同机两次
 > 成功安装的 `send→reply` 是 3450ms / 3521ms —— 客户端 `soTimeout` 恰好 4000ms。

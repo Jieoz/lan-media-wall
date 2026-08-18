@@ -1661,10 +1661,17 @@ class WallState extends ChangeNotifier {
     String? deviceId,
   }) {
     String? pushId;
+    // Broker acceptance is not per-device delivery. For the controller-side
+    // progress job, count only devices that were online at dispatch time;
+    // including offline inventory makes a broker-accepted push look like a
+    // never-ending device job and inflates the batch denominator.
     final affected = deviceId != null && deviceId.isNotEmpty
-        ? <String>[deviceId]
+        ? _wall.devices
+            .where((d) => d.deviceId == deviceId && d.online)
+            .map((d) => d.deviceId)
+            .toList()
         : _wall.devices
-            .where((d) => d.groupId == groupId)
+            .where((d) => d.groupId == groupId && d.online)
             .map((d) => d.deviceId)
             .toList();
     // Generate the wire identity now, but do not mutate local progress until

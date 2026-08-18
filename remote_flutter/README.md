@@ -1,5 +1,9 @@
 # remote_flutter — LAN Media Wall 遥控端 (controller)
 
+> **当前正式版本：v1.19.14+1204。** P2P 空 `group:`、空目标和未知目标格式现在
+> fail-closed 为零投递；Broker 推送进度只统计 dispatch 时在线的设备，不再让离线设备
+> 抬高任务总数或永久 pending。`v1.19.8` 以下为历史变更。
+>
 > **v1.19.8：批量上传修复与重复入口清理（控制端本版有功能改动）。**
 > 1. **修复 Android 上音乐只能一个一个加。** 根因是选择器参数：`FileType.custom` +
 >    `allowedExtensions` 在 Android 上走 `*/*` intent 再按扩展名过滤，该路径下
@@ -142,7 +146,7 @@
 > QZX Update Tools 新增双击启动器 `OTA检测.bat` 与独立
 > `android_ota_diag.exe`，可在 stock Windows x64 上离线生成中文诚实诊断；
 > 不改遥控端协议、传输、路由或 OTA 安装合同。该历史版本为
-> `1.18.1+1181`；当前正式版本为 `1.18.9+1189`，本页顶部为 `1.19.0+1190` 候选。
+> `1.18.1+1181`；`1.18.9+1189` 与 `1.19.0+1190` 均为历史记录，当前正式版本见本页顶部的 `v1.19.14+1204`。
 >
 > **v1.18.0：操作员 UX 重构。**P2P 为主链路,Broker 降为高级/次要;无协议、传输、
 > 精确 `device_id` 路由、缓存/OTA/安全合同改动,纯 UX 层。**设置拓扑真相**:新增
@@ -220,7 +224,7 @@
 LAN 媒体墙的 Flutter 遥控端。连接 broker、查看设备墙、下发播放控制。严格遵守
 [`../protocol_spec.md`](../protocol_spec.md) v1 合同。
 
-> **当前候选版本 `1.19.0+1190`（`pubspec.yaml`）。**CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK；播放端 `build.gradle.kts` 也从同一行派生，改 pubspec 即全端同步。只有同一 SHA 的全平台门禁通过并完成资产核验后才晋级正式 Release。
+> **当前正式版本 `1.19.14+1204`（`pubspec.yaml`）。**CI 从 pubspec 派生 `flutter build apk --build-name=<pubspec name> --build-number=<pubspec code>` 把版本号烧进 APK；播放端 `build.gradle.kts` 也从同一行派生，改 pubspec 即全端同步。正式 Release 要求同一 SHA 的全平台门禁与资产核验。
 >
 > **v1.14.10**：修复真实 P2P 控制面误选路——播放端明确声明 `topology=p2p` 时忽略兼容 `broker_hint`，控制端建立逐台直连并消费 `status/time_sync`，设备卡从「已发现」正常推进到「已连接」；单台改名/设组/音量也沿同一真实链路投递，UI 明确提示命令已投递。
 >

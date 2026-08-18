@@ -1,5 +1,14 @@
 # LAN Media Wall · 局域网多设备群控播放系统
 
+> **当前正式版本：v1.19.14+1204**（Release: `v1.19.14`）。版本真相源为
+> `remote_flutter/pubspec.yaml`；根目录与各模块 README 的“当前版本”只描述这一版本，
+> 其余版本号均属于历史记录。
+
+> **v1.19.14 — 目标路由安全与诚实进度：** P2P 的空组名、空目标和未知目标格式
+> 现在零投递，不再扩大成全体设备；Broker 接受推送后，控制端只把 dispatch 时在线的
+> 设备计入进度任务，不再让离线库存造成虚高总数和永久 pending。本版运行逻辑改动仅在
+> Flutter Controller，协议与 Player/Broker 行为不变。
+
 > **v1.19.11 — 修 OTA 升级报 `daemon:unreachable`（Player 侧）：**
 > 现场：推送升级后日志写 `daemon_probe=ready daemon_euid=0`，**4 秒后**却说
 > `install_daemon_fail resp=unreachable`，控制端记 `update=failed`。但设备重启后新版本
@@ -450,7 +459,7 @@ Android 被控端锁定 minSdk 19(Android 4.4.2),纯内网 kiosk。装机与自�
 
 ### 发版清单(release checklist)
 
-**当前候选版本：`v1.19.0`**（单一真相源 `remote_flutter/pubspec.yaml` = `1.19.0+1190`；正式发布前必须由同一 Git SHA 的 Android、Flutter、Broker、Windows 和总 CI 全绿，并核验正式资产版本、签名与摘要）。
+**当前正式版本：`v1.19.14+1204`**（单一真相源 `remote_flutter/pubspec.yaml`；正式发布以同一 Git SHA 的 Android、Flutter、Broker、Windows 和总 CI 门禁、签名与摘要核验为准）。
 
 > **`1.18.2+1182` 发布安全远程配置合同。**普通 `configure_device` 只允许低风险字段并采用 revision/逐字段回执；连接与密钥分别走独立命令，所有状态快照和回执均脱敏。
 
