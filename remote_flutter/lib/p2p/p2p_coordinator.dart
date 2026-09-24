@@ -135,12 +135,17 @@ class P2pCoordinator {
   /// 每个仍被期望连接的 key 的待重连定时器。断线后按退避重拨，重连成功即清。
   final Map<String, Timer> _reconnectTimers = {};
 
-  /// 每个 key 的当前退避（ms）。首次 1s，翻倍到上限 30s；重连成功归零。
+  /// 每个 key 的当前退避（ms）。首次 1s，翻倍到上限 30s；会话可用后归零。
   final Map<String, int> _reconnectBackoff = {};
+
+  /// 连续握手失败次数。到上限后停拨，等发现列表再次出现该端点才重试。
+  /// 曾经连上又掉线的不计入：那是网络闪断，仍按退避重连。
+  final Map<String, int> _handshakeFailures = {};
 
   /// 退避下限/上限（ms）——与 [BrokerClient] 一致，避免无限狂拨。
   static const int _reconnectMinMs = 1000;
   static const int _reconnectMaxMs = 30000;
+  static const int _handshakeFailStop = 6;
 
   /// 当前已建立直连的 device_id 集合。
   Set<String> get connectedIds => _links.keys.toSet();
@@ -191,11 +196,12 @@ class P2pCoordinator {
       for (final key in _links.keys)
         if (_peers[key] != null) _endpoint(_peers[key]!),
     };
-    // 拨号新端点。
+    // 拨号新端点。发现列表重新出现，清掉「已停拨」计数，允许再试一次。
     for (final entry in nextByEndpoint.entries) {
       if (connectedEndpoints.contains(entry.key)) continue;
       final p = entry.value;
       _peers[p.deviceId] = p;
+      _handshakeFailures.remove(p.deviceId);
       if (!_links.containsKey(p.deviceId)) _dial(p);
     }
     _emitPeers();
@@ -273,6 +279,7 @@ class P2pCoordinator {
       if (!identical(_links[key], link)) return;
       _log('握手失败 $key: $e');
       _emitPeerState(key, PeerLinkState.failed, '握手失败: $e');
+      _handshakeFailures[key] = (_handshakeFailures[key] ?? 0) + 1;
       _onLinkDone(key, link: link);
     });
   }
@@ -390,6 +397,13 @@ class P2pCoordinator {
   /// 还在）且尚无待重连定时器时才排；重连前 [_dial] 会再按端点去重，防双连接。
   void _scheduleReconnect(String deviceId) {
     if (_disposed) return;
+    final fails = _handshakeFailures[deviceId] ?? 0;
+    if (fails >= _handshakeFailStop) {
+      _log('停止重连 $deviceId：连续握手失败 $fails 次，等重新发现后再试');
+      _cancelReconnect(deviceId);
+      _peers.remove(deviceId);
+      return;
+    }
     final peer = _peers[deviceId];
     if (peer == null) return; // 已被 _disconnect 移除 → 不再期望连接
     if (_reconnectTimers.containsKey(deviceId)) return; // 已在排队
@@ -476,6 +490,7 @@ class P2pCoordinator {
     // A verified application frame, unlike HTTP upgrade, proves this session is
     // usable. Reset only now so repeated upgrade→1013 retains exponential delay.
     _reconnectBackoff.remove(arrivalKey);
+    _handshakeFailures.remove(arrivalKey);
     // 根因 A 修复:身份归一。占位 key(host:port)承载的连接,一旦帧里带出真实
     // device_id(status/ready 的 payload.device_id,或 welcome 的 from=player:<id>),
     // 就把连接从占位 key 重绑定到真实 id,使 connectedIds 与 WallAggregator/
@@ -782,6 +797,7 @@ class P2pCoordinator {
     }
     _reconnectTimers.clear();
     _reconnectBackoff.clear();
+    _handshakeFailures.clear();
     for (final s in _subs.values) {
       s.cancel();
     }

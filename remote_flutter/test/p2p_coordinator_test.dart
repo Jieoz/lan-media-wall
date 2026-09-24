@@ -866,5 +866,44 @@ void main() {
         coord.dispose();
       });
     });
+
+    test('连续握手失败 6 次后停止重连，发现列表再次出现才再拨', () {
+      fakeAsync((async) {
+        var dialCount = 0;
+        final created = <FakeWsLink>[];
+        final logs = <String>[];
+        final coord = P2pCoordinator(
+          codec: openCodec(),
+          controllerId: 'c1',
+          nowFn: () => 1,
+          linkFactory: (uri) {
+            dialCount++;
+            final link = FakeWsLink(uri);
+            created.add(link);
+            return link;
+          },
+        )..onLog = logs.add;
+        const peer = P2pPeer(deviceId: 'a', host: 'h', port: 8770);
+        coord.setPeers([peer]);
+
+        for (var i = 0; i < 5; i++) {
+          created.last.failReady(StateError('refused'));
+          async.flushMicrotasks();
+          final delay = 1000 * (1 << i);
+          async.elapse(Duration(milliseconds: delay));
+        }
+        expect(dialCount, 6);
+
+        created.last.failReady(StateError('refused'));
+        async.flushMicrotasks();
+        expect(logs.any((l) => l.contains('停止重连 a')), isTrue);
+        async.elapse(const Duration(seconds: 120));
+        expect(dialCount, 6);
+
+        coord.setPeers([peer]);
+        expect(dialCount, 7);
+        coord.dispose();
+      });
+    });
   });
 }

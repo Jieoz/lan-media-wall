@@ -84,6 +84,8 @@ class _DeviceWallPaneState extends State<DeviceWallPane> {
                           setState(() => _filterGroupId = id),
                     ),
                     const SizedBox(height: 4),
+                    _LinkCensusLine(state: state, devices: devices),
+                    const SizedBox(height: 4),
                     if (visible.isEmpty)
                       Padding(
                         padding: const EdgeInsets.all(12),
@@ -449,8 +451,12 @@ class _DeviceCard extends StatelessWidget {
       LinkPhase.connected => (Colors.green, '已连接'),
       LinkPhase.connecting => (Colors.orange, '连接中'),
       LinkPhase.discovered => (Colors.blueGrey, '已发现'),
-      LinkPhase.failed => (Colors.red, '失败'),
+      LinkPhase.failed => (Colors.red, '连不上'),
     };
+    final linkMark = DeviceLinkCensus.cardMark(
+      controllerIsP2p: state.isP2p,
+      connected: device.phase == LinkPhase.connected,
+    );
     final cacheSummary = _cacheSummary(st);
 
     return Card(
@@ -485,6 +491,11 @@ class _DeviceCard extends StatelessWidget {
                         const SizedBox(width: 4),
                         Text(phaseText,
                             style: Theme.of(context).textTheme.bodySmall),
+                        if (linkMark != null) ...[
+                          const SizedBox(width: 6),
+                          Text(linkMark,
+                              style: Theme.of(context).textTheme.bodySmall),
+                        ],
                         const SizedBox(width: 8),
                         if (st != null)
                           Flexible(
@@ -523,6 +534,30 @@ class _DeviceCard extends StatelessWidget {
     final total = st.cache.length;
     final ready = st.cache.values.where((v) => v == 'ready').length;
     return '缓存 $ready/$total';
+  }
+}
+
+class _LinkCensusLine extends StatelessWidget {
+  const _LinkCensusLine({required this.state, required this.devices});
+  final WallState state;
+  final List<WallDevice> devices;
+
+  @override
+  Widget build(BuildContext context) {
+    final census = DeviceLinkCensus.count(
+      controllerIsP2p: state.isP2p,
+      devices: [
+        for (final d in devices)
+          (
+            connected: d.phase == LinkPhase.connected,
+            failed: d.phase == LinkPhase.failed,
+          ),
+      ],
+    );
+    return Text(
+      census.label,
+      style: Theme.of(context).textTheme.bodySmall,
+    );
   }
 }
 
@@ -1527,7 +1562,7 @@ class _DeviceStatusView extends StatelessWidget {
       LinkPhase.connected => (Colors.green, '已连接'),
       LinkPhase.connecting => (Colors.orange, '连接中'),
       LinkPhase.discovered => (Colors.blueGrey, '已发现'),
-      LinkPhase.failed => (Colors.red, '失败'),
+      LinkPhase.failed => (Colors.red, '连不上'),
     };
     final rows = <(String, String)>[
       ('设备 ID', device.deviceId),
