@@ -62,4 +62,47 @@ void main() {
       expect(all.length, 4);
     });
   });
+
+  group('DeviceLinkCensus', () {
+    test('P2P 控制端：已连接算 P2P，失败算连不上，发现中不计', () {
+      final census = DeviceLinkCensus.count(
+        controllerIsP2p: true,
+        devices: const [
+          (connected: true, failed: false),
+          (connected: true, failed: false),
+          (connected: false, failed: true),
+          (connected: false, failed: false),
+        ],
+      );
+      expect(census.p2pConnected, 2);
+      expect(census.brokerConnected, 0);
+      expect(census.unreachable, 1);
+      expect(census.label, 'P2P 已连接 2 · Broker 0 · 连不上 1');
+      expect(
+        DeviceLinkCensus.cardMark(controllerIsP2p: true, connected: true),
+        'P2P',
+      );
+      expect(
+        DeviceLinkCensus.cardMark(controllerIsP2p: true, connected: false),
+        isNull,
+      );
+    });
+
+    test('Broker 控制端：已连接算 Broker，不把在线设备标成 P2P', () {
+      final census = DeviceLinkCensus.count(
+        controllerIsP2p: false,
+        devices: const [
+          (connected: true, failed: false),
+          (connected: false, failed: true),
+        ],
+      );
+      expect(census.p2pConnected, 0);
+      expect(census.brokerConnected, 1);
+      expect(census.unreachable, 1);
+      expect(
+        DeviceLinkCensus.cardMark(controllerIsP2p: false, connected: true),
+        'Broker',
+      );
+    });
+  });
 }

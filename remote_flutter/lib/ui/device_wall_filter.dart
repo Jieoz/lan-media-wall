@@ -40,3 +40,56 @@ class DeviceWallFilter {
         .toList(growable: false);
   }
 }
+
+/// 设备墙顶栏计数。只看每台的接入相位和控制端当前是不是 P2P。
+///
+/// 控制端在 P2P：已连接的算 P2P，失败的算「连不上」。
+/// 控制端在 Broker：在线已连接的算 Broker。发现到但没连上的不算任何一种，
+/// 避免把「还没拨号」说成连不上。
+class DeviceLinkCensus {
+  const DeviceLinkCensus({
+    required this.p2pConnected,
+    required this.brokerConnected,
+    required this.unreachable,
+  });
+
+  final int p2pConnected;
+  final int brokerConnected;
+  final int unreachable;
+
+  static DeviceLinkCensus count({
+    required bool controllerIsP2p,
+    required Iterable<({bool connected, bool failed})> devices,
+  }) {
+    var p2p = 0;
+    var broker = 0;
+    var unreachable = 0;
+    for (final d in devices) {
+      if (d.connected && controllerIsP2p) {
+        p2p++;
+      } else if (d.connected) {
+        broker++;
+      } else if (d.failed) {
+        unreachable++;
+      }
+    }
+    return DeviceLinkCensus(
+      p2pConnected: p2p,
+      brokerConnected: broker,
+      unreachable: unreachable,
+    );
+  }
+
+  /// 顶栏一行。三种都出数字，包括 0，避免「没写」被看成「没有这种设备」。
+  String get label =>
+      'P2P 已连接 $p2pConnected · Broker $brokerConnected · 连不上 $unreachable';
+
+  /// 单卡标记。未连接不标传输方式，只由相位文案说明。
+  static String? cardMark({
+    required bool controllerIsP2p,
+    required bool connected,
+  }) {
+    if (!connected) return null;
+    return controllerIsP2p ? 'P2P' : 'Broker';
+  }
+}
